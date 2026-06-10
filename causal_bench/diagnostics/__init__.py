@@ -386,3 +386,197 @@ def plot_ess_distribution(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 6. Missing-data tipping-point (MNAR sensitivity)
+# ---------------------------------------------------------------------------
+
+def _impute_censored(
+    df: pd.DataFrame,
+    p_treated: float,
+    p_control: float,
+    horizon: float,
+    t_impute: float,
+    rng: np.random.Generator,
+) -> pd.DataFrame:
+    """Return a copy of df with imputed outcomes for informatively censored rows.
+
+    Informatively censored = Delta==0 AND T_obs < horizon (dropped out before end).
+    Administrative censoring (T_obs == horizon, Delta==0) is left untouched.
+
+    For each arm, exactly round(p * n_censored_arm) randomly chosen censored
+    patients are assigned Delta=1, T_obs=t_impute.
+    """
+    df2 = df.copy()
+    censored_mask = (df2["Delta"] == 0) & (df2["T_obs"] < horizon - 1e-9)
+
+    for arm, p in [(1, p_treated), (0, p_control)]:
+        idx = df2.index[censored_mask & (df2["A"] == arm)].tolist()
+        if not idx:
+            continue
+        k = int(round(p * len(idx)))
+        if k == 0:
+            continue
+        chosen = rng.choice(idx, size=k, replace=False)
+        df2.loc[chosen, "Delta"] = 1.0
+        df2.loc[chosen, "T_obs"] = t_impute
+        if "event_type" in df2.columns:
+            df2.loc[chosen, "event_type"] = 1
+
+    return df2
+
+
+def tipping_point_mnar(
+    df: pd.DataFrame,
+    estimator,
+    horizon: float,
+    alpha: float = 0.05,
+    n_grid: int = 10,
+    t_impute: Optional[float] = None,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Missing-data tipping-point analysis (MNAR sensitivity).
+
+    Sweeps a (n_grid x n_grid) grid of assumed event probabilities for
+    informatively censored patients in each arm, re-runs the estimator
+    under each imputation, and returns a DataFrame of results.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Single simulated dataset (T_obs, Delta, A, W1-W4, ...).
+    estimator : estimator instance or str
+        Any causal_bench estimator. Recommend a fast one (e.g. "km") for
+        large grids; complex estimators (ltmle, tmle_ipcw) will be slow.
+    horizon : float
+        Study horizon (same value used in DGP).
+    alpha : float
+        Significance level for the tipping-point boundary.
+    n_grid : int
+        Number of grid points per axis (total runs = n_grid**2).
+    t_impute : float, optional
+        T_obs assigned to imputed events. Default: horizon (worst case).
+    seed : int
+        RNG seed for imputation assignments.
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+        p_treated, p_control, estimate, se, ci_lower, ci_upper,
+        significant (bool: CI excludes 0 at alpha), n_censored_treated,
+        n_censored_control
+    Also carries metadata attributes:
+        .mar_p_treated, .mar_p_control  -- event rates under MAR reference
+    """
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+
+    if isinstance(estimator, str):
+        estimator = ESTIMATOR_REGISTRY[estimator]
+    if t_impute is None:
+        t_impute = horizon
+
+    censored_mask = (df["Delta"] == 0) & (df["T_obs"] < horizon - 1e-9)
+    n_ct = int(((df["A"] == 1) & censored_mask).sum())
+    n_cc = int(((df["A"] == 0) & censored_mask).sum())
+
+    # MAR reference: observed event rate among non-censored patients in each arm
+    observed_mask = df["Delta"] == 1
+    mar_pt = float(df.loc[(df["A"] == 1) & observed_mask, "Delta"].mean()) if (df["A"] == 1).any() else 0.5
+    mar_pc = float(df.loc[(df["A"] == 0) & observed_mask, "Delta"].mean()) if (df["A"] == 0).any() else 0.5
+    # Clamp to [0,1]
+    mar_pt = min(max(mar_pt, 0.0), 1.0)
+    mar_pc = min(max(mar_pc, 0.0), 1.0)
+
+    grid = np.linspace(0, 1, n_grid)
+    rng  = np.random.default_rng(seed)
+    rows = []
+
+    for p_t in grid:
+        for p_c in grid:
+            df_imp = _impute_censored(df, p_t, p_c, horizon, t_impute, rng)
+            try:
+                results = estimator.estimate(df_imp)
+            except Exception:
+                results = []
+
+            if results:
+                r = results[0]
+                est      = float(r.point_estimate)
+                se       = float(r.standard_error)
+                ci_lo    = float(r.ci_lower)
+                ci_hi    = float(r.ci_upper)
+                sig      = not (ci_lo <= 0 <= ci_hi)
+            else:
+                est = se = ci_lo = ci_hi = float("nan")
+                sig = False
+
+            rows.append({
+                "p_treated":           round(float(p_t), 6),
+                "p_control":           round(float(p_c), 6),
+                "estimate":            est,
+                "se":                  se,
+                "ci_lower":            ci_lo,
+                "ci_upper":            ci_hi,
+                "significant":         sig,
+                "n_censored_treated":  n_ct,
+                "n_censored_control":  n_cc,
+            })
+
+    result_df = pd.DataFrame(rows)
+    result_df.attrs["mar_p_treated"] = mar_pt
+    result_df.attrs["mar_p_control"] = mar_pc
+    return result_df
+
+
+def plot_tipping_point_mnar(
+    tipping_df: pd.DataFrame,
+    alpha: float = 0.05,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """Heatmap of the MNAR tipping-point grid.
+
+    Background colour = estimate value (diverging, centred at 0).
+    White contour = tipping-point boundary (CI crosses 0).
+    Star = MAR reference point (stored in tipping_df.attrs).
+    """
+    import matplotlib.colors as mcolors
+
+    pivot_est = tipping_df.pivot(index="p_treated", columns="p_control", values="estimate")
+    pivot_sig = tipping_df.pivot(index="p_treated", columns="p_control", values="significant")
+
+    p_t_vals = pivot_est.index.values
+    p_c_vals = pivot_est.columns.values
+
+    vmax = np.nanmax(np.abs(pivot_est.values))
+    vmax = vmax if vmax > 0 else 1.0
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.pcolormesh(
+        p_c_vals, p_t_vals, pivot_est.values,
+        cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto"
+    )
+    plt.colorbar(im, ax=ax, label="Estimate")
+
+    # Tipping-point contour (boundary of significance)
+    sig_arr = pivot_sig.values.astype(float)
+    if sig_arr.min() < sig_arr.max():  # contour only if both sides exist
+        ax.contour(p_c_vals, p_t_vals, sig_arr, levels=[0.5],
+                   colors="white", linewidths=2, linestyles="--")
+
+    # MAR reference point
+    mar_pt = tipping_df.attrs.get("mar_p_treated", None)
+    mar_pc = tipping_df.attrs.get("mar_p_control", None)
+    if mar_pt is not None and mar_pc is not None:
+        ax.plot(mar_pc, mar_pt, "w*", markersize=14,
+                label=f"MAR reference ({mar_pc:.2f}, {mar_pt:.2f})", zorder=5)
+        ax.legend(loc="upper right", fontsize=8)
+
+    ax.set_xlabel("Assumed event prob -- censored control (p_control)")
+    ax.set_ylabel("Assumed event prob -- censored treated (p_treated)")
+    ax.set_title(title or "MNAR tipping-point sensitivity\n(dashed = CI crosses zero)")
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig

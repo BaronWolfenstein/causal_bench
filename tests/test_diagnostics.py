@@ -272,3 +272,100 @@ class TestESSAcrossSims:
         plot_ess_distribution(cfg, n_draws=5, n_folds=2, save_path=path)
         assert (tmp_path / "ess.png").exists()
         plt.close("all")
+
+
+class TestTippingPointMNAR:
+    def test_returns_dataframe(self):
+        from causal_bench.diagnostics import tipping_point_mnar
+        from causal_bench.estimators import ESTIMATOR_REGISTRY
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, ESTIMATOR_REGISTRY["km"],
+                                    horizon=cfg.horizon, n_grid=3)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_grid_size(self):
+        from causal_bench.diagnostics import tipping_point_mnar
+        from causal_bench.estimators import ESTIMATOR_REGISTRY
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, ESTIMATOR_REGISTRY["km"],
+                                    horizon=cfg.horizon, n_grid=4)
+        assert len(result) == 16  # 4 x 4
+
+    def test_expected_columns(self):
+        from causal_bench.diagnostics import tipping_point_mnar
+        from causal_bench.estimators import ESTIMATOR_REGISTRY
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, ESTIMATOR_REGISTRY["km"],
+                                    horizon=cfg.horizon, n_grid=3)
+        for col in ["p_treated", "p_control", "estimate", "se",
+                    "ci_lower", "ci_upper", "significant",
+                    "n_censored_treated", "n_censored_control"]:
+            assert col in result.columns, f"missing column: {col}"
+
+    def test_p_range(self):
+        from causal_bench.diagnostics import tipping_point_mnar
+        from causal_bench.estimators import ESTIMATOR_REGISTRY
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, ESTIMATOR_REGISTRY["km"],
+                                    horizon=cfg.horizon, n_grid=3)
+        assert result["p_treated"].min() >= 0
+        assert result["p_treated"].max() <= 1
+        assert result["p_control"].min() >= 0
+        assert result["p_control"].max() <= 1
+
+    def test_accepts_string_estimator(self):
+        from causal_bench.diagnostics import tipping_point_mnar
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, "km", horizon=cfg.horizon, n_grid=3)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_mar_attrs_present(self):
+        from causal_bench.diagnostics import tipping_point_mnar
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, "km", horizon=cfg.horizon, n_grid=3)
+        assert "mar_p_treated" in result.attrs
+        assert "mar_p_control" in result.attrs
+
+    def test_administrative_censoring_not_imputed(self):
+        """Patients censored at exactly horizon should not be imputed."""
+        from causal_bench.diagnostics import tipping_point_mnar, _impute_censored
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        horizon = cfg.horizon
+        rng = np.random.default_rng(0)
+        # Manually mark some patients as administratively censored
+        admin_idx = df.index[(df["Delta"] == 0) & (df["T_obs"] < horizon - 1e-9)][:5]
+        # set T_obs = horizon for these (administrative)
+        df2 = df.copy()
+        df2.loc[admin_idx, "T_obs"] = horizon
+        df3 = _impute_censored(df2, p_treated=1.0, p_control=1.0, horizon=horizon,
+                                t_impute=horizon, rng=rng)
+        # admin censored rows should still have Delta=0
+        assert (df3.loc[admin_idx, "Delta"] == 0).all()
+
+    def test_plot_returns_figure(self):
+        from causal_bench.diagnostics import tipping_point_mnar, plot_tipping_point_mnar
+        import matplotlib.pyplot as plt
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, "km", horizon=cfg.horizon, n_grid=3)
+        fig = plot_tipping_point_mnar(result)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_plot_saves_file(self, tmp_path):
+        from causal_bench.diagnostics import tipping_point_mnar, plot_tipping_point_mnar
+        import matplotlib.pyplot as plt
+        df = _make_df(n=200)
+        cfg = DGPConfig(n=200, seed=0)
+        result = tipping_point_mnar(df, "km", horizon=cfg.horizon, n_grid=3)
+        path = str(tmp_path / "mnar.png")
+        plot_tipping_point_mnar(result, save_path=path)
+        assert (tmp_path / "mnar.png").exists()
+        plt.close("all")
