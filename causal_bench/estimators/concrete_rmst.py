@@ -30,8 +30,8 @@ _R_BRIDGE = Path(__file__).parent.parent.parent / "r_scripts" / "concrete_bridge
 def _concrete_available() -> bool:
     """Return True if rpy2 is importable and the concrete R package is installed."""
     try:
-        import rpy2.robjects as ro  # noqa: F401
-        ro.packages.importr("concrete")
+        import rpy2.robjects.packages as rpacks
+        rpacks.importr("concrete")
         return True
     except Exception:
         return False
@@ -123,21 +123,22 @@ def concrete_sensitivity(
         )
 
     import rpy2.robjects as ro
-    from rpy2.robjects import pandas2ri
+    import rpy2.robjects.pandas2ri as pandas2ri
+    from rpy2.robjects.conversion import localconverter
 
-    pandas2ri.activate()
     ro.r["source"](str(_R_BRIDGE))
     run_sens = ro.globalenv["run_concrete_sensitivity"]
 
     df_r = df.copy()
     df_r["event_type"] = df_r["Delta"].astype(int)
     df_r = prepare_for_r(df_r)
-    r_df     = pandas2ri.py2rpy(df_r)
     r_deltas = ro.FloatVector(deltas)
 
     try:
-        result_r = run_sens(r_df, float(horizon), r_deltas)
-        return pandas2ri.rpy2py(result_r).reset_index(drop=True)
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            r_df     = ro.conversion.py2rpy(df_r)
+            result_r = run_sens(r_df, float(horizon), r_deltas)
+            return ro.conversion.rpy2py(result_r).reset_index(drop=True)
     except Exception as exc:
         raise RuntimeError(f"concrete sensitivity analysis failed: {exc}") from exc
 
@@ -175,9 +176,8 @@ class ConcreteRMSTEstimator(BaseEstimator):
             return []
 
         import rpy2.robjects as ro
-        from rpy2.robjects import pandas2ri
-
-        pandas2ri.activate()
+        import rpy2.robjects.pandas2ri as pandas2ri
+        from rpy2.robjects.conversion import localconverter
 
         # Source the R bridge (idempotent — R caches sourced environments)
         ro.r["source"](str(_R_BRIDGE))
@@ -186,7 +186,9 @@ class ConcreteRMSTEstimator(BaseEstimator):
         df_r = df.copy()
         df_r["event_type"] = df_r["Delta"].astype(int)
         df_r = prepare_for_r(df_r)
-        r_df = pandas2ri.py2rpy(df_r)
+
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            r_df = ro.conversion.py2rpy(df_r)
 
         try:
             result_r = run_bridge(r_df, float(horizon))

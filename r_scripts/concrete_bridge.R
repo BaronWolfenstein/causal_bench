@@ -71,6 +71,17 @@ run_concrete_bridge <- function(df,
                       L1   = dt[["L1"]][obs_idx])
     if (verbose) message("concrete_bridge: passing L1 to CensoringTV (not outcome model)")
   }
+  ## Drop L1 from the main table — it's been extracted to CensoringTV and
+  ## formatArguments rejects any column with NaN values in the DataTable.
+  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
+
+  ## Cap TargetTime at the last observed event — concrete errors if the
+  ## horizon falls after all individuals are censored.
+  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  if (horizon >= last_event) {
+    horizon <- last_event * 0.999
+    if (verbose) message(sprintf("concrete_bridge: horizon capped to %.6f (last event time)", horizon))
+  }
 
   ## formatArguments — wraps data + analysis plan into a single object.
   ## CensoringTV conditions the IPCW on L1 (LOCF + change-from-baseline),
@@ -205,6 +216,10 @@ run_concrete_sensitivity <- function(df,
                       time = 0.5,
                       L1   = dt[["L1"]][obs_idx])
   }
+  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
+
+  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  if (horizon >= last_event) horizon <- last_event * 0.999
 
   args <- tryCatch(
     concrete::formatArguments(
