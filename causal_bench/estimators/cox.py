@@ -48,7 +48,7 @@ class CoxEstimator(BaseEstimator):
         se = max(se, 1e-6)
         z = stats.norm.ppf(0.975)
         return [EstimatorResult(
-            name=name, estimand="ATE",
+            name=name, estimand=estimand,
             point_estimate=float(point), standard_error=se,
             ci_lower=float(point) - z * se,
             ci_upper=float(point) + z * se,

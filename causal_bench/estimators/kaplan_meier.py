@@ -28,7 +28,7 @@ class KaplanMeierEstimator(BaseEstimator):
         se = max(se, 1e-6)
         z = stats.norm.ppf(0.975)
         return [EstimatorResult(
-            name=self.name, estimand="ATE",
+            name=self.name, estimand=estimand,
             point_estimate=point, standard_error=se,
             ci_lower=point - z * se, ci_upper=point + z * se,
         )]
