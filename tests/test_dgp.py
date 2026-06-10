@@ -191,3 +191,29 @@ def test_keyed_uniform_seed_independence():
     v1 = keyed_uniform(5, "survival", "clean", 0)
     v2 = keyed_uniform(5, "survival", "clean", 1)
     assert v1 != v2
+
+
+# --- L1 time-varying confounder tests ---
+
+def test_l1_always_in_dataframe():
+    """L1 column always present regardless of collider_strength."""
+    cfg = DGPConfig(n=300, collider_strength=0.5, seed=0)
+    df = generate_data(cfg)
+    assert "L1" in df.columns
+    assert df["L1"].notna().any()
+
+
+def test_l1_nan_for_early_deaths():
+    """L1 is NaN for patients who die before t_L1."""
+    cfg = DGPConfig(n=500, collider_strength=0.5, t_L1=0.5, seed=0)
+    df = generate_data(cfg)
+    assert df["L1"].isna().sum() > 0
+
+
+def test_l1_present_with_zero_collider_strength():
+    """L1 column exists even when collider_strength=0 (no U-driven component)."""
+    cfg = DGPConfig(n=300, collider_strength=0.0, seed=0)
+    df = generate_data(cfg)
+    assert "L1" in df.columns
+    # Some patients should still have observed L1 (those alive past t_L1)
+    assert df["L1"].notna().any()

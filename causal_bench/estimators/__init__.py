@@ -9,9 +9,10 @@ ESTIMATOR_REGISTRY: dict = {
     "cox":                CoxEstimator(),
     "tmle_ipcw":          TMLEIPCWEstimator(use_compliance=False),
     "tmle_ipcw_comply":   TMLEIPCWEstimator(use_compliance=True),
+    "cox_l1":             CoxEstimator(include_L1=True),
 }
 
-MVP_ESTIMATORS = list(ESTIMATOR_REGISTRY.keys())
+MVP_ESTIMATORS = ["naive", "km", "cox", "tmle_ipcw", "tmle_ipcw_comply"]
 
 
 def get_estimator(name: str):

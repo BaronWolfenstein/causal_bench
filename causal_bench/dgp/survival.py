@@ -114,6 +114,13 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     )
     T_true = np.exp(log_T)
 
+    # --- L1: post-treatment time-varying confounder ---
+    # L1 is caused by A and U (via collider_strength); only observed if alive at t_L1
+    L1_raw = (0.5 * A + 0.4 * W3 + 0.3 * U * config.collider_strength
+              + rng.standard_normal(n) * config.sigma_L)
+    alive_at_L1 = T_true > config.t_L1
+    L1_obs = np.where(alive_at_L1, L1_raw, np.nan)
+
     # --- Compliance covariate (correlated with U, observed) ---
     rho = np.sqrt(config.compliance_censoring_r2)
     compliance_raw = rho * U + np.sqrt(1.0 - rho ** 2) * rng.standard_normal(n)
@@ -158,6 +165,7 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
         "compliance": compliance,
         "enrollment_time": enrollment_time,
         "Y_neg": Y_neg,
+        "L1": L1_obs,
     })
 
 

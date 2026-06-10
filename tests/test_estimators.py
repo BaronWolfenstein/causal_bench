@@ -186,3 +186,21 @@ def test_run_simulation_true_value_finite():
     results = run_simulation(cfg, estimator_names=["naive"],
                              n_sim=3, n_jobs=1, seed=1)
     assert np.isfinite(results["naive"].true_value)
+
+
+def test_cox_l1_returns_result():
+    cfg = DGPConfig(n=300, collider_strength=0.5, seed=0)
+    df = generate_data(cfg)
+    results = CoxEstimator(include_L1=True, n_bootstrap=5).estimate(df)
+    assert results[0].name == "Cox+L1"
+    assert not np.isnan(results[0].point_estimate)
+
+
+def test_cox_l1_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    assert "cox_l1" in ESTIMATOR_REGISTRY
+
+
+def test_cox_l1_not_in_mvp_estimators():
+    from causal_bench.estimators import MVP_ESTIMATORS
+    assert "cox_l1" not in MVP_ESTIMATORS

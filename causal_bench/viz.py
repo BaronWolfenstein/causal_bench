@@ -12,6 +12,7 @@ COLORS = {
     "cox":              "#FC8D59",
     "tmle_ipcw":        "#31A354",
     "tmle_ipcw_comply": "#006D2C",
+    "cox_l1":           "#B30000",
 }
 
 LABELS = {
@@ -20,6 +21,7 @@ LABELS = {
     "cox":              "Cox PH",
     "tmle_ipcw":        "TMLE+IPCW",
     "tmle_ipcw_comply": "TMLE+IPCW+Comply",
+    "cox_l1":           "Cox+L1 (collider)",
 }
 
 _FONT = dict(fontfamily="sans-serif", fontsize=11)
