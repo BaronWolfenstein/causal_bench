@@ -181,9 +181,12 @@ python -m causal_bench [OPTIONS]
   --seed          Random seed (default: 42)
   --out-dir       Output directory (default: results/)
   --no-plots      Skip plot generation
-  --diagnostics   Overlap, Love plot, SE calibration after run
-  --tipping-point Tipping-point sensitivity table + plot
-  --ess           ESS distribution across 50 simulation draws + plot
+  --diagnostics         Overlap, Love plot, SE calibration after run
+  --tipping-point       Tipping-point sensitivity table + plot
+  --ess                 ESS distribution across 50 simulation draws + plot
+  --mnar-tipping-point  MNAR sensitivity grid (skipped if censoring_informativeness=0)
+  --mnar-estimator      Estimator for MNAR grid (default: km)
+  --mnar-grid           Grid points per axis (default: 10, runs = n²)
 ```
 
 ## References

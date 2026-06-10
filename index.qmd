@@ -510,7 +510,8 @@ pip install -e ".[r]"             # adds rpy2 (requires R installed)
 
 # Quick run (50 sims, ~2 min) with full diagnostics
 python -m causal_bench --scenario edwards_realistic --n-sims 50 \
-    --diagnostics --tipping-point --ess
+    --diagnostics --tipping-point --ess \
+    --mnar-tipping-point --mnar-estimator km --mnar-grid 10
 
 # Full experiments
 python experiments/exp1_censoring.py --n-sims 200

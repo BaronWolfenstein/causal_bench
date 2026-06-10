@@ -67,9 +67,9 @@ def test_generate_data_censoring_rate():
     cfg = DGPConfig(n=2000, censoring_rate=0.25,
                    censoring_informativeness=0.0, seed=3)
     df = generate_data(cfg)
-    observed_censor = 1 - df["Delta"].mean()
-    # MCAR calibration (informativeness=0): Delta=0 includes C-censored + horizon-truncated
-    assert 0.05 <= observed_censor <= 0.55
+    # Check the pre-horizon dropout rate (what censoring_rate actually calibrates)
+    dropout_rate = ((df["Delta"] == 0) & (df["T_obs"] < cfg.horizon - 1e-9)).mean()
+    assert 0.15 <= dropout_rate <= 0.35, f"dropout_rate={dropout_rate:.3f} not near target 0.25"
 
 
 def test_generate_data_compliance_in_01():

@@ -47,9 +47,9 @@ def _calibrate_censoring_scale(censoring_rate: float, horizon: float,
         C = C_base * mid
         censor_rate = np.mean((C < T_true) & (C < horizon))
         if censor_rate > censoring_rate:
-            hi = mid
+            lo = mid  # too much censoring → C too small → increase scale
         else:
-            lo = mid
+            hi = mid  # too little censoring → C too large → decrease scale
     return (lo + hi) / 2
 
 

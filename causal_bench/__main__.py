@@ -37,6 +37,12 @@ def main():
                         help="Print tipping-point sensitivity table and save tipping_point.png")
     parser.add_argument("--ess", action="store_true",
                         help="Compute ESS distribution across 50 sim draws and save ess_distribution.png")
+    parser.add_argument("--mnar-tipping-point", action="store_true",
+                        help="MNAR sensitivity grid on a single dataset (no-op when censoring_informativeness=0)")
+    parser.add_argument("--mnar-estimator", default="km",
+                        help="Estimator for MNAR grid sweep (default: km; use tmle_ipcw for rigour)")
+    parser.add_argument("--mnar-grid", type=int, default=10,
+                        help="Grid points per axis for MNAR sweep (default: 10, total runs = n^2)")
     args = parser.parse_args()
 
     print(f"\ncausal_bench")
@@ -92,6 +98,29 @@ def main():
         plot_ess_distribution(config, n_draws=50, seed=args.seed,
                               save_path=str(out_dir / "ess_distribution.png"))
         print(f"  Saved ESS distribution → {out_dir}/ess_distribution.png")
+
+    if args.mnar_tipping_point:
+        from causal_bench.diagnostics import tipping_point_mnar, plot_tipping_point_mnar
+        if config.censoring_informativeness == 0:
+            print("\n── MNAR tipping-point: skipped (censoring_informativeness=0, all censoring is MCAR) ──")
+        else:
+            sample_df = generate_data(config)
+            n_ct = int(((sample_df["A"] == 1) & (sample_df["Delta"] == 0) & (sample_df["T_obs"] < config.horizon - 1e-9)).sum())
+            n_cc = int(((sample_df["A"] == 0) & (sample_df["Delta"] == 0) & (sample_df["T_obs"] < config.horizon - 1e-9)).sum())
+            print(f"\n── MNAR tipping-point ({args.mnar_estimator}, grid={args.mnar_grid}×{args.mnar_grid}) ──")
+            print(f"  informatively censored: {n_ct} treated, {n_cc} control")
+            r_mnar = tipping_point_mnar(
+                sample_df, args.mnar_estimator,
+                horizon=config.horizon,
+                n_grid=args.mnar_grid,
+                seed=args.seed,
+            )
+            plot_tipping_point_mnar(r_mnar, save_path=str(out_dir / "mnar_tipping_point.png"))
+            n_sig = r_mnar["significant"].sum()
+            n_total = len(r_mnar)
+            print(f"  significant in {n_sig}/{n_total} grid cells ({100*n_sig/n_total:.0f}%)")
+            print(f"  MAR reference: p_treated={r_mnar.attrs['mar_p_treated']:.2f}, p_control={r_mnar.attrs['mar_p_control']:.2f}")
+            print(f"  Saved → {out_dir}/mnar_tipping_point.png")
 
     table = generate_summary_table(results)
     print("\n── Results ──────────────────────────────────────────")
