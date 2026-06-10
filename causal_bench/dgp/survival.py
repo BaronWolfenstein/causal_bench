@@ -20,11 +20,12 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 @lru_cache(maxsize=256)
-def _calibrate_censoring_scale(censoring_rate: float, horizon: float) -> float:
-    """Stable scale factor keyed on censoring_rate and horizon only."""
+def _calibrate_censoring_scale(censoring_rate: float, horizon: float,
+                                censoring_informativeness: float = 0.0) -> float:
+    """Scale factor so achieved censoring_rate matches target under given informativeness."""
     if censoring_rate <= 0:
         return 1e10
-    rng = np.random.default_rng(0)  # fixed seed — we want the same scale for same params
+    rng = np.random.default_rng(0)
     n = 5000
     U = rng.standard_normal(n)
     W1 = rng.standard_normal(n)
@@ -32,7 +33,13 @@ def _calibrate_censoring_scale(censoring_rate: float, horizon: float) -> float:
     A = rng.binomial(1, 0.5, n).astype(float)
     log_T = 0.0 + 0.4 * W1 + 0.3 * U + rng.gumbel(0, 1, n)
     T_true = np.exp(log_T)
-    log_C_base = 1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A + rng.gumbel(0, 1, n)
+    # Include MAR and MNAR components so calibration matches actual generate_data
+    log_C_base = (1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A
+                  + 0.4 * U * censoring_informativeness
+                  + rng.gumbel(0, 1, n))
+    mnar_weight = max(0.0, censoring_informativeness - 0.5) * 2.0
+    if mnar_weight > 0:
+        log_C_base -= mnar_weight * (T_true < np.median(T_true)).astype(float)
     C_base = np.exp(log_C_base)
     lo, hi = 0.01, 100.0
     for _ in range(40):
@@ -113,7 +120,8 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     compliance = _sigmoid(compliance_raw)
 
     # --- Censoring ---
-    scale_factor = _calibrate_censoring_scale(config.censoring_rate, config.horizon)
+    scale_factor = _calibrate_censoring_scale(config.censoring_rate, config.horizon,
+                                               config.censoring_informativeness)
 
     gumbel_c = rng.gumbel(0, 1, n)
     log_C_base = (

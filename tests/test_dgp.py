@@ -68,8 +68,8 @@ def test_generate_data_censoring_rate():
                    censoring_informativeness=0.0, seed=3)
     df = generate_data(cfg)
     observed_censor = 1 - df["Delta"].mean()
-    # Allow loose tolerance since calibration is approximate
-    assert 0.05 <= observed_censor <= 0.60
+    # MCAR calibration (informativeness=0): Delta=0 includes C-censored + horizon-truncated
+    assert 0.05 <= observed_censor <= 0.55
 
 
 def test_generate_data_compliance_in_01():
