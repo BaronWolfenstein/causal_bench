@@ -90,8 +90,12 @@ True effects computed by g-computation on n=50,000 reference population with sha
 
 ```r
 # Install concrete (McCoy's package, actively developed)
-remotes::install_github("blind-contours/concrete")
+remotes::install_github("blind-contours/concrete", upgrade = "always")
 install.packages(c("reticulate", "data.table"))
+
+# concrete's SuperLearner library requires these — install manually if the
+# above doesn't pull them automatically (known gap in concrete's DESCRIPTION):
+install.packages(c("glmnet", "ranger", "xgboost", "hal9001"))
 
 # Use from RStudio — calls Python generate_data() directly via reticulate
 source("r_scripts/concrete_bridge.R")
