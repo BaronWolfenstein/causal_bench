@@ -27,7 +27,7 @@ def _calibrate_censoring_scale(config: DGPConfig, seed: int) -> float:
     W1 = rng.standard_normal(n)
     W3 = rng.standard_normal(n)
     A = rng.binomial(1, 0.5, n).astype(float)
-    log_T = 1.0 + 0.4 * W1 + 0.3 * U + rng.gumbel(0, 1, n)
+    log_T = 0.0 + 0.4 * W1 + 0.3 * U + rng.gumbel(0, 1, n)
     T_true = np.exp(log_T)
     log_C_base = 1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A + rng.gumbel(0, 1, n)
     C_base = np.exp(log_C_base)
@@ -90,6 +90,7 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
 
     # --- Survival time (AFT model with Gumbel noise) ---
     gumbel_noise = rng.gumbel(0, 1, n)
+    # Intercept 0.0 (not 1.0) so that median T ≈ 1.0 and ~25-40% events occur within horizon=1.0
     log_T = (
         0.0
         + 0.4 * W1

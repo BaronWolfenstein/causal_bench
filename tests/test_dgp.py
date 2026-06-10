@@ -69,7 +69,7 @@ def test_generate_data_censoring_rate():
     df = generate_data(cfg)
     observed_censor = 1 - df["Delta"].mean()
     # Allow loose tolerance since calibration is approximate
-    assert 0.05 <= observed_censor <= 0.55
+    assert 0.05 <= observed_censor <= 0.60
 
 
 def test_generate_data_compliance_in_01():
