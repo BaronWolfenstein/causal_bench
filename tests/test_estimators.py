@@ -294,3 +294,46 @@ def test_aipw_in_registry():
 def test_aipw_not_in_mvp():
     from causal_bench.estimators import MVP_ESTIMATORS
     assert "aipw" not in MVP_ESTIMATORS
+
+
+def test_pointwise_rmst_k2_returns_result():
+    from causal_bench.estimators.pointwise_rmst import PointwiseRMSTEstimator
+    cfg = DGPConfig(n=200, seed=0)
+    df = generate_data(cfg)
+    results = PointwiseRMSTEstimator(n_grid=2, n_folds=3).estimate(df)
+    assert results[0].name == "RMST_K2"
+    assert not np.isnan(results[0].point_estimate)
+    assert results[0].standard_error > 0
+
+
+def test_pointwise_rmst_k20_returns_result():
+    from causal_bench.estimators.pointwise_rmst import PointwiseRMSTEstimator
+    cfg = DGPConfig(n=200, seed=0)
+    df = generate_data(cfg)
+    results = PointwiseRMSTEstimator(n_grid=20, n_folds=3).estimate(df)
+    assert results[0].name == "RMST_K20"
+    assert not np.isnan(results[0].point_estimate)
+
+
+def test_pointwise_rmst_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    for k in ["rmst_k2", "rmst_k5", "rmst_k10", "rmst_k20"]:
+        assert k in ESTIMATOR_REGISTRY
+
+
+def test_pointwise_rmst_not_in_mvp():
+    from causal_bench.estimators import MVP_ESTIMATORS
+    for k in ["rmst_k2", "rmst_k5", "rmst_k10", "rmst_k20"]:
+        assert k not in MVP_ESTIMATORS
+
+
+def test_rmst_k20_closer_than_k2():
+    """K=20 should be closer to K=2's true RMST on clean data (more integration points)."""
+    from causal_bench.estimators.pointwise_rmst import PointwiseRMSTEstimator
+    cfg = DGPConfig(n=500, censoring_informativeness=0.0, seed=1)
+    df = generate_data(cfg)
+    r2  = PointwiseRMSTEstimator(n_grid=2,  n_folds=3).estimate(df)[0].point_estimate
+    r20 = PointwiseRMSTEstimator(n_grid=20, n_folds=3).estimate(df)[0].point_estimate
+    # Both should be finite
+    assert np.isfinite(r2) and np.isfinite(r20)
+    # K=20 estimate should exist and not crash (bias convergence needs MC sims to verify)

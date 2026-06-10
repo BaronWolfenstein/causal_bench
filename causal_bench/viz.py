@@ -17,6 +17,10 @@ COLORS = {
     "ipw":              "#E34A33",
     "overlap":          "#9E9AC8",
     "aipw":             "#FD8D3C",
+    "rmst_k2":          "#C6DBEF",   # lightest blue — most biased
+    "rmst_k5":          "#6BAED6",
+    "rmst_k10":         "#2171B5",
+    "rmst_k20":         "#084594",   # darkest blue — least biased
 }
 
 LABELS = {
@@ -30,6 +34,10 @@ LABELS = {
     "ipw":              "IPW",
     "overlap":          "Overlap (ATO)",
     "aipw":             "AIPW",
+    "rmst_k2":          "RMST K=2",
+    "rmst_k5":          "RMST K=5",
+    "rmst_k10":         "RMST K=10",
+    "rmst_k20":         "RMST K=20",
 }
 
 _FONT = dict(fontfamily="sans-serif", fontsize=11)

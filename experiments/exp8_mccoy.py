@@ -25,7 +25,7 @@ from causal_bench.estimators import ESTIMATOR_REGISTRY
 from causal_bench.runner import run_simulation
 from causal_bench.viz import generate_summary_table, plot_forest
 
-ESTIMATORS = ["tmle_ipcw", "aipw", "ltmle", "concrete_RMST"]
+ESTIMATORS = ["tmle_ipcw", "aipw", "ltmle", "rmst_k2", "rmst_k5", "rmst_k10", "rmst_k20", "concrete_RMST"]
 OUT_DIR = Path("results/exp8_mccoy")
 N_SIMS = 200  # increase to 500 for publication
 
