@@ -356,7 +356,7 @@ if (!is.null(result) && result$converged) {
     result$ATE, result$SE, result$CI_lower, result$CI_upper
   ))
 } else {
-  cat("concrete not installed — install with: remotes::install_github('imbroglio-dc/concrete')\n")
+  cat("concrete not installed — install with: remotes::install_github('blind-contours/concrete')\n")
 }
 ```
 
@@ -527,6 +527,6 @@ quarto render index.qmd
 
 ```r
 install.packages("remotes")
-remotes::install_github("imbroglio-dc/concrete")  # McCoy's package
+remotes::install_github("blind-contours/concrete")  # McCoy's package
 install.packages(c("reticulate", "data.table"))
 ```
