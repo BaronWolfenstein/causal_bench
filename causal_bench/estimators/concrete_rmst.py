@@ -1,14 +1,18 @@
 """concrete RMST estimator — rpy2 bridge to McCoy's concrete R package.
 
-Python side uses rpy2 to call R. The R script r_scripts/concrete_bridge.R
-is structured for reticulate compatibility so McCoy can also source it
-directly in RStudio.
+Python side sources r_scripts/concrete_bridge.R and calls
+run_concrete_bridge(r_df, horizon) so all result-parsing and API-version
+negotiation lives in one place (the R script).
+
+The R bridge passes L1 as CensoringTV (not as an outcome covariate), which
+is required since concrete 1.1.1.9000 (2026-06-10 commit d37e37c).
 
 Gracefully returns [] if rpy2 or the concrete R package is not installed.
 """
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,6 +22,9 @@ from causal_bench.metrics import EstimatorResult
 
 # Required columns that concrete's formatArguments expects
 _REQUIRED_COLS = {"T_obs", "event_type", "A"}
+
+# Absolute path to the R bridge script (same repo, fixed relative location)
+_R_BRIDGE = Path(__file__).parent.parent.parent / "r_scripts" / "concrete_bridge.R"
 
 
 def _concrete_available() -> bool:
@@ -35,10 +42,14 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
 
     Applies all normalizations that concrete's formatArguments requires:
     - Validates required columns are present
-    - Fills NaN in L1 with column median (pandas2ri errors on NA in numeric)
-    - Upcasts float32 → float64 (avoids silent truncation)
-    - Casts Delta/event_type and A to int64
+    - Upcasts float32 → float64 (avoids silent truncation in pandas2ri)
+    - Casts event_type and A to int64
     - Resets index to 0..n-1 (R doesn't handle non-default row indices)
+
+    L1 is intentionally left as-is (NaN values preserved). The R bridge
+    routes L1 into CensoringTV, not the outcome covariate set, so NaN rows
+    are filtered there. Imputing NaN here would send imputed L1 to the
+    censoring model, which is incorrect.
 
     Parameters
     ----------
@@ -52,20 +63,12 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
     Raises
     ------
     ValueError if any required column is missing.
-    KeyError propagated if column access fails unexpectedly.
     """
     missing = _REQUIRED_COLS - set(df.columns)
     if missing:
         raise ValueError(f"prepare_for_r: missing required columns {missing}")
 
     out = df.copy()
-
-    # Fill NaN L1 with column median (0.0 if all NaN)
-    if "L1" in out.columns and out["L1"].isna().any():
-        fill_val = out["L1"].median()
-        if np.isnan(fill_val):
-            fill_val = 0.0
-        out["L1"] = out["L1"].fillna(fill_val)
 
     # Upcast float32 → float64 to avoid silent precision loss in pandas2ri
     for col in out.select_dtypes(include=[np.float32]).columns:
@@ -84,9 +87,15 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
 class ConcreteRMSTEstimator(BaseEstimator):
     """RMST estimator via McCoy's concrete R package.
 
-    Calls concrete::formatArguments → doConcrete → targetRMST via rpy2.
-    Returns [] (empty list) with a warning if rpy2 or concrete is unavailable,
-    so the MC runner treats it as N/A rather than crashing.
+    Sources r_scripts/concrete_bridge.R and calls run_concrete_bridge(),
+    which handles API versioning and result parsing. Returns [] with a
+    warning if rpy2 or concrete is unavailable, so the MC runner treats
+    it as N/A rather than crashing.
+
+    L1 (when present) is forwarded to concrete's CensoringTV argument so
+    it conditions the IPCW — not the outcome hazards. This avoids the
+    collider bias that arises from conditioning on a post-treatment
+    time-varying variable in the outcome model.
     """
 
     name = "concrete_RMST"
@@ -111,37 +120,29 @@ class ConcreteRMSTEstimator(BaseEstimator):
         from rpy2.robjects import pandas2ri
 
         pandas2ri.activate()
-        concrete = ro.packages.importr("concrete")
+
+        # Source the R bridge (idempotent — R caches sourced environments)
+        ro.r["source"](str(_R_BRIDGE))
+        run_bridge = ro.globalenv["run_concrete_bridge"]
 
         df_r = df.copy()
         df_r["event_type"] = df_r["Delta"].astype(int)
         df_r = prepare_for_r(df_r)
-
         r_df = pandas2ri.py2rpy(df_r)
 
-        args = concrete.formatArguments(
-            DataTable=r_df,
-            EventTime=ro.StrVector(["T_obs"]),
-            EventType=ro.StrVector(["event_type"]),
-            Treatment=ro.StrVector(["A"]),
-            Intervention=ro.IntVector([0, 1]),
-            TargetTime=ro.FloatVector([horizon]),
-        )
-        est = concrete.doConcrete(args)
-        rmst_result = concrete.targetRMST(est)
-
-        # Parse R list output — structure depends on concrete version
-        # McCoy's API: rmst_result is a named list with "Results" element
         try:
-            results_r = rmst_result.rx2("Results")
-            ate_r = results_r.rx2("ATE")
-            point = float(np.array(ate_r.rx2("Estimate"))[0])
-            se = float(np.array(ate_r.rx2("SE"))[0])
-            ci_lower = point - 1.96 * se
-            ci_upper = point + 1.96 * se
+            result_r = run_bridge(r_df, float(horizon))
+            point = float(np.array(result_r.rx2("ATE"))[0])
+            se    = float(np.array(result_r.rx2("SE"))[0])
+            if not (np.isfinite(point) and np.isfinite(se)):
+                warnings.warn("concrete returned non-finite ATE/SE", stacklevel=2)
+                return []
         except Exception as exc:
-            warnings.warn(f"concrete result parsing failed: {exc}", stacklevel=2)
+            warnings.warn(f"concrete bridge failed: {exc}", stacklevel=2)
             return []
+
+        ci_lower = point - 1.96 * se
+        ci_upper = point + 1.96 * se
 
         return [EstimatorResult(
             name="concrete_RMST",

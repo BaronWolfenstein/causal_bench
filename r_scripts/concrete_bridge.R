@@ -29,9 +29,11 @@ suppressPackageStartupMessages({
 ##
 ## Parameters
 ##   df        data.frame with columns: T_obs, event_type (int), A (int),
-##             W1, W2, W3, W4, [L1 optional]
+##             W1, W2, W3, W4, [L1 optional — goes into censoring model only]
 ##   horizon   numeric scalar — target time for RMST
-##   covars    character vector of covariate column names (default W1-W4)
+##   covars    character vector of outcome covariate column names (default W1-W4)
+##             L1 is intentionally excluded: it is a post-treatment mediator and
+##             conditioning on it in the outcome model creates collider bias.
 ##
 ## Returns named list:
 ##   $ATE           numeric — RMST difference (treated - control)
@@ -50,39 +52,43 @@ run_concrete_bridge <- function(df,
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
   stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
 
-  ## concrete requires a data.table
+  ## concrete requires a data.table; add a row ID for CensoringTV matching
   dt <- as.data.table(df)
-
-  ## event_type: 0 = censored, 1 = event of interest, 2 = competing event
-  ## For single-cause survival, event_type ∈ {0, 1}
+  dt[, id         := .I]
   dt[, event_type := as.integer(event_type)]
   dt[, A          := as.integer(A)]
 
-  ## Build covariate formula — include L1 only if present and not all-NA
-  use_covars <- covars
-  if ("L1" %in% names(dt) && !all(is.na(dt[["L1"]]))) {
-    use_covars <- c(use_covars, "L1")
-    if (verbose) message("concrete_bridge: including L1 in covariate set")
+  ## Build CensoringTV from L1 if present.
+  ## L1 is a post-treatment time-varying covariate that drives both the event
+  ## and informative censoring. It must enter ONLY the censoring model — passing
+  ## it to the outcome model as a covariate creates collider bias (the same trap
+  ## Exp 5 demonstrates with cox_l1).
+  ctv <- NULL
+  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
+    obs_idx <- !is.na(dt[["L1"]])
+    ctv <- data.table(id   = dt$id[obs_idx],
+                      time = 0.5,               # t_L1 matches DGPConfig.t_L1
+                      L1   = dt[["L1"]][obs_idx])
+    if (verbose) message("concrete_bridge: passing L1 to CensoringTV (not outcome model)")
   }
 
-  ## formatArguments — wraps data + analysis plan into a single object
-  ## NOTE: API may evolve as McCoy adds post-randomization censoring predictors.
-  ##       The CensoringCovariates argument (below) is the extension point.
+  ## formatArguments — wraps data + analysis plan into a single object.
+  ## CensoringTV conditions the IPCW on L1 (LOCF + change-from-baseline),
+  ## correcting informative-censoring bias without touching the outcome hazards.
   args <- tryCatch(
     concrete::formatArguments(
-      DataTable          = dt,
-      EventTime          = "T_obs",
-      EventType          = "event_type",
-      Treatment          = "A",
-      Intervention       = list(`1` = 1L, `0` = 0L),
-      TargetTime         = horizon,
-      TargetEvent        = 1L,          # cause of interest
-      Covariates         = use_covars,
-      ## CensoringCovariates — placeholder for McCoy's time-varying extension.
-      ## Once concrete >= 1.x exposes this, pass L1 here instead of Covariates.
-      ## CensoringCovariates = if ("L1" %in% names(dt)) "L1" else NULL,
-      CVFolds            = 5L,
-      Verbose            = verbose
+      DataTable   = dt,
+      EventTime   = "T_obs",
+      EventType   = "event_type",
+      Treatment   = "A",
+      ID          = "id",
+      Intervention = list(`1` = 1L, `0` = 0L),
+      TargetTime  = horizon,
+      TargetEvent = 1L,
+      Covariates  = covars,
+      CVArg       = list(V = 5L),
+      CensoringTV = ctv,
+      Verbose     = verbose
     ),
     error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
   )
@@ -93,39 +99,47 @@ run_concrete_bridge <- function(df,
     error = function(e) stop("concrete::doConcrete failed: ", conditionMessage(e))
   )
 
-  ## Extract RMST contrast
+  ## Extract RMST contrast — try getRMST() first (current API), fall back to
+  ## targetRMST() for older installed versions.
   rmst <- tryCatch(
-    concrete::getOutput(est, Estimand = "RMST", Contrast = "Treatment"),
+    concrete::getRMST(est, Horizon = horizon, Intervention = c(1L, 0L)),
     error = function(e) {
-      ## Older concrete versions used targetRMST()
-      if (verbose) message("getOutput failed, trying targetRMST()")
-      concrete::targetRMST(est)
+      if (verbose) message("getRMST failed, trying targetRMST()")
+      tryCatch(
+        concrete::targetRMST(est, Horizon = horizon),
+        error = function(e2) {
+          ## last resort: getOutput with RMST estimand
+          concrete::getOutput(est, Estimand = "RMST", Contrast = "Treatment")
+        }
+      )
     }
   )
 
   ## ---------------------------------------------------------------------------
-  ## Parse result — concrete's output structure varies by version.
-  ## We try a sequence of known layouts and warn if none match.
+  ## Parse result — extract the RMST difference (treated − control).
+  ## concrete's output structure varies across versions; try known layouts.
   ## ---------------------------------------------------------------------------
   point <- NA_real_
   se    <- NA_real_
 
-  if (is.list(rmst)) {
-    ## Layout A: list with $Estimate and $SE at top level
+  if (is.data.frame(rmst) || is.data.table(rmst)) {
+    ## getRMST / targetRMST data.frame layout: look for the "RMST Diff" row
+    diff_rows <- rmst[grepl("Diff|RD|ATE|diff", rmst[[1]], ignore.case = TRUE), ]
+    if (nrow(diff_rows) == 0) diff_rows <- rmst  # fall back to first row
+
+    pt_col <- grep("Pt.Est|Estimate|Point|Est$", names(diff_rows), value = TRUE)[1]
+    se_col <- grep("^SE$|Std.Err|StdErr|se$", names(diff_rows), value = TRUE)[1]
+    if (!is.na(pt_col)) point <- as.numeric(diff_rows[[pt_col]][1])
+    if (!is.na(se_col)) se    <- as.numeric(diff_rows[[se_col]][1])
+
+  } else if (is.list(rmst)) {
+    ## Legacy list layouts
     if (!is.null(rmst$Estimate)) {
       point <- as.numeric(rmst$Estimate)
       se    <- as.numeric(rmst$SE)
-
-    ## Layout B: list with $Results$ATE$Estimate
     } else if (!is.null(rmst$Results$ATE$Estimate)) {
       point <- as.numeric(rmst$Results$ATE$Estimate)
       se    <- as.numeric(rmst$Results$ATE$SE)
-
-    ## Layout C: data.frame/data.table row
-    } else if (is.data.frame(rmst) || is.data.table(rmst)) {
-      point <- as.numeric(rmst[1, "Estimate"])
-      se    <- as.numeric(rmst[1, "SE"])
-
     } else {
       warning("concrete_bridge: unrecognised result layout — returning NA")
     }

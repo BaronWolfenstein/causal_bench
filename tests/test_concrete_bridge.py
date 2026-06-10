@@ -43,13 +43,28 @@ class TestPrepareForR:
         # Should not raise — ConcreteRMSTEstimator defers R import to estimate()
         from causal_bench.estimators.concrete_rmst import prepare_for_r  # noqa: F401
 
-    def test_nan_l1_replaced(self):
-        """NaN in L1 must be replaced before R handoff — pandas2ri errors on NA in numeric."""
+    def test_l1_nan_preserved(self):
+        """L1 NaN must be left as-is — the R bridge routes L1 into CensoringTV and
+        filters non-NA rows there. Imputing NaN here would corrupt the censoring model."""
+        from causal_bench.estimators.concrete_rmst import prepare_for_r
+        df = _add_event_type(_make_df(collider_strength=0.5))
+        original_nan_count = df["L1"].isna().sum()
+        assert original_nan_count > 0, "fixture should have some NaN L1 values"
+        out = prepare_for_r(df)
+        assert out["L1"].isna().sum() == original_nan_count, \
+            "prepare_for_r must not impute L1 NaN — the R bridge handles filtering"
+
+    def test_l1_not_outcome_covariate(self):
+        """L1 must not appear in the outcome covariate set after prepare_for_r.
+        The R bridge sends it to CensoringTV only; conditioning on it in the
+        outcome model would introduce collider bias."""
         from causal_bench.estimators.concrete_rmst import prepare_for_r
         df = _add_event_type(_make_df(collider_strength=0.5))
         out = prepare_for_r(df)
-        # L1 NaNs should be filled (0.0 or median) — no NaN in numeric columns
-        assert not out["L1"].isna().any(), "NaN L1 values must be filled before R handoff"
+        # L1 may still be present in the dataframe (the R bridge needs it to build
+        # CensoringTV), but it must not be silently imputed and bundled with W1-W4.
+        w_cols = [c for c in out.columns if c.startswith("W")]
+        assert "L1" not in w_cols, "L1 must not be merged into the W covariate columns"
 
     def test_delta_is_integer(self):
         """concrete expects event_type as integer, not float."""
