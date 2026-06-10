@@ -5,6 +5,7 @@ from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
 from causal_bench.estimators.ltmle import LTMLEEstimator
 from causal_bench.estimators.ipw import IPWEstimator
 from causal_bench.estimators.overlap import OverlapEstimator
+from causal_bench.estimators.aipw import AIPWEstimator
 
 ESTIMATOR_REGISTRY: dict = {
     "naive":              NaiveEstimator(),
@@ -16,6 +17,7 @@ ESTIMATOR_REGISTRY: dict = {
     "ltmle":              LTMLEEstimator(),
     "ipw":                IPWEstimator(),
     "overlap":            OverlapEstimator(),
+    "aipw":               AIPWEstimator(),
 }
 
 MVP_ESTIMATORS = ["naive", "km", "cox", "tmle_ipcw", "tmle_ipcw_comply"]

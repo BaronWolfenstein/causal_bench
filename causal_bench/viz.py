@@ -16,6 +16,7 @@ COLORS = {
     "ltmle":            "#2166AC",
     "ipw":              "#E34A33",
     "overlap":          "#9E9AC8",
+    "aipw":             "#FD8D3C",
 }
 
 LABELS = {
@@ -28,6 +29,7 @@ LABELS = {
     "ltmle":            "LTMLE",
     "ipw":              "IPW",
     "overlap":          "Overlap (ATO)",
+    "aipw":             "AIPW",
 }
 
 _FONT = dict(fontfamily="sans-serif", fontsize=11)

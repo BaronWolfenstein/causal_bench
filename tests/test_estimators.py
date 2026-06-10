@@ -273,3 +273,24 @@ def test_ipw_overlap_not_in_mvp():
     from causal_bench.estimators import MVP_ESTIMATORS
     assert "ipw" not in MVP_ESTIMATORS
     assert "overlap" not in MVP_ESTIMATORS
+
+
+def test_aipw_returns_result():
+    from causal_bench.estimators.aipw import AIPWEstimator
+    cfg = DGPConfig(n=300, seed=0)
+    df = generate_data(cfg)
+    results = AIPWEstimator(n_folds=3).estimate(df)
+    assert results[0].name == "AIPW"
+    assert not np.isnan(results[0].point_estimate)
+    assert not np.isnan(results[0].standard_error)
+    assert results[0].standard_error > 0
+
+
+def test_aipw_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    assert "aipw" in ESTIMATOR_REGISTRY
+
+
+def test_aipw_not_in_mvp():
+    from causal_bench.estimators import MVP_ESTIMATORS
+    assert "aipw" not in MVP_ESTIMATORS
