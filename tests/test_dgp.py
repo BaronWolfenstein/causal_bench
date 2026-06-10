@@ -148,3 +148,46 @@ def test_get_scenario_each_valid():
         cfg = get_scenario(name)
         assert cfg.n > 0
         assert 0.0 <= cfg.censoring_rate <= 1.0
+
+
+# --- Keyed random tests ---
+
+from causal_bench.dgp.keyed_random import keyed_uniform, keyed_normal
+
+
+def test_keyed_uniform_deterministic():
+    v1 = keyed_uniform(patient_id=5, event_type="treatment", scenario="clean", seed=42)
+    v2 = keyed_uniform(patient_id=5, event_type="treatment", scenario="clean", seed=42)
+    assert v1 == v2
+
+
+def test_keyed_uniform_range():
+    vals = [keyed_uniform(i, "survival", "clean", 0) for i in range(1000)]
+    assert all(0.0 <= v < 1.0 for v in vals)
+
+
+def test_keyed_uniform_scenario_independence():
+    v1 = keyed_uniform(5, "survival", "edwards_realistic", 0)
+    v2 = keyed_uniform(5, "survival", "edwards_pessimistic", 0)
+    assert v1 != v2
+
+
+def test_keyed_uniform_patient_independence():
+    v1 = keyed_uniform(1, "survival", "clean", 0)
+    v2 = keyed_uniform(2, "survival", "clean", 0)
+    assert v1 != v2
+
+
+def test_keyed_normal_is_normal():
+    import numpy as np
+    vals = [keyed_normal(i, "covariate", "clean", 0) for i in range(500)]
+    # Should be roughly N(0,1): mean near 0, std near 1
+    assert abs(np.mean(vals)) < 0.15
+    assert abs(np.std(vals) - 1.0) < 0.15
+
+
+def test_keyed_uniform_seed_independence():
+    """Different seeds → different values for same patient."""
+    v1 = keyed_uniform(5, "survival", "clean", 0)
+    v2 = keyed_uniform(5, "survival", "clean", 1)
+    assert v1 != v2
