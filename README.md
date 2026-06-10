@@ -40,6 +40,7 @@ quarto render index.qmd
 | `ltmle` | LTMLE | ✓ | ✓ | Marginalises over L1, no collider bias |
 | `cox_l1` | Cox + L1 (collider) | | | ⚠ Intentionally biased — for Exp 5 only |
 | `concrete_RMST` | concrete direct RMST | ✓ | ✓ | Requires R + concrete package |
+| `rmst_k2/k5/k10/k20` | Pointwise RMST (K grid points) | ✓ | ✓ | Bias O(1/K); K=20 near-exact |
 
 ## Experiments
 
@@ -48,7 +49,7 @@ quarto render index.qmd
 | `exp1_censoring.py` | Bias as censoring informativeness increases 0→1 | All MVP |
 | `exp5_collider.py` | Collider trap: Cox vs Cox+L1 vs LTMLE | cox, cox_l1, ltmle, tmle_ipcw |
 | `exp7_edwards.py` | Full benchmark across 3 Edwards scenarios | All except cox_l1 |
-| `exp8_mccoy.py` | RMST vs pointwise, competing risks | tmle_ipcw, aipw, ltmle, concrete_RMST |
+| `exp8_mccoy.py` | RMST vs pointwise, competing risks | tmle_ipcw, aipw, ltmle, rmst_k2–k20, concrete_RMST |
 
 ## Key findings
 
@@ -107,6 +108,45 @@ from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
 results = ConcreteRMSTEstimator().estimate(df)  # returns [] with warning if R unavailable
 ```
 
+## Diagnostics
+
+`causal_bench` ships a diagnostics module for inspecting positivity, covariate balance, and SE calibration. All functions are in `causal_bench.diagnostics`.
+
+| Function | Output |
+|----------|--------|
+| `plot_overlap(df)` | Propensity score histogram by arm, extreme weight %, ESS |
+| `plot_love(df)` | Love plot: \|SMD\| before and after IPW weighting |
+| `plot_se_calibration(results)` | Scatter: empirical SE vs median reported SE |
+| `plot_tipping_point(results)` | How much additive bias would explain away each estimate |
+| `plot_ess_distribution(dgp_config)` | IPW ESS histogram across simulation draws |
+
+CLI flags activate diagnostics automatically after a run:
+
+```bash
+python -m causal_bench --scenario edwards_realistic --n-sims 100 \
+    --diagnostics       # overlap.png, love.png, se_calibration.png
+    --tipping-point     # tipping_point.png + table to stdout
+    --ess               # ess_distribution.png + summary to stdout
+```
+
+Python API:
+
+```python
+from causal_bench.diagnostics import (
+    plot_overlap, plot_love,
+    tipping_point_table, plot_tipping_point,
+    ess_across_sims, plot_ess_distribution,
+)
+
+df = generate_data(cfg)
+plot_overlap(df, save_path="overlap.png")
+plot_love(df, save_path="love.png")
+
+# After running simulations:
+tipping_point_table(results)          # DataFrame: bias to explain away per estimator
+ess_across_sims(cfg, n_draws=50)      # dict: median/min/max ESS, % of n
+```
+
 ## Result persistence
 
 ```python
@@ -132,6 +172,9 @@ python -m causal_bench [OPTIONS]
   --seed          Random seed (default: 42)
   --out-dir       Output directory (default: results/)
   --no-plots      Skip plot generation
+  --diagnostics   Overlap, Love plot, SE calibration after run
+  --tipping-point Tipping-point sensitivity table + plot
+  --ess           ESS distribution across 50 simulation draws + plot
 ```
 
 ## References
