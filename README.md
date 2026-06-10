@@ -119,6 +119,7 @@ results = ConcreteRMSTEstimator().estimate(df)  # returns [] with warning if R u
 | `plot_se_calibration(results)` | Scatter: empirical SE vs median reported SE |
 | `plot_tipping_point(results)` | How much additive bias would explain away each estimate |
 | `plot_ess_distribution(dgp_config)` | IPW ESS histogram across simulation draws |
+| `tipping_point_mnar(df, estimator, horizon)` | MNAR sensitivity grid + heatmap (imputes censored outcomes) |
 
 CLI flags activate diagnostics automatically after a run:
 
@@ -136,6 +137,7 @@ from causal_bench.diagnostics import (
     plot_overlap, plot_love,
     tipping_point_table, plot_tipping_point,
     ess_across_sims, plot_ess_distribution,
+    tipping_point_mnar, plot_tipping_point_mnar,
 )
 
 df = generate_data(cfg)
@@ -145,6 +147,13 @@ plot_love(df, save_path="love.png")
 # After running simulations:
 tipping_point_table(results)          # DataFrame: bias to explain away per estimator
 ess_across_sims(cfg, n_draws=50)      # dict: median/min/max ESS, % of n
+
+# MNAR sensitivity — pairs with censoring_informativeness in the DGP
+cfg = DGPConfig(n=500, censoring_informativeness=0.6, censoring_rate=0.3, seed=42)
+df  = generate_data(cfg)
+r   = tipping_point_mnar(df, "km", horizon=cfg.horizon, n_grid=15)
+plot_tipping_point_mnar(r, save_path="tipping_mnar.png")
+r.to_parquet("tipping_mnar.parquet")  # attrs (MAR reference) survive the roundtrip
 ```
 
 ## Result persistence
