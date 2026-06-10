@@ -1,72 +1,143 @@
 # causal_bench
 
-`causal_bench` is a Monte Carlo benchmarking framework for causal estimators applied to clinical trial data with survival outcomes. It simulates randomized controlled trial datasets under a range of data-generating processes—varying degrees of informative censoring, positivity violations, and unmeasured confounding—and evaluates estimators on bias, RMSE, confidence interval coverage, and other metrics. The goal is to characterize when each estimator breaks down and to guide estimator selection for time-to-event endpoints in practical trial analysis.
+Monte Carlo benchmarking of causal estimators for clinical trials with survival outcomes.
 
-## Quick Start
+Generates synthetic randomized trial data under controlled conditions — varying censoring informativeness, positivity violations, unmeasured confounding, and time-varying post-treatment variables — and measures each estimator's bias, RMSE, coverage, and SE calibration.
+
+The core finding: the "right" estimator depends entirely on what's wrong with your data. This framework makes that concrete.
+
+## Quick start
 
 ```bash
-git clone <repo>
-cd causal_bench
-pip install -e ".[dev]"
-python -m causal_bench --scenario clean --n-sims 20 --estimators naive km cox tmle_ipcw tmle_ipcw_comply
+git clone <repo> && cd causal_bench
+pip install -e ".[dev,storage]"        # storage adds pyarrow for result persistence
+
+# Single scenario, 50 sims, all estimators
+python -m causal_bench --scenario edwards_realistic --n-sims 50
+
+# Full experiments (each ~2–5 min on 8 cores)
+python experiments/exp1_censoring.py --n-sims 200
+python experiments/exp5_collider.py  --n-sims 200
+python experiments/exp7_edwards.py   --n-sims 200
+python experiments/exp8_mccoy.py     --n-sims 200   # R + concrete required for concrete_RMST
+
+# Render the Quarto walkthrough notebook
+quarto render index.qmd
 ```
 
-## Estimator Table
+## Estimators
 
-| Key | Name | Method | When It Fails |
-|-----|------|--------|---------------|
-| naive | Naive | Complete-case difference in means | Always under informative censoring |
-| km | KM | Kaplan-Meier risk difference | Ignores covariates |
-| cox | Cox PH | G-computation via Cox model | Informative censoring |
-| tmle_ipcw | TMLE+IPCW | Targeted learning with IPCW | Extreme positivity violations |
-| tmle_ipcw_comply | TMLE+IPCW+Comply | TMLE+IPCW with compliance in censoring model | Only helps when compliance predicts censoring |
+| Key | Method | Doubly robust | IPCW | Notes |
+|-----|--------|:---:|:---:|-------|
+| `naive` | Unadjusted mean difference | | | Baseline only |
+| `km` | Kaplan-Meier risk difference | | | Marginal, no covariate adjustment |
+| `cox` | Cox G-computation | | | Breaks under informative censoring |
+| `ipw` | Horvitz-Thompson IPW | | | Weight truncation at 1st/99th pct |
+| `overlap` | Overlap weighting | | | Targets ATO, stable under near-violations |
+| `aipw` | Augmented IPW | ✓ | | Doubly robust, no targeting step |
+| `tmle_ipcw` | TMLE + IPCW | ✓ | ✓ | One-step Newton targeting |
+| `tmle_ipcw_comply` | TMLE + IPCW + compliance | ✓ | ✓ | Compliance in censoring model |
+| `ltmle` | LTMLE | ✓ | ✓ | Marginalises over L1, no collider bias |
+| `cox_l1` | Cox + L1 (collider) | | | ⚠ Intentionally biased — for Exp 5 only |
+| `concrete_RMST` | concrete direct RMST | ✓ | ✓ | Requires R + concrete package |
 
-## Key Findings
+## Experiments
 
-*(Run experiments to populate this section)*
+| Script | What it shows | Estimators |
+|--------|--------------|------------|
+| `exp1_censoring.py` | Bias as censoring informativeness increases 0→1 | All MVP |
+| `exp5_collider.py` | Collider trap: Cox vs Cox+L1 vs LTMLE | cox, cox_l1, ltmle, tmle_ipcw |
+| `exp7_edwards.py` | Full benchmark across 3 Edwards scenarios | All except cox_l1 |
+| `exp8_mccoy.py` | RMST vs pointwise, competing risks | tmle_ipcw, aipw, ltmle, concrete_RMST |
 
-- Under informative censoring (censoring_informativeness ≥ 0.6), naive and KM estimators show substantial bias
-- TMLE+IPCW recovers unbiased estimates when censoring is at random (MAR)
-- Including compliance in the censoring model (TMLE+IPCW+Comply) further reduces bias under MNAR censoring
+## Key findings
 
-## Available Scenarios
+**Exp 1 (censoring gradient):** Naive and KM bias grows monotonically with censoring informativeness. TMLE+IPCW stays near zero. Including compliance in the censoring model gives a small additional advantage at high informativeness (MNAR regime).
 
-| Scenario | Description |
-|----------|-------------|
-| clean | No informative censoring, no positivity violations |
-| censor_mild | Mild informative censoring |
-| censor_moderate | Moderate informative censoring |
-| censor_severe | Severe informative censoring |
-| positivity_mild | Mild positivity violations |
-| positivity_moderate | Moderate positivity violations |
-| positivity_severe | Severe positivity violations |
-| unmeasured_mild | Mild unmeasured confounding |
-| unmeasured_mod | Moderate unmeasured confounding |
-| unmeasured_strong | Strong unmeasured confounding |
-| edwards_realistic | Edwards et al. realistic scenario |
-| edwards_optimistic | Edwards et al. optimistic scenario |
-| edwards_pessimistic | Edwards et al. pessimistic scenario |
+**Exp 5 (collider trap):** At high `collider_strength`, Cox without L1 is biased toward the null (missing-variable bias) and Cox with L1 is biased *away* from the null in the opposite direction (collider bias). LTMLE — which marginalises over L1 rather than conditioning on it — stays unbiased. There is no simple choice between the two naive approaches.
 
-## CLI Reference
+**Exp 7 (Edwards combined):** Under the realistic Edwards scenario, LTMLE and TMLE+IPCW have the smallest bias and best coverage. IPW and AIPW degrade under positivity stress. Naive and KM are unreliable across all but the optimistic scenario.
+
+**Exp 8 (McCoy RMST):** Direct RMST targeting via `concrete` eliminates the discretisation bias accumulated by pointwise estimators at coarse time grids. Python estimators (TMLE+IPCW, LTMLE) are competitive when the grid is fine.
+
+## Data-generating process
+
+AFT model with Gumbel noise (Weibull survival), unmeasured confounder U, post-treatment time-varying variable L1, informative censoring, optional competing risks:
+
+```
+log T = 0 + 0.4W1 - 0.3W2 + 0.2W3 - 0.2W4 + 0.3U + τA + ε   ε ~ Gumbel(0,1)
+L1    = 0.5A + 0.4W3 + 0.3U·collider_strength + noise         (at t_L1 = 0.5)
+log C = 1.5 - 0.2W1 + 0.1W3 - 0.1A + 0.4U·informativeness    (MNAR for inf > 0.5)
+```
+
+True effects computed by g-computation on n=50,000 reference population with shared Gumbel noise across potential outcome arms.
+
+## Scenarios
+
+| Scenario | n | censor_info | positivity | collider | unmeasured |
+|----------|---|-------------|------------|----------|------------|
+| `clean` | 500 | 0.0 | 0.0 | 0.0 | 0.0 |
+| `censor_mild/moderate/severe` | 500 | 0.3/0.6/1.0 | 0.0 | 0.0 | 0.0 |
+| `edwards_optimistic` | 700 | 0.3 | 0.5 | 0.2 | 0.1 |
+| `edwards_realistic` | 700 | 0.6 | 1.5 | 0.4 | 0.2 |
+| `edwards_pessimistic` | 700 | 0.9 | 2.5 | 0.7 | 0.4 |
+| `competing_risks_base` | 600 | 0.3 | 0.0 | 0.0 | 0.0 |
+
+## R integration (concrete)
+
+```r
+# Install concrete (McCoy's package, actively developed)
+remotes::install_github("nt-williams/concrete")
+install.packages(c("reticulate", "data.table"))
+
+# Use from RStudio — calls Python generate_data() directly via reticulate
+source("r_scripts/concrete_bridge.R")
+library(reticulate)
+use_virtualenv(".venv")
+cb  <- import("causal_bench.dgp.survival")
+cfg <- import("causal_bench.dgp.config")$DGPConfig(n=600L, competing_risks=TRUE)
+df  <- as.data.frame(cb$generate_data(cfg))
+df$event_type <- as.integer(df$Delta)
+result <- run_concrete_bridge(df, horizon=1.0)
+```
+
+From Python (requires `pip install -e ".[r]"`):
+```python
+from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
+results = ConcreteRMSTEstimator().estimate(df)  # returns [] with warning if R unavailable
+```
+
+## Result persistence
+
+```python
+# Save
+sim_result.to_parquet("results/exp1/tmle_ipcw.parquet")
+
+# Load (next session, no re-run needed)
+from causal_bench.metrics import SimResult
+sr = SimResult.from_parquet("results/exp1/tmle_ipcw.parquet")
+print(sr.summary())
+```
+
+## CLI reference
 
 ```
 python -m causal_bench [OPTIONS]
 
-Options:
-  --scenario       Named DGP scenario (default: edwards_realistic)
-  --n-sims         Number of Monte Carlo replicates (default: 100)
-  --n-jobs         Parallel workers, -1 = all CPUs (default: -1)
-  --estimand       Target estimand: ATE or ATT (default: ATE)
-  --estimators     Space-separated estimator keys to run
-  --seed           Random seed (default: 42)
-  --out-dir        Output directory (default: results/)
-  --no-plots       Skip plot generation
+  --scenario      Named DGP scenario (default: edwards_realistic)
+  --n-sims        Monte Carlo replicates (default: 100)
+  --n-jobs        Parallel workers, -1 = all CPUs (default: -1)
+  --estimand      ATE or ATT (default: ATE)
+  --estimators    Space-separated estimator keys
+  --seed          Random seed (default: 42)
+  --out-dir       Output directory (default: results/)
+  --no-plots      Skip plot generation
 ```
-
-Results are saved to `<out-dir>/<scenario>/summary.md` and `forest.png`.
 
 ## References
 
-- van der Laan, M. J., & Rose, S. (2011). *Targeted Learning: Causal Inference for Observational and Experimental Data*. Springer.
-- Robins, J. M., Hernán, M. A., & Brumback, B. (2000). Marginal structural models and causal inference in epidemiology. *Epidemiology*, 11(5), 550–560.
-- Hernán, M. A., & Robins, J. M. (2020). *Causal Inference: What If*. Chapman & Hall/CRC.
+- van der Laan & Gruber (2012). Targeted minimum loss-based estimation of causal effects. *Int J Biostatistics*.
+- Li, Morgan & Zaslavsky (2018). Balancing covariates via propensity score weighting. *JASA*.
+- McCoy (2026). Direct RMST targeting for competing-risks TMLE. `concrete` R package.
+- van der Laan & Rose (2011). *Targeted Learning*. Springer.
+- Hernán & Robins (2020). *Causal Inference: What If*. Chapman & Hall/CRC.

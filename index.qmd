@@ -1,0 +1,421 @@
+---
+title: "causal_bench walkthrough"
+subtitle: "Why your clinical trial estimator is probably wrong — and what to do about it"
+format:
+  html:
+    code-fold: true
+    toc: true
+---
+
+```{python}
+#| label: setup
+#| include: false
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.survival import generate_data, compute_true_effects
+from causal_bench.dgp.scenarios import get_scenario, list_scenarios
+from causal_bench.estimators import ESTIMATOR_REGISTRY, MVP_ESTIMATORS
+from causal_bench.metrics import SimResult
+from pathlib import Path
+
+RESULTS_DIR = Path("results")
+```
+
+## The problem
+
+A clinical trial reports that the new treatment reduces 12-month event risk by 8 percentage points. You run the same data through five different estimators. You get five different answers. Three of them don't even overlap.
+
+This isn't a software bug. It's a fundamental property of survival data: **censoring, confounding, and time-varying variables interact in ways that invalidate simple approaches**. The question isn't whether your estimator is biased — it's *how much* and *in which direction*.
+
+`causal_bench` makes these failure modes concrete. It generates synthetic clinical trial data under known ground truth, runs a panel of estimators, and measures who gets it right and by how much.
+
+---
+
+## The data-generating process
+
+Each simulated trial follows an accelerated failure time (AFT) model:
+
+$$
+\log T_i = \underbrace{0.4 W_{1i} - 0.3 W_{2i} + 0.2 W_{3i} - 0.2 W_{4i}}_{\text{baseline covariates}}
+           + \underbrace{0.3 U_i}_{\text{unmeasured}}
+           + \underbrace{\tau \cdot A_i}_{\text{treatment}}
+           + \varepsilon_i
+$$
+
+where $\varepsilon_i \sim \text{Gumbel}(0,1)$ (giving Weibull survival times), $U_i$ is an unmeasured confounder, and $\tau$ is the true log-time-ratio (default $\tau = -0.5$, meaning treatment shortens survival — increases event rate).
+
+Censoring is drawn independently with a calibrated scale factor that hits the target censoring rate at any informativeness level.
+
+```{python}
+#| label: fig-dgp-overview
+#| fig-cap: "One simulated trial: observed survival times, treatment arms, and censoring"
+
+cfg = DGPConfig(n=500, censoring_informativeness=0.3, seed=42)
+df  = generate_data(cfg)
+
+fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
+
+# Kaplan-Meier curves by arm
+from lifelines import KaplanMeierFitter
+for ax, (arm, label, color) in zip(
+    [axes[0], axes[0]],
+    [(1, "Treated", "#E34A33"), (0, "Control", "#3182BD")]
+):
+    kmf = KaplanMeierFitter()
+    mask = df["A"] == arm
+    kmf.fit(df.loc[mask, "T_obs"], df.loc[mask, "Delta"], label=label)
+    kmf.plot_survival_function(ax=axes[0], color=color, ci_show=False)
+axes[0].set_title("Kaplan-Meier by arm")
+axes[0].set_xlabel("Time")
+axes[0].set_ylabel("S(t)")
+axes[0].legend()
+
+# Event time distribution
+axes[1].hist(df.loc[df["Delta"] == 1, "T_obs"], bins=30,
+             color="#31A354", alpha=0.7, edgecolor="white")
+axes[1].set_title("Observed event times (uncensored)")
+axes[1].set_xlabel("T_obs")
+
+# Censoring by propensity score
+from causal_bench.super_learner import SuperLearner
+g_sl = SuperLearner(task="classification", n_folds=3, random_state=0)
+g_sl.fit(df[["W1","W2","W3","W4"]].values, df["A"].values)
+g = g_sl.predict_proba(df[["W1","W2","W3","W4"]].values)
+axes[2].scatter(g, df["T_obs"], c=df["Delta"].map({0:"#999", 1:"#E34A33"}),
+                alpha=0.3, s=8)
+axes[2].set_title("T_obs vs propensity score")
+axes[2].set_xlabel("P(A=1 | W)")
+axes[2].set_ylabel("T_obs")
+
+fig.tight_layout()
+plt.show()
+```
+
+### Key scenario parameters
+
+```{python}
+#| label: tbl-scenarios
+#| tbl-cap: "Available scenarios and their key parameters"
+
+rows = []
+for name in list_scenarios():
+    c = get_scenario(name)
+    rows.append({
+        "scenario": name,
+        "n": c.n,
+        "censor_info": c.censoring_informativeness,
+        "censor_rate": c.censoring_rate,
+        "positivity": c.positivity_severity,
+        "collider": c.collider_strength,
+        "unmeasured": c.unmeasured_confounding_strength,
+    })
+pd.DataFrame(rows).set_index("scenario").round(2)
+```
+
+---
+
+## The estimator hierarchy
+
+```{python}
+#| label: tbl-estimators
+#| tbl-cap: "Estimators in the registry and their key properties"
+
+rows = [
+    ("naive",           "Unadjusted mean difference",         "None",       "No",   "No"),
+    ("km",              "Kaplan-Meier risk difference",        "None",       "No",   "No"),
+    ("cox",             "Cox G-computation",                   "Covariates", "No",   "No"),
+    ("cox_l1",          "Cox G-computation + L1 (collider)",   "Covariates + L1", "No", "⚠ collider bias"),
+    ("ipw",             "Horvitz-Thompson IPW",                "Propensity", "No",   "No"),
+    ("overlap",         "Overlap weighting (ATO)",             "Propensity", "No",   "Different estimand"),
+    ("aipw",            "Augmented IPW (doubly robust)",       "Q + g",      "No",   "No"),
+    ("tmle_ipcw",       "TMLE + IPCW",                         "Q + g + G",  "Yes",  "No"),
+    ("tmle_ipcw_comply","TMLE + IPCW + compliance",            "Q + g + G",  "Yes",  "No"),
+    ("ltmle",           "LTMLE (marginalises over L1)",        "Q + g + G",  "Yes",  "No"),
+    ("concrete_RMST",   "concrete direct RMST targeting",      "Q + g + G",  "Yes",  "Requires R"),
+]
+pd.DataFrame(rows, columns=[
+    "estimator", "description", "nuisance models", "IPCW", "notes"
+]).set_index("estimator")
+```
+
+The hierarchy moves left to right in three dimensions: **covariate adjustment**, **censoring adjustment**, and **targeting**. Each step adds robustness at the cost of complexity. The collider trap (Cox+L1) is the cautionary tale: adding a variable can make things *worse*.
+
+---
+
+## Experiment 1: Censoring informativeness gradient {#sec-exp1}
+
+The simplest failure mode. As censoring becomes more informative (correlated with the outcome), unadjusted estimators accumulate bias. TMLE+IPCW should stay flat.
+
+```{python}
+#| label: fig-exp1
+#| fig-cap: "Exp 1: Estimator bias as censoring informativeness increases from 0 to 1"
+
+exp1_dir = RESULTS_DIR / "exp1_censoring"
+parquet_candidates = list(exp1_dir.glob("*.parquet")) if exp1_dir.exists() else []
+
+if not exp1_dir.exists() or not any(exp1_dir.glob("panel.png")):
+    # Run a quick version if results not pre-computed
+    import subprocess, sys
+    print("Pre-computed results not found — running Exp 1 with n_sims=50 (quick mode)...")
+    subprocess.run([sys.executable, "experiments/exp1_censoring.py",
+                    "--n-sims", "50", "--n-jobs", "-1"], check=True)
+
+from PIL import Image
+img = Image.open(exp1_dir / "panel.png")
+plt.figure(figsize=(11, 8))
+plt.imshow(img)
+plt.axis("off")
+plt.tight_layout()
+plt.show()
+```
+
+**What to look for:** Naive and KM bias curves slope upward to the right. TMLE+IPCW bias stays near zero. TMLE+IPCW+Comply is slightly better at high informativeness because compliance carries information about the censoring mechanism.
+
+---
+
+## Experiment 5: The collider trap {#sec-exp5}
+
+The more subtle failure mode. L1 is measured after treatment and before the outcome — a classic time-varying confounder. Two strategies, both wrong:
+
+- **Cox (no L1)**: omits a confounder — biased toward the null
+- **Cox+L1**: conditions on a collider — biased *away* from the null, possibly in the opposite direction
+
+LTMLE marginalises over L1 rather than conditioning on it, avoiding the trap entirely.
+
+```{python}
+#| label: fig-exp5
+#| fig-cap: "Exp 5: Cox, Cox+L1, and LTMLE bias as collider strength increases"
+
+exp5_dir = RESULTS_DIR / "exp5_collider"
+if not exp5_dir.exists() or not any(exp5_dir.glob("collider_panel.png")):
+    import subprocess, sys
+    print("Running Exp 5 (n_sims=50, quick mode)...")
+    subprocess.run([sys.executable, "experiments/exp5_collider.py",
+                    "--n-sims", "50", "--n-jobs", "-1"], check=True)
+
+from PIL import Image
+img = Image.open(exp5_dir / "collider_panel.png")
+plt.figure(figsize=(11, 4))
+plt.imshow(img)
+plt.axis("off")
+plt.tight_layout()
+plt.show()
+```
+
+**The "impossible choice":** At high collider strength, Cox is biased one way and Cox+L1 is biased the other. A practitioner choosing between them is damned either way. LTMLE is the only correct path — it uses L1 to reduce variance in the outcome model but marginalises it out before estimating the treatment effect.
+
+---
+
+## Experiment 7: The money experiment {#sec-exp7}
+
+All estimators, three Edwards scenarios (optimistic / realistic / pessimistic), 200 simulations each. This is the full picture: who survives realistic conditions?
+
+```{python}
+#| label: fig-exp7
+#| fig-cap: "Exp 7: Forest plot — Edwards realistic scenario"
+
+exp7_dir = RESULTS_DIR / "exp7_edwards"
+if not exp7_dir.exists() or not any(exp7_dir.glob("forest_realistic.png")):
+    import subprocess, sys
+    print("Running Exp 7 (n_sims=50, quick mode)...")
+    subprocess.run([sys.executable, "experiments/exp7_edwards.py",
+                    "--n-sims", "50", "--n-jobs", "-1"], check=True)
+
+from PIL import Image
+img = Image.open(exp7_dir / "forest_realistic.png")
+plt.figure(figsize=(10, 6))
+plt.imshow(img)
+plt.axis("off")
+plt.tight_layout()
+plt.show()
+```
+
+### Cross-scenario bias comparison
+
+```{python}
+#| label: tbl-exp7
+#| tbl-cap: "Bias by estimator and scenario (Exp 7)"
+
+rows = []
+for scenario in ["edwards_optimistic", "edwards_realistic", "edwards_pessimistic"]:
+    summary_path = exp7_dir / f"summary_{scenario}.md"
+    if summary_path.exists():
+        # Parse the markdown table into a DataFrame
+        lines = [l for l in summary_path.read_text().splitlines()
+                 if l.startswith("|") and "---" not in l]
+        if len(lines) >= 2:
+            header = [h.strip() for h in lines[0].split("|")[1:-1]]
+            for line in lines[1:]:
+                vals = [v.strip() for v in line.split("|")[1:-1]]
+                if vals:
+                    row = dict(zip(header, vals))
+                    row["scenario"] = scenario.replace("edwards_", "")
+                    rows.append(row)
+
+if rows:
+    df_exp7 = pd.DataFrame(rows)
+    pivot = df_exp7.pivot_table(
+        index="estimator", columns="scenario",
+        values="bias", aggfunc="first"
+    )
+    pivot
+```
+
+---
+
+## Experiment 8: McCoy RMST experiment {#sec-exp8}
+
+Direct RMST targeting vs pointwise risk-difference estimation — the comparison motivating McCoy's `concrete` R package.
+
+```{python}
+#| label: exp8-python
+#| fig-cap: "Exp 8 (Python estimators): competing risks scenario"
+
+exp8_dir = RESULTS_DIR / "exp8_mccoy"
+if not exp8_dir.exists() or not any(exp8_dir.glob("forest.png")):
+    import subprocess, sys
+    print("Running Exp 8 (n_sims=50, quick mode)...")
+    subprocess.run([sys.executable, "experiments/exp8_mccoy.py",
+                    "--n-sims", "50", "--n-jobs", "-1"], check=True)
+
+# Load from Parquet if available
+parquet_dir = exp8_dir / "parquet"
+loaded = {}
+if parquet_dir.exists():
+    for f in sorted(parquet_dir.glob("*.parquet")):
+        try:
+            loaded[f.stem] = SimResult.from_parquet(f)
+        except Exception:
+            pass
+
+if loaded:
+    rows = [r.summary() for r in loaded.values()]
+    pd.DataFrame(rows).set_index("estimator").round(4)
+elif (exp8_dir / "summary.md").exists():
+    from IPython.display import Markdown
+    Markdown((exp8_dir / "summary.md").read_text())
+```
+
+### R section: concrete direct RMST targeting
+
+::: {.callout-note}
+The cells below require R with the `concrete` package installed.
+In RStudio, source `r_scripts/concrete_bridge.R` directly — it uses `reticulate`
+to call `generate_data()` from Python without writing any files.
+:::
+
+```{r}
+#| label: r-setup
+#| eval: !expr "requireNamespace('concrete', quietly=TRUE)"
+
+library(reticulate)
+library(concrete)
+library(data.table)
+
+# Load the Python bridge
+source("r_scripts/concrete_bridge.R")
+
+# Use the same virtual environment as the Python cells
+use_virtualenv(".venv", required = FALSE)
+```
+
+```{r}
+#| label: r-generate-data
+#| eval: !expr "requireNamespace('concrete', quietly=TRUE) && reticulate::py_available()"
+#| fig-cap: "Kaplan-Meier curves from Python-generated competing risks data (via reticulate)"
+
+cb  <- import("causal_bench.dgp.survival")
+cfg <- import("causal_bench.dgp.config")$DGPConfig(
+  n                   = 600L,
+  competing_risks     = TRUE,
+  censoring_rate      = 0.20,
+  censoring_informativeness = 0.3,
+  true_tau            = -0.3,
+  seed                = 42L
+)
+py_df <- cb$generate_data(cfg)
+df    <- as.data.frame(py_df)
+df$event_type <- as.integer(df$Delta)  # 0=censored, 1=event
+
+cat(sprintf(
+  "n=%d  events=%d (%.0f%%)  competing=%d  censored=%d\n",
+  nrow(df),
+  sum(df$event_type == 1),
+  100 * mean(df$event_type == 1),
+  sum(df$event_type == 2),
+  sum(df$event_type == 0)
+))
+```
+
+```{r}
+#| label: r-concrete
+#| eval: !expr "requireNamespace('concrete', quietly=TRUE) && reticulate::py_available()"
+#| cache: true
+
+result <- tryCatch(
+  run_concrete_bridge(df, horizon = 1.0, verbose = FALSE),
+  error = function(e) {
+    message("concrete failed: ", conditionMessage(e))
+    NULL
+  }
+)
+
+if (!is.null(result) && result$converged) {
+  cat(sprintf(
+    "concrete RMST ATE: %.4f  SE: %.4f  95%% CI: [%.4f, %.4f]\n",
+    result$ATE, result$SE, result$CI_lower, result$CI_upper
+  ))
+} else {
+  cat("concrete not available or did not converge — see Python results above.\n")
+}
+```
+
+---
+
+## Lessons
+
+1. **Censoring bias is monotone and predictable.** MAR censoring (independent of outcome) leaves KM and Cox unbiased. MNAR censoring breaks everything except IPCW-adjusted estimators.
+
+2. **The collider trap has no simple fix.** Omitting L1 biases toward the null; including it biases away. LTMLE is the only escape — but it requires knowing L1 is a post-treatment variable, not a baseline covariate.
+
+3. **Doubly robust ≠ correct.** AIPW and TMLE are consistent if *either* the outcome model or the propensity model is correct. Under strong unmeasured confounding, neither is — and coverage collapses.
+
+4. **Direct RMST targeting (concrete) eliminates discretisation bias.** Pointwise estimators accumulate $O(1/K)$ bias at $K$ time points. Direct RMST targeting removes it entirely. McCoy's `concrete` implements this for competing risks.
+
+---
+
+## Reproducing results
+
+```bash
+# Install
+pip install -e ".[storage]"       # adds pyarrow
+pip install -e ".[r]"             # adds rpy2 (requires R installed)
+
+# Quick run (50 sims, ~2 min)
+python -m causal_bench --scenario edwards_realistic --n-sims 50
+
+# Full experiments
+python experiments/exp1_censoring.py --n-sims 200
+python experiments/exp5_collider.py  --n-sims 200
+python experiments/exp7_edwards.py   --n-sims 200
+python experiments/exp8_mccoy.py     --n-sims 200   # concrete results need R
+
+# Render this notebook (requires quarto)
+quarto render index.qmd
+```
+
+### R setup (for concrete cells)
+
+```r
+install.packages("remotes")
+remotes::install_github("nt-williams/concrete")  # McCoy's package
+install.packages(c("reticulate", "data.table"))
+```

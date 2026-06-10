@@ -22,7 +22,8 @@ dependencies = [
 dev = ["pytest>=7", "pytest-cov"]
 r = ["rpy2>=3.5"]
 storage = ["pyarrow>=12"]
-all = ["rpy2>=3.5", "pyarrow>=12"]
+notebook = ["Pillow>=10"]
+all = ["rpy2>=3.5", "pyarrow>=12", "Pillow>=10"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,0 +1,31 @@
+project:
+  type: book
+  output-dir: docs/site
+
+book:
+  title: "causal_bench"
+  subtitle: "Monte Carlo benchmarking of causal estimators for clinical trials"
+  author: "Noah Rahman"
+  date: today
+  chapters:
+    - index.qmd
+
+format:
+  html:
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    fig-width: 9
+    fig-height: 5
+
+execute:
+  freeze: auto        # re-run only when source changes
+  cache: true         # cache cell outputs
+  warning: false
+  message: false
+
+# Python via reticulate for mixed cells; each language runs in its own session
+jupyter: python3
