@@ -87,7 +87,7 @@ True effects computed by g-computation on n=50,000 reference population with sha
 
 ```r
 # Install concrete (McCoy's package, actively developed)
-remotes::install_github("nt-williams/concrete")
+remotes::install_github("imbroglio-dc/concrete")
 install.packages(c("reticulate", "data.table"))
 
 # Use from RStudio — calls Python generate_data() directly via reticulate
