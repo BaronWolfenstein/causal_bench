@@ -159,11 +159,126 @@ run_concrete_bridge <- function(df,
 
 
 ## ---------------------------------------------------------------------------
+## run_concrete_sensitivity
+##
+## Wraps concrete::senseCensoring(): a 1-D delta-shift MAR sensitivity
+## analysis. At each delta, a fraction delta of the censored patients are
+## assumed to be counterfactual events, and the doubly-robust TMLE
+## risk-difference is re-estimated under that assumption.
+##
+## Because the same CensoringTV / formatArguments call is used here as in
+## run_concrete_bridge(), L1 (when present) already conditions the IPCW
+## before the delta-shift is applied — the baseline is the L1-corrected
+## estimate, not the naive IPCW estimate.
+##
+## Parameters
+##   df        same data.frame as run_concrete_bridge expects
+##   horizon   target time
+##   deltas    numeric vector of delta values in [0, 1] (default 0..0.20)
+##   covars    outcome covariate column names (L1 is excluded; goes to CensoringTV)
+##   verbose   passed through to concrete
+##
+## Returns a data.frame with columns:
+##   delta, estimate, se, ci_lower, ci_upper
+## ---------------------------------------------------------------------------
+run_concrete_sensitivity <- function(df,
+                                     horizon  = 1.0,
+                                     deltas   = c(0, 0.05, 0.10, 0.15, 0.20),
+                                     covars   = c("W1", "W2", "W3", "W4"),
+                                     verbose  = FALSE) {
+
+  stopifnot(is.data.frame(df))
+  stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
+  stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
+  stopifnot(is.numeric(deltas), all(deltas >= 0), all(deltas <= 1))
+
+  ## Build data.table + id + CensoringTV (identical logic to run_concrete_bridge)
+  dt <- as.data.table(df)
+  dt[, id         := .I]
+  dt[, event_type := as.integer(event_type)]
+  dt[, A          := as.integer(A)]
+
+  ctv <- NULL
+  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
+    obs_idx <- !is.na(dt[["L1"]])
+    ctv <- data.table(id   = dt$id[obs_idx],
+                      time = 0.5,
+                      L1   = dt[["L1"]][obs_idx])
+  }
+
+  args <- tryCatch(
+    concrete::formatArguments(
+      DataTable   = dt,
+      EventTime   = "T_obs",
+      EventType   = "event_type",
+      Treatment   = "A",
+      ID          = "id",
+      Intervention = list(`1` = 1L, `0` = 0L),
+      TargetTime  = horizon,
+      TargetEvent = 1L,
+      Covariates  = covars,
+      CVArg       = list(V = 5L),
+      CensoringTV = ctv,
+      Verbose     = verbose
+    ),
+    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
+  )
+
+  sens_raw <- tryCatch(
+    concrete::senseCensoring(args, deltas = deltas, Estimand = "RD"),
+    error = function(e) stop("concrete::senseCensoring failed: ", conditionMessage(e))
+  )
+
+  ## Normalize to a stable data.frame regardless of concrete version.
+  ## Try column-name patterns for delta, point estimate, SE, CI bounds.
+  if (!(is.data.frame(sens_raw) || is.data.table(sens_raw))) {
+    stop("senseCensoring returned unrecognised format (not a data.frame)")
+  }
+  dt_s <- as.data.frame(sens_raw)
+  cn   <- names(dt_s)
+
+  .pick <- function(patterns) {
+    for (p in patterns) {
+      m <- grep(p, cn, value = TRUE, ignore.case = TRUE)
+      if (length(m)) return(m[1])
+    }
+    NA_character_
+  }
+
+  delta_col  <- .pick(c("delta", "Delta", "shift"))
+  pt_col     <- .pick(c("Pt.Est", "Pt Est", "Estimate", "point", "coef"))
+  se_col     <- .pick(c("^SE$", "StdErr", "Std.Err", "\\.SE$"))
+  ci_lo_col  <- .pick(c("CI.Low", "CI Low", "lower", "\\.lo$", "lwr"))
+  ci_hi_col  <- .pick(c("CI.Hi",  "CI Hi",  "upper", "\\.hi$", "upr"))
+
+  out <- data.frame(
+    delta    = if (!is.na(delta_col))  as.numeric(dt_s[[delta_col]])  else deltas,
+    estimate = if (!is.na(pt_col))     as.numeric(dt_s[[pt_col]])     else NA_real_,
+    se       = if (!is.na(se_col))     as.numeric(dt_s[[se_col]])     else NA_real_,
+    ci_lower = if (!is.na(ci_lo_col))  as.numeric(dt_s[[ci_lo_col]])  else NA_real_,
+    ci_upper = if (!is.na(ci_hi_col))  as.numeric(dt_s[[ci_hi_col]])  else NA_real_
+  )
+
+  ## Fill gaps: derive SE from CI or CI from SE
+  missing_se  <- is.na(out$se)
+  missing_ci  <- is.na(out$ci_lower)
+  if (any(missing_se)  && !any(missing_ci))
+    out$se[missing_se] <- (out$ci_upper[missing_se] - out$ci_lower[missing_se]) / (2 * 1.96)
+  if (any(missing_ci)  && !any(missing_se)) {
+    out$ci_lower[missing_ci] <- out$estimate[missing_ci] - 1.96 * out$se[missing_ci]
+    out$ci_upper[missing_ci] <- out$estimate[missing_ci] + 1.96 * out$se[missing_ci]
+  }
+
+  out
+}
+
+
+## ---------------------------------------------------------------------------
 ## Minimal smoke test — run when this file is sourced directly
 ## (not when loaded by rpy2, which sets CONCRETE_BRIDGE_SOURCED)
 ## ---------------------------------------------------------------------------
 if (!exists("CONCRETE_BRIDGE_SOURCED")) {
   if (interactive() && requireNamespace("concrete", quietly = TRUE)) {
-    message("concrete_bridge.R loaded. Call run_concrete_bridge(df, horizon).")
+    message("concrete_bridge.R loaded. Call run_concrete_bridge(df, horizon) or run_concrete_sensitivity(df, horizon, deltas).")
   }
 }

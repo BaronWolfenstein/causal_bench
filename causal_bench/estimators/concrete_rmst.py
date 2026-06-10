@@ -84,6 +84,64 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def concrete_sensitivity(
+    df: pd.DataFrame,
+    horizon: float = 1.0,
+    deltas: list[float] | None = None,
+) -> pd.DataFrame:
+    """Run concrete::senseCensoring() and return a tidy DataFrame.
+
+    A 1-D delta-shift MAR sensitivity analysis using concrete's doubly-robust
+    TMLE as the estimator. At each delta, a fraction delta of the censored
+    patients are counterfactually treated as events and the risk difference
+    is re-estimated. Because L1 is forwarded to CensoringTV, the baseline
+    (delta=0) already uses the L1-corrected IPCW.
+
+    Parameters
+    ----------
+    df      : causal_bench DataFrame (must have L1 for CensoringTV to activate).
+    horizon : study horizon.
+    deltas  : fractions of censored patients assumed to be events.
+              Default: [0.0, 0.05, 0.10, 0.15, 0.20].
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+        delta, estimate, se, ci_lower, ci_upper
+
+    Raises
+    ------
+    RuntimeError if concrete R package is not available.
+    """
+    if deltas is None:
+        deltas = [0.0, 0.05, 0.10, 0.15, 0.20]
+
+    if not _concrete_available():
+        raise RuntimeError(
+            "concrete R package not available — cannot run sensitivity analysis. "
+            "Install with: remotes::install_github('blind-contours/concrete')"
+        )
+
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+
+    pandas2ri.activate()
+    ro.r["source"](str(_R_BRIDGE))
+    run_sens = ro.globalenv["run_concrete_sensitivity"]
+
+    df_r = df.copy()
+    df_r["event_type"] = df_r["Delta"].astype(int)
+    df_r = prepare_for_r(df_r)
+    r_df     = pandas2ri.py2rpy(df_r)
+    r_deltas = ro.FloatVector(deltas)
+
+    try:
+        result_r = run_sens(r_df, float(horizon), r_deltas)
+        return pandas2ri.rpy2py(result_r).reset_index(drop=True)
+    except Exception as exc:
+        raise RuntimeError(f"concrete sensitivity analysis failed: {exc}") from exc
+
+
 class ConcreteRMSTEstimator(BaseEstimator):
     """RMST estimator via McCoy's concrete R package.
 

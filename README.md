@@ -145,6 +145,8 @@ All three methods bootstrap the IC values rather than re-fitting: each resample 
 | `plot_tipping_point(results)` | How much additive bias would explain away each estimate |
 | `plot_ess_distribution(dgp_config)` | IPW ESS histogram across simulation draws |
 | `tipping_point_mnar(df, estimator, horizon)` | MNAR sensitivity grid + heatmap (imputes censored outcomes) |
+| `tipping_point_concrete(df, horizon, deltas)` | concrete::senseCensoring() delta-shift MAR sensitivity (requires R + concrete) |
+| `plot_tipping_point_concrete(tipping_df)` | Line + CI ribbon of RD vs δ; marks tipping delta where CI crosses 0 |
 
 CLI flags activate diagnostics automatically after a run:
 
@@ -163,6 +165,7 @@ from causal_bench.diagnostics import (
     tipping_point_table, plot_tipping_point,
     ess_across_sims, plot_ess_distribution,
     tipping_point_mnar, plot_tipping_point_mnar,
+    tipping_point_concrete, plot_tipping_point_concrete,
 )
 
 df = generate_data(cfg)
@@ -179,6 +182,13 @@ df  = generate_data(cfg)
 r   = tipping_point_mnar(df, "km", horizon=cfg.horizon, n_grid=15)
 plot_tipping_point_mnar(r, save_path="tipping_mnar.png")
 r.to_parquet("tipping_mnar.parquet")  # attrs (MAR reference) survive the roundtrip
+
+# concrete MAR sensitivity (requires R + blind-contours/concrete)
+# L1 is already forwarded to CensoringTV, so the baseline (δ=0) uses
+# L1-corrected IPCW; the delta-shift asks how robust that correction is.
+r2  = tipping_point_concrete(df, horizon=cfg.horizon, deltas=[0, 0.05, 0.10, 0.15, 0.20])
+plot_tipping_point_concrete(r2, save_path="tipping_concrete.png")
+print(f"Tipping delta: {r2.attrs['tipping_delta']:.2f}")
 ```
 
 ## Result persistence
@@ -212,6 +222,7 @@ python -m causal_bench [OPTIONS]
   --mnar-tipping-point  MNAR sensitivity grid (skipped if censoring_informativeness=0)
   --mnar-estimator      Estimator for MNAR grid (default: km)
   --mnar-grid           Grid points per axis (default: 10, runs = n²)
+  --concrete-sensitivity  concrete::senseCensoring() delta-shift analysis (requires R)
 ```
 
 ## References

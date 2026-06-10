@@ -529,6 +529,70 @@ def tipping_point_mnar(
     return result_df
 
 
+def tipping_point_concrete(
+    df: pd.DataFrame,
+    horizon: float,
+    deltas: Optional[list[float]] = None,
+) -> pd.DataFrame:
+    """MAR sensitivity analysis via concrete::senseCensoring() with CensoringTV.
+
+    Uses concrete's doubly-robust TMLE as the estimator (rather than a
+    simpler Python estimator). L1 (when present) is forwarded to the
+    censoring model via CensoringTV, so the baseline IPCW at delta=0 is
+    already conditioned on the time-varying confounder.
+
+    Complements tipping_point_mnar() — which sweeps a 2-D grid over
+    independent per-arm imputation probabilities — with a principled 1-D
+    delta-shift: what fraction of censored patients would need to be
+    counterfactual events to overturn the conclusion?
+
+    Parameters
+    ----------
+    df      : causal_bench DataFrame (with L1 for CensoringTV activation).
+    horizon : study horizon passed to concrete.
+    deltas  : fractions swept (default [0.0, 0.05, 0.10, 0.15, 0.20]).
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+        delta, estimate, se, ci_lower, ci_upper, significant
+    Attributes:
+        .attrs["tipping_delta"]  — smallest delta where CI first crosses 0
+                                   (NaN if the effect holds across all deltas)
+        .attrs["mar_estimate"]   — point estimate at delta = 0
+
+    Raises
+    ------
+    RuntimeError if concrete R package is not available.
+    """
+    from causal_bench.estimators.concrete_rmst import concrete_sensitivity
+
+    if deltas is None:
+        deltas = [0.0, 0.05, 0.10, 0.15, 0.20]
+
+    result = concrete_sensitivity(df, horizon=horizon, deltas=deltas)
+
+    # Ensure expected columns exist; fill CI from SE if needed
+    if "ci_lower" not in result.columns and "se" in result.columns:
+        result["ci_lower"] = result["estimate"] - 1.96 * result["se"]
+        result["ci_upper"] = result["estimate"] + 1.96 * result["se"]
+
+    result["significant"] = ~(
+        (result["ci_lower"] <= 0) & (0 <= result["ci_upper"])
+    )
+
+    # Find tipping delta: first delta where CI crosses 0
+    crossing = result.loc[~result["significant"], "delta"]
+    tipping  = float(crossing.iloc[0]) if len(crossing) else float("nan")
+
+    mar_row  = result.loc[result["delta"] == min(deltas, key=lambda d: abs(d))]
+    mar_est  = float(mar_row["estimate"].iloc[0]) if len(mar_row) else float("nan")
+
+    result.attrs["tipping_delta"] = tipping
+    result.attrs["mar_estimate"]  = mar_est
+    return result
+
+
 def plot_tipping_point_mnar(
     tipping_df: pd.DataFrame,
     alpha: float = 0.05,
@@ -576,6 +640,78 @@ def plot_tipping_point_mnar(
     ax.set_xlabel("Assumed event prob -- censored control (p_control)")
     ax.set_ylabel("Assumed event prob -- censored treated (p_treated)")
     ax.set_title(title or "MNAR tipping-point sensitivity\n(dashed = CI crosses zero)")
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_tipping_point_concrete(
+    tipping_df: pd.DataFrame,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """Line + CI ribbon: concrete::senseCensoring() delta-shift sensitivity.
+
+    x-axis: delta (fraction of censored patients counterfactually treated
+            as events)
+    y-axis: doubly-robust TMLE risk-difference estimate + 95% CI ribbon
+    Vertical dashed line: tipping delta (first delta where CI crosses 0)
+    Horizontal reference: y = 0
+
+    Parameters
+    ----------
+    tipping_df : output of tipping_point_concrete()
+    title      : optional plot title override
+    save_path  : if given, saves figure to this path at 150 dpi
+    """
+    df = tipping_df.copy().sort_values("delta")
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+
+    # CI ribbon
+    ax.fill_between(
+        df["delta"], df["ci_lower"], df["ci_upper"],
+        alpha=0.20, color="#3182BD", label="95% CI"
+    )
+    # Point estimate line
+    ax.plot(df["delta"], df["estimate"], color="#3182BD", linewidth=2,
+            label="concrete TMLE (RD)")
+    # y = 0 reference
+    ax.axhline(0, color="#444", linewidth=0.8, linestyle="--")
+
+    # Tipping delta
+    tipping = tipping_df.attrs.get("tipping_delta", float("nan"))
+    if np.isfinite(tipping):
+        ax.axvline(tipping, color="#E34A33", linewidth=1.5, linestyle=":",
+                   label=f"Tipping δ = {tipping:.2f}")
+    else:
+        ax.text(
+            0.97, 0.05,
+            "Effect holds across all δ",
+            transform=ax.transAxes, ha="right", va="bottom",
+            fontsize=8, color="#31A354",
+        )
+
+    # MAR estimate annotation
+    mar_est = tipping_df.attrs.get("mar_estimate", float("nan"))
+    if np.isfinite(mar_est):
+        ax.annotate(
+            f"MAR baseline\n(δ=0): {mar_est:.3f}",
+            xy=(0, mar_est),
+            xytext=(df["delta"].max() * 0.35, mar_est),
+            fontsize=8, color="#555",
+            arrowprops=dict(arrowstyle="->", color="#888", lw=0.8),
+        )
+
+    ax.set_xlabel("δ (fraction of censored patients assumed to be events)")
+    ax.set_ylabel("Risk difference (TMLE)")
+    ax.set_title(
+        title or "Censoring MAR sensitivity  —  concrete::senseCensoring()\n"
+                 "L1 in CensoringTV: baseline IPCW already conditioned on time-varying covariates"
+    )
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")

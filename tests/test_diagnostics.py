@@ -369,3 +369,196 @@ class TestTippingPointMNAR:
         plot_tipping_point_mnar(result, save_path=path)
         assert (tmp_path / "mnar.png").exists()
         plt.close("all")
+
+
+# ---------------------------------------------------------------------------
+# tipping_point_concrete + plot_tipping_point_concrete
+# (tests mock rpy2 / concrete so they run without R)
+# ---------------------------------------------------------------------------
+
+def _make_tipping_df(n_deltas=5, has_tipping=True):
+    """Synthetic senseCensoring output as returned by tipping_point_concrete()."""
+    deltas = np.linspace(0, 0.20, n_deltas)
+    # Estimate starts positive and crosses zero if has_tipping=True
+    estimates = 0.15 - 0.8 * deltas if has_tipping else 0.15 - 0.1 * deltas
+    se = np.full(n_deltas, 0.03)
+    df = pd.DataFrame({
+        "delta":    deltas,
+        "estimate": estimates,
+        "se":       se,
+        "ci_lower": estimates - 1.96 * se,
+        "ci_upper": estimates + 1.96 * se,
+    })
+    # tipping_point_concrete() sets .attrs; simulate that here
+    tipping = float(deltas[np.where(estimates < 0)[0][0]]) if has_tipping and any(estimates < 0) else float("nan")
+    df.attrs["tipping_delta"] = tipping
+    df.attrs["mar_estimate"]  = float(estimates[0])
+    return df
+
+
+class TestTippingPointConcrete:
+
+    def _mock_sensitivity(self, monkeypatch, df_result):
+        """Monkeypatch concrete_sensitivity so it returns df_result without R."""
+        import causal_bench.diagnostics as diag_module
+        monkeypatch.setattr(
+            diag_module,
+            "_concrete_sensitivity_fn",
+            lambda *a, **kw: df_result,
+            raising=False,
+        )
+
+    def test_returns_dataframe(self, monkeypatch):
+        """tipping_point_concrete() returns a DataFrame with expected columns."""
+        import causal_bench.diagnostics as diag_module
+        sens_df = pd.DataFrame({
+            "delta":    [0.0, 0.05, 0.10, 0.15, 0.20],
+            "estimate": [0.15, 0.12, 0.06, -0.01, -0.05],
+            "se":       [0.03] * 5,
+            "ci_lower": [0.09, 0.06, 0.00, -0.07, -0.11],
+            "ci_upper": [0.21, 0.18, 0.12, 0.05, 0.01],
+        })
+
+        from causal_bench.estimators import concrete_rmst as rmst_module
+        monkeypatch.setattr(rmst_module, "_concrete_available", lambda: True)
+        monkeypatch.setattr(rmst_module, "concrete_sensitivity", lambda *a, **kw: sens_df)
+
+        from causal_bench.diagnostics import tipping_point_concrete
+        df = _make_df(n=100)
+        result = tipping_point_concrete(df, horizon=1.0,
+                                        deltas=[0.0, 0.05, 0.10, 0.15, 0.20])
+        assert isinstance(result, pd.DataFrame)
+        for col in ("delta", "estimate", "se", "ci_lower", "ci_upper"):
+            assert col in result.columns, f"missing column: {col}"
+
+    def test_significant_column_added(self, monkeypatch):
+        """tipping_point_concrete() must add a 'significant' boolean column."""
+        import causal_bench.estimators.concrete_rmst as rmst_module
+        sens_df = pd.DataFrame({
+            "delta":    [0.0, 0.05, 0.10],
+            "estimate": [0.12, 0.05, -0.02],
+            "se":       [0.03, 0.03, 0.03],
+            "ci_lower": [0.06, -0.01, -0.08],
+            "ci_upper": [0.18, 0.11, 0.04],
+        })
+        monkeypatch.setattr(rmst_module, "_concrete_available", lambda: True)
+        monkeypatch.setattr(rmst_module, "concrete_sensitivity", lambda *a, **kw: sens_df)
+
+        from causal_bench.diagnostics import tipping_point_concrete
+        result = tipping_point_concrete(_make_df(n=100), horizon=1.0)
+        assert "significant" in result.columns
+
+    def test_tipping_delta_attr(self, monkeypatch):
+        """tipping_delta attribute is the first delta where the CI crosses zero."""
+        import causal_bench.estimators.concrete_rmst as rmst_module
+        sens_df = pd.DataFrame({
+            "delta":    [0.0, 0.05, 0.10, 0.15, 0.20],
+            "estimate": [0.15, 0.12, 0.06, -0.01, -0.05],
+            "se":       [0.03] * 5,
+            "ci_lower": [0.09, 0.06, 0.00, -0.07, -0.11],
+            "ci_upper": [0.21, 0.18, 0.12, 0.05, 0.01],
+        })
+        monkeypatch.setattr(rmst_module, "_concrete_available", lambda: True)
+        monkeypatch.setattr(rmst_module, "concrete_sensitivity", lambda *a, **kw: sens_df)
+
+        from causal_bench.diagnostics import tipping_point_concrete
+        result = tipping_point_concrete(_make_df(n=100), horizon=1.0)
+        tipping = result.attrs["tipping_delta"]
+        # First row where ci_lower <= 0 is delta=0.10
+        assert abs(tipping - 0.10) < 1e-9, f"expected 0.10, got {tipping}"
+
+    def test_no_tipping_is_nan(self, monkeypatch):
+        """tipping_delta is NaN when the CI never crosses zero."""
+        import causal_bench.estimators.concrete_rmst as rmst_module
+        sens_df = pd.DataFrame({
+            "delta":    [0.0, 0.05, 0.10, 0.15, 0.20],
+            "estimate": [0.15, 0.14, 0.13, 0.12, 0.11],
+            "se":       [0.03] * 5,
+            "ci_lower": [0.09, 0.08, 0.07, 0.06, 0.05],
+            "ci_upper": [0.21, 0.20, 0.19, 0.18, 0.17],
+        })
+        monkeypatch.setattr(rmst_module, "_concrete_available", lambda: True)
+        monkeypatch.setattr(rmst_module, "concrete_sensitivity", lambda *a, **kw: sens_df)
+
+        from causal_bench.diagnostics import tipping_point_concrete
+        result = tipping_point_concrete(_make_df(n=100), horizon=1.0)
+        assert np.isnan(result.attrs["tipping_delta"])
+
+    def test_mar_estimate_attr(self, monkeypatch):
+        """mar_estimate attribute is the estimate at delta=0."""
+        import causal_bench.estimators.concrete_rmst as rmst_module
+        sens_df = pd.DataFrame({
+            "delta":    [0.0, 0.10, 0.20],
+            "estimate": [0.20, 0.10, 0.00],
+            "se":       [0.04, 0.04, 0.04],
+            "ci_lower": [0.12, 0.02, -0.08],
+            "ci_upper": [0.28, 0.18, 0.08],
+        })
+        monkeypatch.setattr(rmst_module, "_concrete_available", lambda: True)
+        monkeypatch.setattr(rmst_module, "concrete_sensitivity", lambda *a, **kw: sens_df)
+
+        from causal_bench.diagnostics import tipping_point_concrete
+        result = tipping_point_concrete(_make_df(n=100), horizon=1.0)
+        assert abs(result.attrs["mar_estimate"] - 0.20) < 1e-9
+
+    def test_raises_when_concrete_unavailable(self, monkeypatch):
+        """tipping_point_concrete() raises RuntimeError when R not available."""
+        import causal_bench.estimators.concrete_rmst as rmst_module
+        monkeypatch.setattr(rmst_module, "_concrete_available", lambda: False)
+
+        from causal_bench.diagnostics import tipping_point_concrete
+        with pytest.raises(RuntimeError, match="concrete"):
+            tipping_point_concrete(_make_df(n=100), horizon=1.0)
+
+
+class TestPlotTippingPointConcrete:
+
+    def test_returns_figure(self):
+        """plot_tipping_point_concrete() returns a matplotlib Figure."""
+        import matplotlib.pyplot as plt
+        from causal_bench.diagnostics import plot_tipping_point_concrete
+        df = _make_tipping_df(has_tipping=True)
+        fig = plot_tipping_point_concrete(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_no_tipping_no_vline(self):
+        """When tipping_delta is NaN, no vertical tipping line is drawn but
+        the plot still renders without error."""
+        import matplotlib.pyplot as plt
+        from causal_bench.diagnostics import plot_tipping_point_concrete
+        df = _make_tipping_df(has_tipping=False)
+        fig = plot_tipping_point_concrete(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_custom_title(self):
+        """Title override is applied."""
+        import matplotlib.pyplot as plt
+        from causal_bench.diagnostics import plot_tipping_point_concrete
+        df = _make_tipping_df()
+        fig = plot_tipping_point_concrete(df, title="My custom title")
+        ax = fig.axes[0]
+        assert "My custom title" in ax.get_title()
+        plt.close(fig)
+
+    def test_saves_file(self, tmp_path):
+        """save_path writes a PNG to disk."""
+        import matplotlib.pyplot as plt
+        from causal_bench.diagnostics import plot_tipping_point_concrete
+        df = _make_tipping_df()
+        path = str(tmp_path / "concrete_tipping.png")
+        plot_tipping_point_concrete(df, save_path=path)
+        assert (tmp_path / "concrete_tipping.png").exists()
+        plt.close("all")
+
+    def test_x_axis_label(self):
+        """x-axis label contains 'delta' or 'δ' (the delta-shift parameter)."""
+        import matplotlib.pyplot as plt
+        from causal_bench.diagnostics import plot_tipping_point_concrete
+        df = _make_tipping_df()
+        fig = plot_tipping_point_concrete(df)
+        ax = fig.axes[0]
+        xlabel = ax.get_xlabel().lower()
+        assert "delta" in xlabel or "δ" in xlabel, f"unexpected x label: {xlabel}"
+        plt.close(fig)
