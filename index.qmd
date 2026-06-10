@@ -31,6 +31,13 @@ from causal_bench.dgp.survival import generate_data, compute_true_effects
 from causal_bench.dgp.scenarios import get_scenario, list_scenarios
 from causal_bench.estimators import ESTIMATOR_REGISTRY, MVP_ESTIMATORS
 from causal_bench.metrics import SimResult
+from causal_bench.diagnostics import (
+    plot_overlap, plot_love,
+    se_calibration_table, plot_se_calibration,
+    tipping_point_table, plot_tipping_point,
+    ess_across_sims, plot_ess_distribution,
+    tipping_point_mnar, plot_tipping_point_mnar,
+)
 from pathlib import Path
 
 RESULTS_DIR = Path("results")
@@ -146,6 +153,8 @@ rows = [
     ("tmle_ipcw",       "TMLE + IPCW",                         "Q + g + G",  "Yes",  "No"),
     ("tmle_ipcw_comply","TMLE + IPCW + compliance",            "Q + g + G",  "Yes",  "No"),
     ("ltmle",           "LTMLE (marginalises over L1)",        "Q + g + G",  "Yes",  "No"),
+    ("rmst_k2",         "Pointwise RMST (K=2 grid points)",    "Q + g + G",  "Yes",  "Bias O(1/K)"),
+    ("rmst_k20",        "Pointwise RMST (K=20 grid points)",   "Q + g + G",  "Yes",  "Near-exact"),
     ("concrete_RMST",   "concrete direct RMST targeting",      "Q + g + G",  "Yes",  "Requires R"),
 ]
 pd.DataFrame(rows, columns=[
@@ -353,6 +362,131 @@ if (!is.null(result) && result$converged) {
 
 ---
 
+## Diagnostics {#sec-diagnostics}
+
+Before trusting simulation results, three questions are worth asking: Is the propensity model well-identified? Are covariates balanced? Are the reported standard errors believable?
+
+### Propensity overlap and covariate balance
+
+```{python}
+#| label: fig-overlap
+#| fig-cap: "Propensity score overlap — Edwards realistic scenario"
+
+cfg_diag = get_scenario("edwards_realistic")
+df_diag  = generate_data(cfg_diag)
+fig = plot_overlap(df_diag)
+plt.show()
+```
+
+```{python}
+#| label: fig-love
+#| fig-cap: "Love plot: |SMD| before and after IPW weighting"
+
+fig = plot_love(df_diag)
+plt.show()
+```
+
+The Love plot shows whether IPW adjustment successfully balances covariates. Values above the dashed 0.1 threshold after weighting indicate residual imbalance — a sign the propensity model may be misspecified or positivity is violated.
+
+### SE calibration
+
+After running simulations, we can check whether each estimator's reported standard errors match the Monte Carlo variance.
+
+```{python}
+#| label: fig-se-calibration
+#| fig-cap: "SE calibration: median reported SE vs empirical SE (Exp 7 results)"
+
+parquet_dir_exp7 = RESULTS_DIR / "exp7_edwards" / "parquet"
+loaded_exp7 = {}
+if parquet_dir_exp7.exists():
+    for f in sorted(parquet_dir_exp7.glob("*.parquet")):
+        try:
+            loaded_exp7[f.stem] = SimResult.from_parquet(f)
+        except Exception:
+            pass
+
+if loaded_exp7:
+    fig = plot_se_calibration(loaded_exp7)
+    plt.show()
+    print(se_calibration_table(loaded_exp7).to_string())
+else:
+    print("Run Exp 7 first: python experiments/exp7_edwards.py --n-sims 50")
+```
+
+Points on the y=x line are perfectly calibrated. Above the line = conservative (wider CIs than needed); below = anti-conservative (CIs too narrow, coverage will be below nominal).
+
+### Tipping-point sensitivity
+
+How much systematic bias would be needed to explain away the Exp 7 results?
+
+```{python}
+#| label: fig-tipping
+#| fig-cap: "Tipping-point sensitivity — additive bias to shift estimate to null"
+
+if loaded_exp7:
+    fig = plot_tipping_point(loaded_exp7)
+    plt.show()
+    print(tipping_point_table(loaded_exp7).to_string())
+else:
+    print("Run Exp 7 first.")
+```
+
+Longer bars = more robust findings. The SE-unit annotation tells you how many standard errors the estimate sits from the null — a tipping-point of <2 SE is fragile; >4 SE is robust.
+
+### ESS distribution
+
+How much does propensity weighting shrink the effective sample size across simulation draws?
+
+```{python}
+#| label: fig-ess
+#| fig-cap: "IPW effective sample size distribution — Edwards realistic vs pessimistic"
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+for ax, scenario, title in [
+    (axes[0], "edwards_realistic",   "Realistic (positivity=1.5)"),
+    (axes[1], "edwards_pessimistic", "Pessimistic (positivity=2.5)"),
+]:
+    cfg_s = get_scenario(scenario)
+    summary = ess_across_sims(cfg_s, n_draws=30, seed=0)
+    ax.hist(summary["ess_values"], bins=15, color="#3182BD", alpha=0.7, edgecolor="white")
+    ax.axvline(summary["median_ess"], color="#E34A33", linewidth=1.5,
+               label=f"Median {summary['median_ess']:.0f} ({summary['ess_pct']:.0f}% of n)")
+    ax.axvline(cfg_s.n, color="#31A354", linewidth=1, linestyle="--",
+               label=f"Nominal n={cfg_s.n}")
+    ax.set_title(title)
+    ax.set_xlabel("ESS")
+    ax.legend(fontsize=8)
+fig.suptitle("ESS distribution across 30 simulation draws")
+fig.tight_layout()
+plt.show()
+```
+
+The ESS drop between realistic and pessimistic scenarios shows why IPW degrades: extreme propensity scores inflate weights, and effective information shrinks well below the nominal sample size.
+
+### MNAR tipping-point
+
+The IPCW adjustment assumes censoring is at most MAR (explainable by observed covariates). How badly would that assumption need to be violated to flip the conclusion?
+
+```{python}
+#| label: fig-mnar
+#| fig-cap: "MNAR tipping-point heatmap — Edwards realistic scenario (KM estimator)"
+
+cfg_mnar = get_scenario("edwards_realistic")
+df_mnar  = generate_data(cfg_mnar)
+r_mnar   = tipping_point_mnar(df_mnar, "km", horizon=cfg_mnar.horizon, n_grid=15, seed=42)
+fig = plot_tipping_point_mnar(
+    r_mnar,
+    title=(f"MNAR sensitivity — Edwards realistic\n"
+           f"({r_mnar['n_censored_treated'].iloc[0]} censored treated, "
+           f"{r_mnar['n_censored_control'].iloc[0]} censored control)")
+)
+plt.show()
+```
+
+The dashed contour is the tipping point — the boundary where the 95% CI crosses zero. The star marks the MAR reference: the event rate we'd expect for censored patients if they were like the observed patients. If the tipping-point contour is far from the star, the result is robust to informative dropout. If it's close, the conclusion depends heavily on the MAR assumption.
+
+---
+
 ## Lessons
 
 1. **Censoring bias is monotone and predictable.** MAR censoring (independent of outcome) leaves KM and Cox unbiased. MNAR censoring breaks everything except IPCW-adjusted estimators.
@@ -363,6 +497,8 @@ if (!is.null(result) && result$converged) {
 
 4. **Direct RMST targeting (concrete) eliminates discretisation bias.** Pointwise estimators accumulate $O(1/K)$ bias at $K$ time points. Direct RMST targeting removes it entirely. McCoy's `concrete` implements this for competing risks.
 
+5. **Diagnostics are not optional.** ESS below 50% of nominal signals that IPW results are unreliable. SE ratios far from 1 mean coverage will not be nominal. The MNAR tipping-point tells you whether your conclusion survives realistic departures from the missing-at-random assumption. A result that disappears under a small, clinically plausible deviation is not a result worth reporting.
+
 ---
 
 ## Reproducing results
@@ -372,8 +508,9 @@ if (!is.null(result) && result$converged) {
 pip install -e ".[storage]"       # adds pyarrow
 pip install -e ".[r]"             # adds rpy2 (requires R installed)
 
-# Quick run (50 sims, ~2 min)
-python -m causal_bench --scenario edwards_realistic --n-sims 50
+# Quick run (50 sims, ~2 min) with full diagnostics
+python -m causal_bench --scenario edwards_realistic --n-sims 50 \
+    --diagnostics --tipping-point --ess
 
 # Full experiments
 python experiments/exp1_censoring.py --n-sims 200
