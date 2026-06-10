@@ -7,19 +7,23 @@ from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier
 from sklearn.base import clone
 
 
-def _default_classifiers():
+def _default_classifiers(random_state=None):
     return [
         LogisticRegression(max_iter=1000, C=1.0),
-        RandomForestClassifier(n_estimators=100, min_samples_leaf=5),
-        GradientBoostingClassifier(n_estimators=100, max_depth=3),
+        RandomForestClassifier(n_estimators=100, min_samples_leaf=5,
+                               random_state=random_state),
+        GradientBoostingClassifier(n_estimators=100, max_depth=3,
+                                   random_state=random_state),
     ]
 
 
-def _default_regressors():
+def _default_regressors(random_state=None):
     return [
         RidgeCV(),
-        RandomForestRegressor(n_estimators=100, min_samples_leaf=5),
-        GradientBoostingRegressor(n_estimators=100, max_depth=3),
+        RandomForestRegressor(n_estimators=100, min_samples_leaf=5,
+                              random_state=random_state),
+        GradientBoostingRegressor(n_estimators=100, max_depth=3,
+                                  random_state=random_state),
     ]
 
 
@@ -37,8 +41,8 @@ class SuperLearner:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
         candidates = self.candidates or (
-            _default_classifiers() if self.task == "classification"
-            else _default_regressors()
+            _default_classifiers(self.random_state) if self.task == "classification"
+            else _default_regressors(self.random_state)
         )
         n, k = len(y), len(candidates)
         oof = np.zeros((n, k))
