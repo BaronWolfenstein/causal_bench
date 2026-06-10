@@ -1,0 +1,92 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "causal_bench",
+    "section": "",
+    "text": "The problem\nA clinical trial reports that the new treatment reduces 12-month event risk by 8 percentage points. You run the same data through five different estimators. You get five different answers. Three of them don’t even overlap.\nThis isn’t a software bug. It’s a fundamental property of survival data: censoring, confounding, and time-varying variables interact in ways that invalidate simple approaches. The question isn’t whether your estimator is biased — it’s how much and in which direction.\ncausal_bench makes these failure modes concrete. It generates synthetic clinical trial data under known ground truth, runs a panel of estimators, and measures who gets it right and by how much.",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#the-data-generating-process",
+    "href": "index.html#the-data-generating-process",
+    "title": "causal_bench",
+    "section": "The data-generating process",
+    "text": "The data-generating process\nEach simulated trial follows an accelerated failure time (AFT) model:\n\\[\n\\log T_i = \\underbrace{0.4 W_{1i} - 0.3 W_{2i} + 0.2 W_{3i} - 0.2 W_{4i}}_{\\text{baseline covariates}}\n           + \\underbrace{0.3 U_i}_{\\text{unmeasured}}\n           + \\underbrace{\\tau \\cdot A_i}_{\\text{treatment}}\n           + \\varepsilon_i\n\\]\nwhere \\(\\varepsilon_i \\sim \\text{Gumbel}(0,1)\\) (giving Weibull survival times), \\(U_i\\) is an unmeasured confounder, and \\(\\tau\\) is the true log-time-ratio (default \\(\\tau = -0.5\\), meaning treatment shortens survival — increases event rate).\nCensoring is drawn independently with a calibrated scale factor that hits the target censoring rate at any informativeness level.\n\n\n\n\nCode\ncfg = DGPConfig(n=500, censoring_informativeness=0.3, seed=42)\ndf  = generate_data(cfg)\n\nfig, axes = plt.subplots(1, 3, figsize=(12, 3.5))\n\n# Kaplan-Meier curves by arm\nfrom lifelines import KaplanMeierFitter\nfor ax, (arm, label, color) in zip(\n    [axes[0], axes[0]],\n    [(1, \"Treated\", \"#E34A33\"), (0, \"Control\", \"#3182BD\")]\n):\n    kmf = KaplanMeierFitter()\n    mask = df[\"A\"] == arm\n    kmf.fit(df.loc[mask, \"T_obs\"], df.loc[mask, \"Delta\"], label=label)\n    kmf.plot_survival_function(ax=axes[0], color=color, ci_show=False)\naxes[0].set_title(\"Kaplan-Meier by arm\")\naxes[0].set_xlabel(\"Time\")\naxes[0].set_ylabel(\"S(t)\")\naxes[0].legend()\n\n# Event time distribution\naxes[1].hist(df.loc[df[\"Delta\"] == 1, \"T_obs\"], bins=30,\n             color=\"#31A354\", alpha=0.7, edgecolor=\"white\")\naxes[1].set_title(\"Observed event times (uncensored)\")\naxes[1].set_xlabel(\"T_obs\")\n\n# Censoring by propensity score\nfrom causal_bench.super_learner import SuperLearner\ng_sl = SuperLearner(task=\"classification\", n_folds=3, random_state=0)\ng_sl.fit(df[[\"W1\",\"W2\",\"W3\",\"W4\"]].values, df[\"A\"].values)\ng = g_sl.predict_proba(df[[\"W1\",\"W2\",\"W3\",\"W4\"]].values)\naxes[2].scatter(g, df[\"T_obs\"], c=df[\"Delta\"].map({0:\"#999\", 1:\"#E34A33\"}),\n                alpha=0.3, s=8)\naxes[2].set_title(\"T_obs vs propensity score\")\naxes[2].set_xlabel(\"P(A=1 | W)\")\naxes[2].set_ylabel(\"T_obs\")\n\nfig.tight_layout()\nplt.show()\n\n\n\nFigure 1\n\n\n\n\nKey scenario parameters\n\n\nCode\nrows = []\nfor name in list_scenarios():\n    c = get_scenario(name)\n    rows.append({\n        \"scenario\": name,\n        \"n\": c.n,\n        \"censor_info\": c.censoring_informativeness,\n        \"censor_rate\": c.censoring_rate,\n        \"positivity\": c.positivity_severity,\n        \"collider\": c.collider_strength,\n        \"unmeasured\": c.unmeasured_confounding_strength,\n    })\npd.DataFrame(rows).set_index(\"scenario\").round(2)\n\n\n\n\nTable 1: Available scenarios and their key parameters\n\n\n\n\n\n\n\n\n\n\nn\ncensor_info\ncensor_rate\npositivity\ncollider\nunmeasured\n\n\nscenario\n\n\n\n\n\n\n\n\n\n\nclean\n500\n0.0\n0.25\n0.0\n0.0\n0.0\n\n\ncensor_mild\n500\n0.3\n0.25\n0.0\n0.0\n0.0\n\n\ncensor_moderate\n500\n0.6\n0.30\n0.0\n0.0\n0.0\n\n\ncensor_severe\n500\n1.0\n0.40\n0.0\n0.0\n0.0\n\n\npositivity_mild\n500\n0.0\n0.25\n1.0\n0.0\n0.0\n\n\npositivity_moderate\n500\n0.0\n0.25\n2.0\n0.0\n0.0\n\n\npositivity_severe\n500\n0.0\n0.25\n3.0\n0.0\n0.0\n\n\nunmeasured_mild\n500\n0.0\n0.25\n0.0\n0.0\n0.2\n\n\nunmeasured_mod\n500\n0.0\n0.25\n0.0\n0.0\n0.5\n\n\nunmeasured_strong\n500\n0.0\n0.25\n0.0\n0.0\n0.8\n\n\nedwards_realistic\n700\n0.6\n0.25\n1.5\n0.4\n0.2\n\n\nedwards_optimistic\n700\n0.3\n0.15\n0.5\n0.2\n0.1\n\n\nedwards_pessimistic\n700\n0.9\n0.40\n2.5\n0.7\n0.4\n\n\ncompeting_risks_base\n600\n0.3\n0.20\n0.0\n0.0\n0.0",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#the-estimator-hierarchy",
+    "href": "index.html#the-estimator-hierarchy",
+    "title": "causal_bench",
+    "section": "The estimator hierarchy",
+    "text": "The estimator hierarchy\n\n\nCode\nrows = [\n    (\"naive\",           \"Unadjusted mean difference\",         \"None\",       \"No\",   \"No\"),\n    (\"km\",              \"Kaplan-Meier risk difference\",        \"None\",       \"No\",   \"No\"),\n    (\"cox\",             \"Cox G-computation\",                   \"Covariates\", \"No\",   \"No\"),\n    (\"cox_l1\",          \"Cox G-computation + L1 (collider)\",   \"Covariates + L1\", \"No\", \"⚠ collider bias\"),\n    (\"ipw\",             \"Horvitz-Thompson IPW\",                \"Propensity\", \"No\",   \"No\"),\n    (\"overlap\",         \"Overlap weighting (ATO)\",             \"Propensity\", \"No\",   \"Different estimand\"),\n    (\"aipw\",            \"Augmented IPW (doubly robust)\",       \"Q + g\",      \"No\",   \"No\"),\n    (\"tmle_ipcw\",       \"TMLE + IPCW\",                         \"Q + g + G\",  \"Yes\",  \"No\"),\n    (\"tmle_ipcw_comply\",\"TMLE + IPCW + compliance\",            \"Q + g + G\",  \"Yes\",  \"No\"),\n    (\"ltmle\",           \"LTMLE (marginalises over L1)\",        \"Q + g + G\",  \"Yes\",  \"No\"),\n    (\"concrete_RMST\",   \"concrete direct RMST targeting\",      \"Q + g + G\",  \"Yes\",  \"Requires R\"),\n]\npd.DataFrame(rows, columns=[\n    \"estimator\", \"description\", \"nuisance models\", \"IPCW\", \"notes\"\n]).set_index(\"estimator\")\n\n\n\n\nTable 2: Estimators in the registry and their key properties\n\n\n\n\n\n\n\n\n\n\ndescription\nnuisance models\nIPCW\nnotes\n\n\nestimator\n\n\n\n\n\n\n\n\nnaive\nUnadjusted mean difference\nNone\nNo\nNo\n\n\nkm\nKaplan-Meier risk difference\nNone\nNo\nNo\n\n\ncox\nCox G-computation\nCovariates\nNo\nNo\n\n\ncox_l1\nCox G-computation + L1 (collider)\nCovariates + L1\nNo\n⚠ collider bias\n\n\nipw\nHorvitz-Thompson IPW\nPropensity\nNo\nNo\n\n\noverlap\nOverlap weighting (ATO)\nPropensity\nNo\nDifferent estimand\n\n\naipw\nAugmented IPW (doubly robust)\nQ + g\nNo\nNo\n\n\ntmle_ipcw\nTMLE + IPCW\nQ + g + G\nYes\nNo\n\n\ntmle_ipcw_comply\nTMLE + IPCW + compliance\nQ + g + G\nYes\nNo\n\n\nltmle\nLTMLE (marginalises over L1)\nQ + g + G\nYes\nNo\n\n\nconcrete_RMST\nconcrete direct RMST targeting\nQ + g + G\nYes\nRequires R\n\n\n\n\n\n\n\n\n\n\nThe hierarchy moves left to right in three dimensions: covariate adjustment, censoring adjustment, and targeting. Each step adds robustness at the cost of complexity. The collider trap (Cox+L1) is the cautionary tale: adding a variable can make things worse.",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#sec-exp1",
+    "href": "index.html#sec-exp1",
+    "title": "causal_bench",
+    "section": "Experiment 1: Censoring informativeness gradient",
+    "text": "Experiment 1: Censoring informativeness gradient\nThe simplest failure mode. As censoring becomes more informative (correlated with the outcome), unadjusted estimators accumulate bias. TMLE+IPCW should stay flat.\n\n\nCode\nexp1_dir = RESULTS_DIR / \"exp1_censoring\"\nif not exp1_dir.exists() or not any(exp1_dir.glob(\"panel.png\")):\n    import subprocess, sys\n    print(\"Running Exp 1 (n_sims=50, quick mode)...\")\n    subprocess.run([sys.executable, \"experiments/exp1_censoring.py\",\n                    \"--n-sims\", \"50\", \"--n-jobs\", \"-1\"], check=True)\n\n\n\n\n\n\n\n\nFigure 2: Exp 1: Estimator bias as censoring informativeness increases 0→1\n\n\n\nWhat to look for: Naive and KM bias curves slope upward to the right. TMLE+IPCW bias stays near zero. TMLE+IPCW+Comply is slightly better at high informativeness because compliance carries information about the censoring mechanism.",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#sec-exp5",
+    "href": "index.html#sec-exp5",
+    "title": "causal_bench",
+    "section": "Experiment 5: The collider trap",
+    "text": "Experiment 5: The collider trap\nThe more subtle failure mode. L1 is measured after treatment and before the outcome — a classic time-varying confounder. Two strategies, both wrong:\n\nCox (no L1): omits a confounder — biased toward the null\nCox+L1: conditions on a collider — biased away from the null, possibly in the opposite direction\n\nLTMLE marginalises over L1 rather than conditioning on it, avoiding the trap entirely.\n\n\nCode\nexp5_dir = RESULTS_DIR / \"exp5_collider\"\nif not exp5_dir.exists() or not any(exp5_dir.glob(\"collider_panel.png\")):\n    import subprocess, sys\n    print(\"Running Exp 5 (n_sims=50, quick mode)...\")\n    subprocess.run([sys.executable, \"experiments/exp5_collider.py\",\n                    \"--n-sims\", \"50\", \"--n-jobs\", \"-1\"], check=True)\n\n\n\n\n\n\n\n\nFigure 3: Exp 5: Opposite-direction biases — Cox, Cox+L1, and LTMLE as collider strength increases\n\n\n\nThe “impossible choice”: At high collider strength, Cox is biased one way and Cox+L1 is biased the other. A practitioner choosing between them is damned either way. LTMLE is the only correct path — it uses L1 to reduce variance in the outcome model but marginalises it out before estimating the treatment effect.",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#sec-exp7",
+    "href": "index.html#sec-exp7",
+    "title": "causal_bench",
+    "section": "Experiment 7: The money experiment",
+    "text": "Experiment 7: The money experiment\nAll estimators, three Edwards scenarios (optimistic / realistic / pessimistic), 200 simulations each. This is the full picture: who survives realistic conditions?\n\n\nCode\nexp7_dir = RESULTS_DIR / \"exp7_edwards\"\nif not exp7_dir.exists() or not any(exp7_dir.glob(\"forest_realistic.png\")):\n    import subprocess, sys\n    print(\"Running Exp 7 (n_sims=50, quick mode)...\")\n    subprocess.run([sys.executable, \"experiments/exp7_edwards.py\",\n                    \"--n-sims\", \"50\", \"--n-jobs\", \"-1\"], check=True)\n\n\n\n\n\n\n\n\nFigure 4: Exp 7: Forest plot — Edwards realistic scenario\n\n\n\n\nCross-scenario bias comparison\n\n\n\nTable 3: Bias by estimator and scenario (Exp 7)\n\n\n\nCode\nrows = []\nfor scenario in [\"edwards_optimistic\", \"edwards_realistic\", \"edwards_pessimistic\"]:\n    summary_path = exp7_dir / f\"summary_{scenario}.md\"\n    if summary_path.exists():\n        # Parse the markdown table into a DataFrame\n        lines = [l for l in summary_path.read_text().splitlines()\n                 if l.startswith(\"|\") and \"---\" not in l]\n        if len(lines) &gt;= 2:\n            header = [h.strip() for h in lines[0].split(\"|\")[1:-1]]\n            for line in lines[1:]:\n                vals = [v.strip() for v in line.split(\"|\")[1:-1]]\n                if vals:\n                    row = dict(zip(header, vals))\n                    row[\"scenario\"] = scenario.replace(\"edwards_\", \"\")\n                    rows.append(row)\n\nif rows:\n    df_exp7 = pd.DataFrame(rows)\n    pivot = df_exp7.pivot_table(\n        index=\"estimator\", columns=\"scenario\",\n        values=\"bias\", aggfunc=\"first\"\n    )\n    pivot",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#sec-exp8",
+    "href": "index.html#sec-exp8",
+    "title": "causal_bench",
+    "section": "Experiment 8: McCoy RMST experiment",
+    "text": "Experiment 8: McCoy RMST experiment\nDirect RMST targeting vs pointwise risk-difference estimation — the comparison motivating McCoy’s concrete R package.\n\n\nCode\nexp8_dir = RESULTS_DIR / \"exp8_mccoy\"\nif not exp8_dir.exists() or not any(exp8_dir.glob(\"forest.png\")):\n    import subprocess, sys\n    print(\"Running Exp 8 (n_sims=50, quick mode)...\")\n    subprocess.run([sys.executable, \"experiments/exp8_mccoy.py\",\n                    \"--n-sims\", \"50\", \"--n-jobs\", \"-1\"], check=True)\n\n# Load from Parquet if available\nparquet_dir = exp8_dir / \"parquet\"\nloaded = {}\nif parquet_dir.exists():\n    for f in sorted(parquet_dir.glob(\"*.parquet\")):\n        try:\n            loaded[f.stem] = SimResult.from_parquet(f)\n        except Exception:\n            pass\n\nif loaded:\n    rows = [r.summary() for r in loaded.values()]\n    pd.DataFrame(rows).set_index(\"estimator\").round(4)\nelif (exp8_dir / \"summary.md\").exists():\n    from IPython.display import Markdown\n    Markdown((exp8_dir / \"summary.md\").read_text())\n\n\n\nR section: concrete direct RMST targeting\n\n\n\n\n\n\nNote\n\n\n\nThe cells below require R with the concrete package installed. In RStudio, source r_scripts/concrete_bridge.R directly — it uses reticulate to call generate_data() from Python without writing any files.\n\n\nlibrary(reticulate)\nlibrary(concrete)\nlibrary(data.table)\n\nsource(\"r_scripts/concrete_bridge.R\")\nuse_virtualenv(\".venv\", required = FALSE)\n# Call Python generate_data() directly — no CSV, no subprocess\ncb  &lt;- import(\"causal_bench.dgp.survival\")\ncfg &lt;- import(\"causal_bench.dgp.config\")$DGPConfig(\n  n                         = 600L,\n  competing_risks           = TRUE,\n  censoring_rate            = 0.20,\n  censoring_informativeness = 0.3,\n  true_tau                  = -0.3,\n  seed                      = 42L\n)\npy_df &lt;- cb$generate_data(cfg)\ndf    &lt;- as.data.frame(py_df)\ndf$event_type &lt;- as.integer(df$Delta)\n\ncat(sprintf(\n  \"n=%d  events=%d (%.0f%%)  competing=%d  censored=%d\\n\",\n  nrow(df), sum(df$event_type == 1), 100 * mean(df$event_type == 1),\n  sum(df$event_type == 2), sum(df$event_type == 0)\n))\nresult &lt;- run_concrete_bridge(df, horizon = 1.0, verbose = FALSE)\n\nif (!is.null(result) && result$converged) {\n  cat(sprintf(\n    \"concrete RMST ATE: %.4f  SE: %.4f  95%% CI: [%.4f, %.4f]\\n\",\n    result$ATE, result$SE, result$CI_lower, result$CI_upper\n  ))\n}",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#lessons",
+    "href": "index.html#lessons",
+    "title": "causal_bench",
+    "section": "Lessons",
+    "text": "Lessons\n\nCensoring bias is monotone and predictable. MAR censoring (independent of outcome) leaves KM and Cox unbiased. MNAR censoring breaks everything except IPCW-adjusted estimators.\nThe collider trap has no simple fix. Omitting L1 biases toward the null; including it biases away. LTMLE is the only escape — but it requires knowing L1 is a post-treatment variable, not a baseline covariate.\nDoubly robust ≠ correct. AIPW and TMLE are consistent if either the outcome model or the propensity model is correct. Under strong unmeasured confounding, neither is — and coverage collapses.\nDirect RMST targeting (concrete) eliminates discretisation bias. Pointwise estimators accumulate \\(O(1/K)\\) bias at \\(K\\) time points. Direct RMST targeting removes it entirely. McCoy’s concrete implements this for competing risks.",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#reproducing-results",
+    "href": "index.html#reproducing-results",
+    "title": "causal_bench",
+    "section": "Reproducing results",
+    "text": "Reproducing results\n# Install\npip install -e \".[storage]\"       # adds pyarrow\npip install -e \".[r]\"             # adds rpy2 (requires R installed)\n\n# Quick run (50 sims, ~2 min)\npython -m causal_bench --scenario edwards_realistic --n-sims 50\n\n# Full experiments\npython experiments/exp1_censoring.py --n-sims 200\npython experiments/exp5_collider.py  --n-sims 200\npython experiments/exp7_edwards.py   --n-sims 200\npython experiments/exp8_mccoy.py     --n-sims 200   # concrete results need R\n\n# Render this notebook (requires quarto)\nquarto render index.qmd\n\nR setup (for concrete cells)\ninstall.packages(\"remotes\")\nremotes::install_github(\"nt-williams/concrete\")  # McCoy's package\ninstall.packages(c(\"reticulate\", \"data.table\"))",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>causal_bench walkthrough</span>"
+    ]
+  }
+]

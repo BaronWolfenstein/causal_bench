@@ -155,27 +155,18 @@ The hierarchy moves left to right in three dimensions: **covariate adjustment**,
 The simplest failure mode. As censoring becomes more informative (correlated with the outcome), unadjusted estimators accumulate bias. TMLE+IPCW should stay flat.
 
 ```{python}
-#| label: fig-exp1
-#| fig-cap: "Exp 1: Estimator bias as censoring informativeness increases from 0 to 1"
+#| label: exp1-run
+#| output: false
 
 exp1_dir = RESULTS_DIR / "exp1_censoring"
-parquet_candidates = list(exp1_dir.glob("*.parquet")) if exp1_dir.exists() else []
-
 if not exp1_dir.exists() or not any(exp1_dir.glob("panel.png")):
-    # Run a quick version if results not pre-computed
     import subprocess, sys
-    print("Pre-computed results not found — running Exp 1 with n_sims=50 (quick mode)...")
+    print("Running Exp 1 (n_sims=50, quick mode)...")
     subprocess.run([sys.executable, "experiments/exp1_censoring.py",
                     "--n-sims", "50", "--n-jobs", "-1"], check=True)
-
-from PIL import Image
-img = Image.open(exp1_dir / "panel.png")
-plt.figure(figsize=(11, 8))
-plt.imshow(img)
-plt.axis("off")
-plt.tight_layout()
-plt.show()
 ```
+
+![Exp 1: Estimator bias as censoring informativeness increases 0→1](results/exp1_censoring/panel.png){#fig-exp1 width=100%}
 
 **What to look for:** Naive and KM bias curves slope upward to the right. TMLE+IPCW bias stays near zero. TMLE+IPCW+Comply is slightly better at high informativeness because compliance carries information about the censoring mechanism.
 
@@ -191,8 +182,8 @@ The more subtle failure mode. L1 is measured after treatment and before the outc
 LTMLE marginalises over L1 rather than conditioning on it, avoiding the trap entirely.
 
 ```{python}
-#| label: fig-exp5
-#| fig-cap: "Exp 5: Cox, Cox+L1, and LTMLE bias as collider strength increases"
+#| label: exp5-run
+#| output: false
 
 exp5_dir = RESULTS_DIR / "exp5_collider"
 if not exp5_dir.exists() or not any(exp5_dir.glob("collider_panel.png")):
@@ -200,15 +191,9 @@ if not exp5_dir.exists() or not any(exp5_dir.glob("collider_panel.png")):
     print("Running Exp 5 (n_sims=50, quick mode)...")
     subprocess.run([sys.executable, "experiments/exp5_collider.py",
                     "--n-sims", "50", "--n-jobs", "-1"], check=True)
-
-from PIL import Image
-img = Image.open(exp5_dir / "collider_panel.png")
-plt.figure(figsize=(11, 4))
-plt.imshow(img)
-plt.axis("off")
-plt.tight_layout()
-plt.show()
 ```
+
+![Exp 5: Opposite-direction biases — Cox, Cox+L1, and LTMLE as collider strength increases](results/exp5_collider/collider_panel.png){#fig-exp5 width=100%}
 
 **The "impossible choice":** At high collider strength, Cox is biased one way and Cox+L1 is biased the other. A practitioner choosing between them is damned either way. LTMLE is the only correct path — it uses L1 to reduce variance in the outcome model but marginalises it out before estimating the treatment effect.
 
@@ -219,8 +204,8 @@ plt.show()
 All estimators, three Edwards scenarios (optimistic / realistic / pessimistic), 200 simulations each. This is the full picture: who survives realistic conditions?
 
 ```{python}
-#| label: fig-exp7
-#| fig-cap: "Exp 7: Forest plot — Edwards realistic scenario"
+#| label: exp7-run
+#| output: false
 
 exp7_dir = RESULTS_DIR / "exp7_edwards"
 if not exp7_dir.exists() or not any(exp7_dir.glob("forest_realistic.png")):
@@ -228,15 +213,9 @@ if not exp7_dir.exists() or not any(exp7_dir.glob("forest_realistic.png")):
     print("Running Exp 7 (n_sims=50, quick mode)...")
     subprocess.run([sys.executable, "experiments/exp7_edwards.py",
                     "--n-sims", "50", "--n-jobs", "-1"], check=True)
-
-from PIL import Image
-img = Image.open(exp7_dir / "forest_realistic.png")
-plt.figure(figsize=(10, 6))
-plt.imshow(img)
-plt.axis("off")
-plt.tight_layout()
-plt.show()
 ```
+
+![Exp 7: Forest plot — Edwards realistic scenario](results/exp7_edwards/forest_realistic.png){#fig-exp7 width=100%}
 
 ### Cross-scenario bias comparison
 
@@ -312,69 +291,45 @@ In RStudio, source `r_scripts/concrete_bridge.R` directly — it uses `reticulat
 to call `generate_data()` from Python without writing any files.
 :::
 
-```{r}
-#| label: r-setup
-#| eval: !expr "requireNamespace('concrete', quietly=TRUE)"
-
+```{.r}
 library(reticulate)
 library(concrete)
 library(data.table)
 
-# Load the Python bridge
 source("r_scripts/concrete_bridge.R")
-
-# Use the same virtual environment as the Python cells
 use_virtualenv(".venv", required = FALSE)
 ```
 
-```{r}
-#| label: r-generate-data
-#| eval: !expr "requireNamespace('concrete', quietly=TRUE) && reticulate::py_available()"
-#| fig-cap: "Kaplan-Meier curves from Python-generated competing risks data (via reticulate)"
-
+```{.r}
+# Call Python generate_data() directly — no CSV, no subprocess
 cb  <- import("causal_bench.dgp.survival")
 cfg <- import("causal_bench.dgp.config")$DGPConfig(
-  n                   = 600L,
-  competing_risks     = TRUE,
-  censoring_rate      = 0.20,
+  n                         = 600L,
+  competing_risks           = TRUE,
+  censoring_rate            = 0.20,
   censoring_informativeness = 0.3,
-  true_tau            = -0.3,
-  seed                = 42L
+  true_tau                  = -0.3,
+  seed                      = 42L
 )
 py_df <- cb$generate_data(cfg)
 df    <- as.data.frame(py_df)
-df$event_type <- as.integer(df$Delta)  # 0=censored, 1=event
+df$event_type <- as.integer(df$Delta)
 
 cat(sprintf(
   "n=%d  events=%d (%.0f%%)  competing=%d  censored=%d\n",
-  nrow(df),
-  sum(df$event_type == 1),
-  100 * mean(df$event_type == 1),
-  sum(df$event_type == 2),
-  sum(df$event_type == 0)
+  nrow(df), sum(df$event_type == 1), 100 * mean(df$event_type == 1),
+  sum(df$event_type == 2), sum(df$event_type == 0)
 ))
 ```
 
-```{r}
-#| label: r-concrete
-#| eval: !expr "requireNamespace('concrete', quietly=TRUE) && reticulate::py_available()"
-#| cache: true
-
-result <- tryCatch(
-  run_concrete_bridge(df, horizon = 1.0, verbose = FALSE),
-  error = function(e) {
-    message("concrete failed: ", conditionMessage(e))
-    NULL
-  }
-)
+```{.r}
+result <- run_concrete_bridge(df, horizon = 1.0, verbose = FALSE)
 
 if (!is.null(result) && result$converged) {
   cat(sprintf(
     "concrete RMST ATE: %.4f  SE: %.4f  95%% CI: [%.4f, %.4f]\n",
     result$ATE, result$SE, result$CI_lower, result$CI_upper
   ))
-} else {
-  cat("concrete not available or did not converge — see Python results above.\n")
 }
 ```
 

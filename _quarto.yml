@@ -23,9 +23,8 @@ format:
 
 execute:
   freeze: auto        # re-run only when source changes
-  cache: true         # cache cell outputs
+  cache: true
   warning: false
   message: false
 
-# Python via reticulate for mixed cells; each language runs in its own session
-jupyter: python3
+jupyter: python3      # Python cells run via Jupyter; R cells are eval:false (display only)
