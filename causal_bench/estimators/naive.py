@@ -11,9 +11,8 @@ class NaiveEstimator(BaseEstimator):
 
     def estimate(self, df: pd.DataFrame, horizon: float = 1.0,
                  estimand: str = "ATE") -> list[EstimatorResult]:
-        obs = df[df["Delta"] == 1].copy()
-        y1 = (obs.loc[obs["A"] == 1, "T_obs"] <= horizon).astype(float)
-        y0 = (obs.loc[obs["A"] == 0, "T_obs"] <= horizon).astype(float)
+        y1 = df.loc[df["A"] == 1, "Delta"].astype(float)
+        y0 = df.loc[df["A"] == 0, "Delta"].astype(float)
 
         if len(y1) == 0 or len(y0) == 0:
             return [EstimatorResult(self.name, estimand, float("nan"),

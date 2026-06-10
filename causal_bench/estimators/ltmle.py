@@ -101,7 +101,8 @@ class LTMLEEstimator(BaseEstimator):
             G = np.ones(n)
 
         G = np.clip(G, 0.05, 1.0)
-        ipcw = Delta / G
+        is_observed = (Delta == 1) | (T_obs >= horizon - 1e-9)
+        ipcw = np.where(is_observed, 1.0 / G, 0.0)
 
         # ── Step 3: Propensity model g(A=1 | W) ──
         sl_g = SuperLearner(task="classification", n_folds=self.n_folds,

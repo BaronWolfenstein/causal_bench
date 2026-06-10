@@ -65,7 +65,11 @@ class TMLEIPCWEstimator(BaseEstimator):
             G = np.ones(n)
 
         G = np.clip(G, 0.05, 1.0)
-        ipcw = Delta / G
+        # Admin-censored patients (T_obs >= horizon, Delta=0) have known outcome Y=0
+        # and must not be excluded. Only pre-horizon dropouts (T_obs < horizon, Delta=0)
+        # have unknown outcomes and get weight=0.
+        is_observed = (Delta == 1) | (T_obs >= horizon - 1e-9)
+        ipcw = np.where(is_observed, 1.0 / G, 0.0)
 
         # ── Step 2: Propensity model ──
         sl_g = SuperLearner(task="classification", n_folds=self.n_folds,

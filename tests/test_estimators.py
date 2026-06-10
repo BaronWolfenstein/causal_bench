@@ -97,12 +97,13 @@ def test_naive_returns_result():
     assert r.ci_lower < r.point_estimate < r.ci_upper
 
 
-def test_naive_all_censored_returns_nan():
+def test_naive_all_censored_returns_zero():
+    # All Delta=0 means no events in either arm → ATE estimate is 0.0, not NaN
     df = _clean_df()
     df = df.copy()
     df["Delta"] = 0.0
     results = NaiveEstimator().estimate(df, horizon=1.0)
-    assert np.isnan(results[0].point_estimate)
+    assert results[0].point_estimate == 0.0
 
 
 def test_km_returns_result():
