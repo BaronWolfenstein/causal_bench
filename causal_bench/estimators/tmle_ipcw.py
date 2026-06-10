@@ -40,7 +40,11 @@ class TMLEIPCWEstimator(BaseEstimator):
 
         censor_df = df[censor_feature_cols + ["T_obs", "Delta"]].copy()
         censor_df = censor_df.rename(columns={"Delta": "event_obs"})
-        censor_df["C_indicator"] = 1.0 - censor_df["event_obs"]
+        # Only pre-horizon dropouts are informative censoring events.
+        # Admin-censored (T_obs >= horizon) ran out of follow-up, not informatively censored.
+        censor_df["C_indicator"] = (
+            (censor_df["event_obs"] == 0) & (censor_df["T_obs"] < horizon - 1e-9)
+        ).astype(float)
 
         try:
             cph = CoxPHFitter(penalizer=0.1)
@@ -65,11 +69,11 @@ class TMLEIPCWEstimator(BaseEstimator):
             G = np.ones(n)
 
         G = np.clip(G, 0.05, 1.0)
-        # Admin-censored patients (T_obs >= horizon, Delta=0) have known outcome Y=0
-        # and must not be excluded. Only pre-horizon dropouts (T_obs < horizon, Delta=0)
-        # have unknown outcomes and get weight=0.
-        is_observed = (Delta == 1) | (T_obs >= horizon - 1e-9)
-        ipcw = np.where(is_observed, 1.0 / G, 0.0)
+        # Events: upweight by 1/G to represent censored patients with similar patterns.
+        # Admin-censored (T_obs >= horizon): Y=0 is known; ipcw=1 (no upweighting needed).
+        # Pre-horizon dropouts: ipcw=0 (outcome unknown; excluded from outcome model).
+        admin_censored = (Delta == 0) & (T_obs >= horizon - 1e-9)
+        ipcw = np.where(Delta == 1, 1.0 / G, np.where(admin_censored, 1.0, 0.0))
 
         # ── Step 2: Propensity model ──
         sl_g = SuperLearner(task="classification", n_folds=self.n_folds,
