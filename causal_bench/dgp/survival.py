@@ -147,9 +147,33 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
 
     C = np.exp(log_C_base) * scale_factor
 
-    # --- Observed outcomes ---
-    T_obs = np.minimum(T_true, np.minimum(C, config.horizon))
-    Delta = ((T_true <= C) & (T_true <= config.horizon)).astype(float)
+    # --- Competing risks (optional) ---
+    # Two causes race against each other and against censoring.
+    # cause1 = primary event (treatment effect = true_tau)
+    # cause2 = competing event (e.g. death from other cause, no treatment on cause2)
+    if config.competing_risks:
+        # Cause-2 AFT: different baseline hazard, no treatment effect on cause 2 by default
+        log_T2 = (
+            0.3                                          # higher baseline → later cause-2
+            + 0.2 * W1
+            - 0.1 * W3
+            + 0.2 * U
+            + config.cause2_treatment_effect * A
+            + rng.gumbel(0, 1, n)
+        )
+        T2_true = np.exp(log_T2)
+        # First event wins
+        T_first = np.minimum(T_true, T2_true)
+        T_obs = np.minimum(T_first, np.minimum(C, config.horizon))
+        cause1_event = (T_true <= T2_true) & (T_true <= C) & (T_true <= config.horizon)
+        cause2_event = (T2_true < T_true) & (T2_true <= C) & (T2_true <= config.horizon)
+        # event_type: 0=censored, 1=cause-1, 2=cause-2
+        event_type = np.where(cause1_event, 1, np.where(cause2_event, 2, 0)).astype(int)
+        Delta = cause1_event.astype(float)
+    else:
+        T_obs = np.minimum(T_true, np.minimum(C, config.horizon))
+        Delta = ((T_true <= C) & (T_true <= config.horizon)).astype(float)
+        event_type = Delta.astype(int)
 
     # --- Negative control outcome (no treatment effect) ---
     Y_neg = 0.5 * W1 - 0.3 * W3 + 0.4 * U + rng.normal(0, 0.5, n)
@@ -157,6 +181,7 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     return pd.DataFrame({
         "T_obs": T_obs,
         "Delta": Delta,
+        "event_type": event_type,
         "A": A,
         "W1": W1,
         "W2": W2,

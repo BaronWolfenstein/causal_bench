@@ -38,7 +38,7 @@ def test_generate_data_shape():
     cfg = DGPConfig(n=200, seed=0)
     df = generate_data(cfg)
     assert len(df) == 200
-    required = {"T_obs", "Delta", "A", "W1", "W2", "W3", "W4",
+    required = {"T_obs", "Delta", "event_type", "A", "W1", "W2", "W3", "W4",
                 "compliance", "Y_neg", "enrollment_time"}
     assert required.issubset(df.columns)
 
@@ -217,3 +217,56 @@ def test_l1_present_with_zero_collider_strength():
     assert "L1" in df.columns
     # Some patients should still have observed L1 (those alive past t_L1)
     assert df["L1"].notna().any()
+
+
+# --- Competing risks DGP tests ---
+
+def test_event_type_always_present():
+    """event_type column present in single-cause and competing-risks modes."""
+    for cr in [False, True]:
+        cfg = DGPConfig(n=300, competing_risks=cr, seed=0)
+        df = generate_data(cfg)
+        assert "event_type" in df.columns
+
+def test_event_type_values_single_cause():
+    """Without competing risks, event_type ∈ {0, 1} and equals Delta."""
+    cfg = DGPConfig(n=500, competing_risks=False, seed=1)
+    df = generate_data(cfg)
+    assert set(df["event_type"].unique()).issubset({0, 1})
+    assert (df["event_type"] == df["Delta"].astype(int)).all()
+
+def test_event_type_values_competing():
+    """With competing risks, event_type ∈ {0, 1, 2}."""
+    cfg = DGPConfig(n=500, competing_risks=True, seed=2)
+    df = generate_data(cfg)
+    assert set(df["event_type"].unique()).issubset({0, 1, 2})
+    # All three causes should appear in n=500
+    assert 1 in df["event_type"].values
+    assert 2 in df["event_type"].values
+
+def test_competing_risks_cause1_matches_delta():
+    """Delta==1 iff event_type==1 (cause-1 event)."""
+    cfg = DGPConfig(n=500, competing_risks=True, seed=3)
+    df = generate_data(cfg)
+    assert (df["Delta"] == (df["event_type"] == 1).astype(float)).all()
+
+def test_competing_risks_no_negative_times():
+    cfg = DGPConfig(n=300, competing_risks=True, seed=4)
+    df = generate_data(cfg)
+    assert (df["T_obs"] >= 0).all()
+
+def test_competing_risks_t_obs_within_horizon():
+    cfg = DGPConfig(n=300, competing_risks=True, horizon=1.0, seed=5)
+    df = generate_data(cfg)
+    assert (df["T_obs"] <= 1.0 + 1e-9).all()
+
+def test_competing_risks_cause_fractions_nonzero():
+    """Both causes should account for a reasonable share of events."""
+    cfg = DGPConfig(n=2000, competing_risks=True, seed=6)
+    df = generate_data(cfg)
+    n_cause1 = (df["event_type"] == 1).sum()
+    n_cause2 = (df["event_type"] == 2).sum()
+    n_total = len(df)
+    # Each cause should be at least 5% of all patients
+    assert n_cause1 / n_total > 0.05, f"cause-1 fraction too low: {n_cause1/n_total:.3f}"
+    assert n_cause2 / n_total > 0.05, f"cause-2 fraction too low: {n_cause2/n_total:.3f}"
