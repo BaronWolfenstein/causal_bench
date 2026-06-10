@@ -5,18 +5,18 @@ from dataclasses import dataclass
 class DGPConfig:
     # Sample
     n: int = 500
-    n_treated_fraction: float = 0.5
+    n_treated_fraction: float = 0.5   # target fraction for post-stratification (unused in MVP)
 
     # Treatment
     true_tau: float = -0.5
-    treatment_prevalence: float = 0.5
+    treatment_prevalence: float = 0.5  # base-rate used in propensity model logit intercept
     positivity_severity: float = 0.0
     unmeasured_confounding_strength: float = 0.0
 
     # Outcome
     outcome_nonlinearity: float = 0.0
     effect_heterogeneity: float = 0.0
-    baseline_hazard: str = "weibull"
+    baseline_hazard: str = "weibull"  # valid: "weibull" (only in MVP)
     horizon: float = 1.0
 
     # Censoring

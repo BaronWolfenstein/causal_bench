@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 from causal_bench.dgp.config import DGPConfig
 
 
@@ -18,7 +20,6 @@ def test_dgp_config_override():
 
 
 def test_dgp_config_is_dataclass():
-    from dataclasses import asdict
     cfg = DGPConfig()
     d = asdict(cfg)
     assert "n" in d
