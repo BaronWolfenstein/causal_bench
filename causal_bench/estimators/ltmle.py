@@ -220,4 +220,5 @@ class LTMLEEstimator(BaseEstimator):
             name=self.name, estimand="ATE",
             point_estimate=point, standard_error=se,
             ci_lower=point - z * se, ci_upper=point + z * se,
+            ic=IC,
         )]

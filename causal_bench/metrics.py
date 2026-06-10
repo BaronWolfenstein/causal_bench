@@ -15,6 +15,7 @@ class EstimatorResult:
     ci_upper: float
     ess: Optional[float] = None
     convergence_info: Optional[dict] = None
+    ic: Optional[np.ndarray] = field(default=None, repr=False)
 
 
 @dataclass

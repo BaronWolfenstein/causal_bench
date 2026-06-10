@@ -75,4 +75,5 @@ class AIPWEstimator(BaseEstimator):
             standard_error=se,
             ci_lower=float(ci_lower),
             ci_upper=float(ci_upper),
+            ic=IC,
         )]

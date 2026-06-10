@@ -112,7 +112,7 @@ class TMLEIPCWEstimator(BaseEstimator):
         results = []
         estimands_to_run = ["ATE", "ATT"] if estimand == "ATT" else ["ATE"]
         for est in estimands_to_run:
-            point, se = self._target_and_se(
+            point, se, IC = self._target_and_se(
                 Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, est, n,
                 g_oof=g_oof, Q_1W_oof=Q_1W_oof, Q_0W_oof=Q_0W_oof,
             )
@@ -121,6 +121,7 @@ class TMLEIPCWEstimator(BaseEstimator):
                 name=self.name, estimand=est,
                 point_estimate=float(point), standard_error=float(se),
                 ci_lower=float(point - z * se), ci_upper=float(point + z * se),
+                ic=IC,
             ))
         return results
 
@@ -159,11 +160,11 @@ class TMLEIPCWEstimator(BaseEstimator):
         else:
             pi = np.mean(A)
             if pi < 1e-8:
-                return float("nan"), float("nan")
+                return float("nan"), float("nan"), None
             point = np.mean(A * (Q1_star - Q0_star)) / pi
             IC = (A * (Q1_ic - Q0_ic) / pi - point
                   + ipcw * A / pi * (Y - Q1_ic)
                   - ipcw * (1 - A) * g_ic / (1 - g_ic) / pi * (Y - Q0_ic))
 
         se = np.sqrt(np.var(IC, ddof=1) / n)
-        return point, se
+        return point, se, IC

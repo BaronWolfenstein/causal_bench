@@ -61,7 +61,7 @@ quarto render index.qmd
 
 **Exp 8 (McCoy RMST):** Direct RMST targeting via `concrete` eliminates the discretisation bias accumulated by pointwise estimators at coarse time grids. Python estimators (TMLE+IPCW, LTMLE) are competitive when the grid is fine.
 
-**SE calibration (EIF-based estimators):** EIF-based SEs (TMLE+IPCW, LTMLE, AIPW) can undercover when the nuisance models are trained and evaluated on the same data. All three estimators use cross-fitted (DML-style) influence function residuals: the propensity score `g` is obtained from the SuperLearner's own out-of-fold (OOF) predictions, and the outcome model `Q` is cross-fitted with K-fold logistic regression. The point estimate still uses full-data targeted Q* (TMLE targeting) or full-data SuperLearner Q (AIPW) for better finite-sample bias. If coverage remains insufficient in small samples, a bootstrap SE is the recommended alternative (no principled analytic multiplier exists for this DGP).
+**SE calibration (EIF-based estimators):** EIF-based SEs (TMLE+IPCW, LTMLE, AIPW) can undercover when nuisance models are trained and evaluated on the same data. All three estimators use cross-fitted (DML-style) influence function residuals: the propensity score `g` is obtained from the SuperLearner's own out-of-fold (OOF) predictions, and the outcome model `Q` is cross-fitted with K-fold logistic regression. The point estimate still uses full-data targeted Q* (TMLE targeting) or full-data SuperLearner Q (AIPW) for better finite-sample bias. If coverage remains insufficient in small samples, use an IC bootstrap CI instead — three methods are available (see below). There is no principled analytic multiplier: any constant correction factor is DGP-specific and not portable.
 
 ## Data-generating process
 
@@ -109,6 +109,30 @@ From Python (requires `pip install -e ".[r]"`):
 from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
 results = ConcreteRMSTEstimator().estimate(df)  # returns [] with warning if R unavailable
 ```
+
+## IC bootstrap CIs
+
+TMLE+IPCW, LTMLE, and AIPW all store the influence curve (IC) values on `EstimatorResult.ic`. These can be bootstrapped cheaply — O(B·n) instead of re-fitting the model — using `causal_bench.bootstrap.ic_bootstrap_ci`:
+
+```python
+from causal_bench.bootstrap import ic_bootstrap_ci
+
+result = TMLEIPCWEstimator().estimate(df)[0]
+
+lo, hi = ic_bootstrap_ci(result, B=2000, method="bca")    # bias-corrected + accelerated
+lo, hi = ic_bootstrap_ci(result, B=2000, method="t")      # Studentized / bootstrap-t
+lo, hi = ic_bootstrap_ci(result, B=2000, method="percentile")  # plain quantiles
+```
+
+All three methods bootstrap the IC values rather than re-fitting: each resample draws n rows of IC with replacement and computes θ̂* = θ̂ + mean(IC*). The methods differ in how they convert the bootstrap distribution into a CI:
+
+| Method | Skewness correction | Recommended for |
+|--------|--------------------|-----------------||
+| `percentile` | None | Large n (>1000), symmetric IC |
+| `t` | Via empirical t-quantiles from per-resample SE* | Small–moderate n, asymmetric IC; Hesterberg (2015) recommends this for general use |
+| `bca` | Bias-correction z₀ + jackknife acceleration a | Skewed estimators; best coverage in theory (Efron & Tibshirani 1993) |
+
+**What Hesterberg (2015) actually says:** The paper is focused on undergraduate pedagogy with simple estimators. It recommends bootstrap-t over percentile but does not discuss BCa or EIF-based estimators. Its "expanded percentile" correction (replacing z with t_{n-1} quantiles) widens the CI by ~0.3% at n=500 — negligible for our use case. The paper's main empirical finding is that bootstrap-t reaches accurate coverage at much smaller n than percentile intervals on skewed data, which motivates `method="t"` as a practical default here.
 
 ## Diagnostics
 
