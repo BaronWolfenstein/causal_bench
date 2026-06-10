@@ -113,6 +113,38 @@ def plot_panel(
     return fig
 
 
+def plot_collider_panel(
+    results: dict[str, list],
+    param_values: list,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """3-column bias plot: Cox | Cox+L1 | LTMLE side by side.
+
+    Makes the opposite-direction bias visually obvious.
+    """
+    estimators_of_interest = ["cox", "cox_l1", "ltmle"]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharey=True)
+    for ax, name in zip(axes, estimators_of_interest):
+        if name not in results:
+            ax.set_visible(False)
+            continue
+        biases = [r.bias if r is not None else np.nan for r in results[name]]
+        ax.plot(param_values[:len(biases)], biases, color=COLORS.get(name, "#333"),
+                marker="o", linewidth=2)
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax.set_title(LABELS.get(name, name), fontsize=12, fontweight="bold")
+        ax.set_xlabel("Collider strength", **_FONT)
+        ax.grid(True, alpha=0.3)
+        _apply_style(ax)
+    axes[0].set_ylabel("Bias", **_FONT)
+    fig.suptitle("Exp 5: Collider trap — opposite-direction biases",
+                 fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
 def generate_summary_table(results: dict[str, SimResult], fmt: str = "markdown") -> str:
     rows = [sr.summary() for sr in results.values()]
     cols = ["estimator", "estimand", "true", "bias", "rmse",
