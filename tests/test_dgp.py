@@ -99,3 +99,6 @@ def test_compute_true_effects_clean():
     assert isinstance(effects["ATE"], float)
     assert isinstance(effects["ATT"], float)
     assert -1.0 < effects["ATE"] < 1.0
+    # true_tau=-0.5 shortens survival → treated have higher event rate → ATE > 0
+    assert effects["ATE"] > 0
+    assert effects["ATT"] > 0

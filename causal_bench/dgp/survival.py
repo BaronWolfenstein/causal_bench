@@ -7,6 +7,8 @@ control outcome.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 
@@ -17,11 +19,12 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -20, 20)))
 
 
-def _calibrate_censoring_scale(config: DGPConfig, seed: int) -> float:
-    """Binary search for scale factor to hit config.censoring_rate."""
-    if config.censoring_rate <= 0:
+@lru_cache(maxsize=256)
+def _calibrate_censoring_scale(censoring_rate: float, horizon: float) -> float:
+    """Stable scale factor keyed on censoring_rate and horizon only."""
+    if censoring_rate <= 0:
         return 1e10
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(0)  # fixed seed — we want the same scale for same params
     n = 5000
     U = rng.standard_normal(n)
     W1 = rng.standard_normal(n)
@@ -35,14 +38,11 @@ def _calibrate_censoring_scale(config: DGPConfig, seed: int) -> float:
     for _ in range(40):
         mid = (lo + hi) / 2
         C = C_base * mid
-        censor_rate = np.mean((C < T_true) & (C < config.horizon))
-        # Larger scale → larger C → less censoring.
-        # If current rate > target we need larger C → larger scale → lo = mid.
-        # If current rate < target we need smaller C → smaller scale → hi = mid.
-        if censor_rate > config.censoring_rate:
-            lo = mid
-        else:
+        censor_rate = np.mean((C < T_true) & (C < horizon))
+        if censor_rate > censoring_rate:
             hi = mid
+        else:
+            lo = mid
     return (lo + hi) / 2
 
 
@@ -77,8 +77,9 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
 
     # --- Treatment assignment ---
     # Logit intercept adjusted for treatment_prevalence baseline
+    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
     logit_A = (
-        np.log(config.treatment_prevalence / (1 - config.treatment_prevalence))
+        np.log(p / (1 - p))
         + 0.3 * W1
         + 0.2 * W2
         - 0.2 * W3
@@ -112,7 +113,7 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     compliance = _sigmoid(compliance_raw)
 
     # --- Censoring ---
-    scale_factor = _calibrate_censoring_scale(config, seed=config.seed + 12345)
+    scale_factor = _calibrate_censoring_scale(config.censoring_rate, config.horizon)
 
     gumbel_c = rng.gumbel(0, 1, n)
     log_C_base = (
@@ -169,7 +170,7 @@ def compute_true_effects(config: DGPConfig, n_ref: int = 50_000) -> dict:
     -------
     dict with keys "ATE" and "ATT" (floats).
     """
-    rng = np.random.default_rng(config.seed)
+    rng = np.random.default_rng(config.seed ^ 0xDEADBEEF)
 
     # Shared covariates
     U = rng.standard_normal(n_ref)
@@ -180,8 +181,9 @@ def compute_true_effects(config: DGPConfig, n_ref: int = 50_000) -> dict:
     enrollment_time = rng.uniform(0, config.enrollment_period, n_ref)
 
     # Observed treatment (for ATT)
+    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
     logit_A = (
-        np.log(config.treatment_prevalence / (1 - config.treatment_prevalence))
+        np.log(p / (1 - p))
         + 0.3 * W1
         + 0.2 * W2
         - 0.2 * W3
