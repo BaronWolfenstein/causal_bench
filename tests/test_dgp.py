@@ -102,3 +102,49 @@ def test_compute_true_effects_clean():
     # true_tau=-0.5 shortens survival → treated have higher event rate → ATE > 0
     assert effects["ATE"] > 0
     assert effects["ATT"] > 0
+
+
+# --- Scenario registry tests ---
+
+from causal_bench.dgp.scenarios import get_scenario, list_scenarios
+
+
+def test_get_scenario_clean():
+    cfg = get_scenario("clean")
+    assert cfg.censoring_informativeness == 0.0
+    assert cfg.positivity_severity == 0.0
+    assert cfg.true_tau == -0.5
+
+
+def test_get_scenario_edwards_realistic():
+    cfg = get_scenario("edwards_realistic")
+    assert cfg.n == 700
+    assert cfg.censoring_informativeness == 0.6
+    assert cfg.positivity_severity == 1.5
+
+
+def test_get_scenario_unknown_raises():
+    import pytest
+    with pytest.raises(ValueError, match="Unknown scenario"):
+        get_scenario("nonexistent_scenario")
+
+
+def test_list_scenarios_includes_expected():
+    names = list_scenarios()
+    for expected in ["clean", "edwards_realistic", "edwards_optimistic",
+                     "edwards_pessimistic", "censor_mild", "censor_severe"]:
+        assert expected in names
+
+
+def test_get_scenario_returns_dgpconfig():
+    cfg = get_scenario("clean")
+    from causal_bench.dgp.config import DGPConfig
+    assert isinstance(cfg, DGPConfig)
+
+
+def test_get_scenario_each_valid():
+    """Every scenario in the registry should produce a valid DGPConfig."""
+    for name in list_scenarios():
+        cfg = get_scenario(name)
+        assert cfg.n > 0
+        assert 0.0 <= cfg.censoring_rate <= 1.0
