@@ -166,3 +166,23 @@ def test_tmle_ipcw_reasonable_estimate():
     r = results[0]
     assert -1.0 < r.point_estimate < 1.0
     assert r.standard_error > 0
+
+
+from causal_bench.runner import run_simulation
+from causal_bench.dgp.config import DGPConfig as _DGPConfig
+
+
+def test_run_simulation_smoke():
+    cfg = _DGPConfig(n=150, seed=0, censoring_informativeness=0.0)
+    results = run_simulation(cfg, estimator_names=["naive", "km"],
+                             n_sim=4, n_jobs=1, seed=0)
+    assert "naive" in results
+    assert "km" in results
+    assert results["naive"].n_sim == 4
+
+
+def test_run_simulation_true_value_finite():
+    cfg = _DGPConfig(n=150, seed=1)
+    results = run_simulation(cfg, estimator_names=["naive"],
+                             n_sim=3, n_jobs=1, seed=1)
+    assert np.isfinite(results["naive"].true_value)
