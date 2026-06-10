@@ -22,9 +22,7 @@ format:
     fig-height: 5
 
 execute:
-  freeze: auto        # re-run only when source changes
+  freeze: auto
   cache: true
   warning: false
   message: false
-
-jupyter: python3      # Python cells run via Jupyter; R cells are eval:false (display only)

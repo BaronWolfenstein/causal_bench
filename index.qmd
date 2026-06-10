@@ -7,6 +7,13 @@ format:
     toc: true
 ---
 
+```{r}
+#| label: r-init
+#| include: false
+library(reticulate)
+# reticulate auto-detects .venv from the project root; no path needed
+```
+
 ```{python}
 #| label: setup
 #| include: false
@@ -291,17 +298,20 @@ In RStudio, source `r_scripts/concrete_bridge.R` directly — it uses `reticulat
 to call `generate_data()` from Python without writing any files.
 :::
 
-```{.r}
-library(reticulate)
+```{r}
+#| label: r-concrete-setup
+#| eval: !expr "requireNamespace('concrete', quietly=TRUE)"
 library(concrete)
 library(data.table)
 
 source("r_scripts/concrete_bridge.R")
-use_virtualenv(".venv", required = FALSE)
 ```
 
-```{.r}
-# Call Python generate_data() directly — no CSV, no subprocess
+```{r}
+#| label: r-generate-data
+#| eval: !expr "requireNamespace('concrete', quietly=TRUE)"
+# py$ objects from the Python cells above are directly accessible here
+# Alternatively, call generate_data() fresh from R
 cb  <- import("causal_bench.dgp.survival")
 cfg <- import("causal_bench.dgp.config")$DGPConfig(
   n                         = 600L,
@@ -322,14 +332,22 @@ cat(sprintf(
 ))
 ```
 
-```{.r}
-result <- run_concrete_bridge(df, horizon = 1.0, verbose = FALSE)
+```{r}
+#| label: r-concrete-run
+#| eval: !expr "requireNamespace('concrete', quietly=TRUE)"
+#| cache: true
+result <- tryCatch(
+  run_concrete_bridge(df, horizon = 1.0, verbose = FALSE),
+  error = function(e) { message("concrete: ", conditionMessage(e)); NULL }
+)
 
 if (!is.null(result) && result$converged) {
   cat(sprintf(
     "concrete RMST ATE: %.4f  SE: %.4f  95%% CI: [%.4f, %.4f]\n",
     result$ATE, result$SE, result$CI_lower, result$CI_upper
   ))
+} else {
+  cat("concrete not installed — install with: remotes::install_github('nt-williams/concrete')\n")
 }
 ```
 
