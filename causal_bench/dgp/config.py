@@ -30,7 +30,7 @@ class DGPConfig:
     # Time-varying confounder (unused in MVP)
     collider_strength: float = 0.0
     sigma_L: float = 0.5
-    t_L1: float = 0.3
+    t_L1: float = 0.5
 
     # Competing risks (unused in MVP)
     competing_risks: bool = False
