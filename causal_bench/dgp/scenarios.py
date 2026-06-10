@@ -47,6 +47,16 @@ _REGISTRY: dict[str, dict] = {
         outcome_nonlinearity=0.7, effect_heterogeneity=0.5,
         true_tau=-0.5,
     ),
+    # Competing risks — for Exp 8 / McCoy experiment
+    # cause1 = primary event (treatment reduces risk), cause2 = competing event
+    "competing_risks_base": {
+        **_CLEAN,
+        "n": 600, "competing_risks": True,
+        "censoring_informativeness": 0.3, "censoring_rate": 0.20,
+        "cause1_treatment_effect": -0.3,
+        "cause2_treatment_effect": 0.0,
+        "true_tau": -0.3,
+    },
 }
 
 
