@@ -135,3 +135,34 @@ def test_base_estimator_nc_handles_all_treated():
     df = df.copy(); df["A"] = 1.0
     nc = NaiveEstimator().estimate_negative_control(df)
     assert np.isnan(nc)
+
+
+from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
+
+
+def test_tmle_ipcw_returns_ate():
+    df = _clean_df(n=300, seed=10)
+    est = TMLEIPCWEstimator(use_compliance=False, n_folds=3, random_state=0)
+    results = est.estimate(df, horizon=1.0, estimand="ATE")
+    assert any(r.estimand == "ATE" for r in results)
+    r = next(r for r in results if r.estimand == "ATE")
+    assert r.name == "TMLE+IPCW"
+    assert not np.isnan(r.point_estimate)
+    assert r.ci_lower < r.point_estimate < r.ci_upper
+
+
+def test_tmle_ipcw_comply_name():
+    df = _clean_df(n=300, seed=11)
+    est = TMLEIPCWEstimator(use_compliance=True, n_folds=3, random_state=0)
+    results = est.estimate(df, horizon=1.0, estimand="ATE")
+    assert results[0].name == "TMLE+IPCW+Comply"
+
+
+def test_tmle_ipcw_reasonable_estimate():
+    """On clean data, TMLE+IPCW should produce a finite estimate in [-1, 1]."""
+    df = _clean_df(n=400, seed=12)
+    est = TMLEIPCWEstimator(use_compliance=False, n_folds=3, random_state=0)
+    results = est.estimate(df, horizon=1.0, estimand="ATE")
+    r = results[0]
+    assert -1.0 < r.point_estimate < 1.0
+    assert r.standard_error > 0
