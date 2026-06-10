@@ -132,7 +132,6 @@ All three methods bootstrap the IC values rather than re-fitting: each resample 
 | `t` | Via empirical t-quantiles from per-resample SE* | Small–moderate n, asymmetric IC; Hesterberg (2015) recommends this for general use |
 | `bca` | Bias-correction z₀ + jackknife acceleration a | Skewed estimators; best coverage in theory (Efron & Tibshirani 1993) |
 
-**What Hesterberg (2015) actually says:** The paper is focused on undergraduate pedagogy with simple estimators. It recommends bootstrap-t over percentile but does not discuss BCa or EIF-based estimators. Its "expanded percentile" correction (replacing z with t_{n-1} quantiles) widens the CI by ~0.3% at n=500 — negligible for our use case. The paper's main empirical finding is that bootstrap-t reaches accurate coverage at much smaller n than percentile intervals on skewed data, which motivates `method="t"` as a practical default here.
 
 ## Diagnostics
 
