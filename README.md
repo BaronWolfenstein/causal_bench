@@ -61,6 +61,8 @@ quarto render index.qmd
 
 **Exp 8 (McCoy RMST):** Direct RMST targeting via `concrete` eliminates the discretisation bias accumulated by pointwise estimators at coarse time grids. Python estimators (TMLE+IPCW, LTMLE) are competitive when the grid is fine.
 
+**SE calibration (EIF-based estimators):** EIF-based SEs (TMLE+IPCW, LTMLE, AIPW) can undercover when the nuisance models are trained and evaluated on the same data. All three estimators use cross-fitted (DML-style) influence function residuals: the propensity score `g` is obtained from the SuperLearner's own out-of-fold (OOF) predictions, and the outcome model `Q` is cross-fitted with K-fold logistic regression. The point estimate still uses full-data targeted Q* (TMLE targeting) or full-data SuperLearner Q (AIPW) for better finite-sample bias. If coverage remains insufficient in small samples, a bootstrap SE is the recommended alternative (no principled analytic multiplier exists for this DGP).
+
 ## Data-generating process
 
 AFT model with Gumbel noise (Weibull survival), unmeasured confounder U, post-treatment time-varying variable L1, informative censoring, optional competing risks:

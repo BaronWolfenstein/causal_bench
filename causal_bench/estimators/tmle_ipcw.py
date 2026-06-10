@@ -80,26 +80,42 @@ class TMLEIPCWEstimator(BaseEstimator):
                             random_state=self.random_state)
         sl_g.fit(W, A)
         g = sl_g.predict_proba(W)
+        # OOF g: SuperLearner stores genuine out-of-fold predictions during fit.
+        g_oof = sl_g.oof_predictions_
 
         # ── Step 3: Outcome model (IPCW-weighted logistic) ──
         AW = np.column_stack([A, W])
         AW1 = np.column_stack([np.ones(n), W])
         AW0 = np.column_stack([np.zeros(n), W])
 
+        sample_weights = ipcw / max(ipcw.mean(), 1e-10)
         q_model = LogisticRegression(max_iter=1000, C=1.0)
-        sample_weights = ipcw.copy()
-        sample_weights = sample_weights / sample_weights.mean()  # normalize
         q_model.fit(AW, Y, sample_weight=sample_weights)
 
         Q_AW = np.clip(expit(q_model.decision_function(AW)), 1e-5, 1 - 1e-5)
         Q_1W = np.clip(expit(q_model.decision_function(AW1)), 1e-5, 1 - 1e-5)
         Q_0W = np.clip(expit(q_model.decision_function(AW0)), 1e-5, 1 - 1e-5)
 
+        # OOF Q: K-fold cross-fitted predictions for unbiased IC variance.
+        from sklearn.model_selection import KFold
+        Q_1W_oof = np.zeros(n)
+        Q_0W_oof = np.zeros(n)
+        for tr, val in KFold(self.n_folds, shuffle=True,
+                             random_state=self.random_state).split(AW):
+            sw_tr = sample_weights[tr] / max(sample_weights[tr].mean(), 1e-10)
+            qc = LogisticRegression(max_iter=1000, C=1.0)
+            qc.fit(AW[tr], Y[tr], sample_weight=sw_tr)
+            Q_1W_oof[val] = np.clip(expit(qc.decision_function(AW1[val])), 1e-5, 1-1e-5)
+            Q_0W_oof[val] = np.clip(expit(qc.decision_function(AW0[val])), 1e-5, 1-1e-5)
+
         # ── Steps 4-5: Targeting + EIF SE ──
         results = []
         estimands_to_run = ["ATE", "ATT"] if estimand == "ATT" else ["ATE"]
         for est in estimands_to_run:
-            point, se = self._target_and_se(Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, est, n)
+            point, se = self._target_and_se(
+                Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, est, n,
+                g_oof=g_oof, Q_1W_oof=Q_1W_oof, Q_0W_oof=Q_0W_oof,
+            )
             z = stats.norm.ppf(0.975)
             results.append(EstimatorResult(
                 name=self.name, estimand=est,
@@ -108,7 +124,8 @@ class TMLEIPCWEstimator(BaseEstimator):
             ))
         return results
 
-    def _target_and_se(self, Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, estimand, n):
+    def _target_and_se(self, Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, estimand, n,
+                       g_oof=None, Q_1W_oof=None, Q_0W_oof=None):
         if estimand == "ATE":
             H = ipcw * (A / g - (1 - A) / (1 - g))
             H1 = 1.0 / g
@@ -121,25 +138,32 @@ class TMLEIPCWEstimator(BaseEstimator):
         # One-step targeting: epsilon via Newton update
         denom = np.mean(H ** 2)
         eps = np.mean(H * (Y - Q_AW)) / denom if denom > 1e-10 else 0.0
-        # Clip eps to prevent runaway updates
         eps = np.clip(eps, -2.0, 2.0)
 
         Q1_star = expit(logit(Q_1W) + eps * H1)
         Q0_star = expit(logit(Q_0W) + eps * H0)
 
+        # When OOF predictions are available, use a fully cross-fitted (DML) IC for SE.
+        # All terms use OOF quantities so no in-sample bias inflates the variance.
+        # The full-data Q*/g are still used for the point estimate (targeting improves bias).
+        use_oof = (g_oof is not None) and (Q_1W_oof is not None)
+        g_ic  = g_oof    if use_oof else g
+        Q1_ic = Q_1W_oof if use_oof else Q1_star
+        Q0_ic = Q_0W_oof if use_oof else Q0_star
+
         if estimand == "ATE":
             point = np.mean(Q1_star - Q0_star)
-            IC = ((Q1_star - Q0_star - point)
-                  + ipcw * (A / g) * (Y - Q1_star)
-                  - ipcw * ((1 - A) / (1 - g)) * (Y - Q0_star))
+            IC = ((Q1_ic - Q0_ic - point)
+                  + ipcw * (A / g_ic) * (Y - Q1_ic)
+                  - ipcw * ((1 - A) / (1 - g_ic)) * (Y - Q0_ic))
         else:
             pi = np.mean(A)
             if pi < 1e-8:
                 return float("nan"), float("nan")
             point = np.mean(A * (Q1_star - Q0_star)) / pi
-            IC = (A * (Q1_star - Q0_star) / pi - point
-                  + ipcw * A / pi * (Y - Q1_star)
-                  - ipcw * (1 - A) * g / (1 - g) / pi * (Y - Q0_star))
+            IC = (A * (Q1_ic - Q0_ic) / pi - point
+                  + ipcw * A / pi * (Y - Q1_ic)
+                  - ipcw * (1 - A) * g_ic / (1 - g_ic) / pi * (Y - Q0_ic))
 
         se = np.sqrt(np.var(IC, ddof=1) / n)
         return point, se

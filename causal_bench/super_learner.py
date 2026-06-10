@@ -68,6 +68,10 @@ class SuperLearner:
         total = coefs.sum()
         self.weights_ = coefs / total if total > 1e-10 else np.ones(k) / k
 
+        # Store OOF predictions for unbiased IC variance computation in TMLE/AIPW.
+        # These are genuine out-of-fold predictions with ensemble weights fixed above.
+        self.oof_predictions_ = np.clip(oof @ self.weights_, 1e-6, 1 - 1e-6)
+
         # Refit all candidates on full data
         self._fitted_candidates = []
         for est in candidates:

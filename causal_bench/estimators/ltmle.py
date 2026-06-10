@@ -116,6 +116,7 @@ class LTMLEEstimator(BaseEstimator):
                             random_state=self.random_state)
         sl_g.fit(W, A)
         g = sl_g.predict_proba(W)
+        g_oof = sl_g.oof_predictions_
 
         # ── Step 3: Stage-1 outcome model Q_full(A, W, L1) on alive-at-L1 ──
         alive_idx = np.where(alive_mask)[0]
@@ -173,6 +174,28 @@ class LTMLEEstimator(BaseEstimator):
         Q_1W = np.clip(_expit_scipy(q_bar.decision_function(AW1)), 1e-5, 1 - 1e-5)
         Q_0W = np.clip(_expit_scipy(q_bar.decision_function(AW0)), 1e-5, 1 - 1e-5)
 
+        # OOF Q_bar: cross-fitted predictions on the full sample for unbiased IC variance.
+        from sklearn.model_selection import KFold
+        Q_1W_oof = np.zeros(n)
+        Q_0W_oof = np.zeros(n)
+        for tr_s2, val_s2 in KFold(self.n_folds, shuffle=True,
+                                    random_state=self.random_state).split(AW_s2):
+            # Map stage2 val indices back to full-sample positions
+            val_full = stage2_idx[val_s2]
+            sw_tr = stage2_sw[tr_s2] / max(stage2_sw[tr_s2].mean(), 1e-10)
+            if len(np.unique(stage2_Y[tr_s2])) < 2:
+                continue
+            qc = LogisticRegression(max_iter=1000, C=1.0)
+            qc.fit(AW_s2[tr_s2], stage2_Y[tr_s2].astype(int), sample_weight=sw_tr)
+            Q_1W_oof[val_full] = np.clip(
+                _expit_scipy(qc.decision_function(AW1[val_full])), 1e-5, 1 - 1e-5)
+            Q_0W_oof[val_full] = np.clip(
+                _expit_scipy(qc.decision_function(AW0[val_full])), 1e-5, 1 - 1e-5)
+
+        # Fill any zeros (folds skipped due to single-class) with full-data predictions
+        Q_1W_oof = np.where(Q_1W_oof == 0.0, Q_1W, Q_1W_oof)
+        Q_0W_oof = np.where(Q_0W_oof == 0.0, Q_0W, Q_0W_oof)
+
         # ── Step 5: TMLE targeting ──
         H = ipcw * (A / g - (1 - A) / (1 - g))
         denom = np.mean(H ** 2)
@@ -183,11 +206,13 @@ class LTMLEEstimator(BaseEstimator):
         Q_0W_star = _expit(_logit(Q_0W) - eps / (1 - g))
 
         # ── Step 6: Point estimate + EIF SE ──
+        # Fully cross-fitted DML IC: all terms use OOF g and Q for unbiased variance.
+        # Point estimate still uses full-data targeted Q* for better finite-sample bias.
         point = float(np.mean(Q_1W_star - Q_0W_star))
 
-        IC = ((Q_1W_star - Q_0W_star - point)
-              + ipcw * (A / g) * (Y - Q_1W_star)
-              - ipcw * ((1 - A) / (1 - g)) * (Y - Q_0W_star))
+        IC = ((Q_1W_oof - Q_0W_oof - point)
+              + ipcw * (A / g_oof) * (Y - Q_1W_oof)
+              - ipcw * ((1 - A) / (1 - g_oof)) * (Y - Q_0W_oof))
         se = float(np.sqrt(np.var(IC, ddof=1) / n))
 
         z = stats.norm.ppf(0.975)
