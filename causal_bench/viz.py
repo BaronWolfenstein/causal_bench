@@ -14,6 +14,8 @@ COLORS = {
     "tmle_ipcw_comply": "#006D2C",
     "cox_l1":           "#B30000",
     "ltmle":            "#2166AC",
+    "ipw":              "#E34A33",
+    "overlap":          "#9E9AC8",
 }
 
 LABELS = {
@@ -24,6 +26,8 @@ LABELS = {
     "tmle_ipcw_comply": "TMLE+IPCW+Comply",
     "cox_l1":           "Cox+L1 (collider)",
     "ltmle":            "LTMLE",
+    "ipw":              "IPW",
+    "overlap":          "Overlap (ATO)",
 }
 
 _FONT = dict(fontfamily="sans-serif", fontsize=11)

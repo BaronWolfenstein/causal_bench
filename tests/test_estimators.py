@@ -236,3 +236,40 @@ def test_ltmle_in_registry():
 def test_ltmle_not_in_mvp():
     from causal_bench.estimators import MVP_ESTIMATORS
     assert "ltmle" not in MVP_ESTIMATORS
+
+
+def test_ipw_returns_result():
+    from causal_bench.estimators.ipw import IPWEstimator
+    cfg = DGPConfig(n=300, seed=0)
+    df = generate_data(cfg)
+    results = IPWEstimator(n_folds=3).estimate(df)
+    assert results[0].name == "IPW"
+    assert not np.isnan(results[0].point_estimate)
+    assert not np.isnan(results[0].standard_error)
+    assert results[0].standard_error > 0
+
+
+def test_overlap_returns_result():
+    from causal_bench.estimators.overlap import OverlapEstimator
+    cfg = DGPConfig(n=300, seed=0)
+    df = generate_data(cfg)
+    results = OverlapEstimator(n_folds=3).estimate(df)
+    assert results[0].name == "Overlap"
+    assert not np.isnan(results[0].point_estimate)
+    assert not np.isnan(results[0].standard_error)
+
+
+def test_ipw_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    assert "ipw" in ESTIMATOR_REGISTRY
+
+
+def test_overlap_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    assert "overlap" in ESTIMATOR_REGISTRY
+
+
+def test_ipw_overlap_not_in_mvp():
+    from causal_bench.estimators import MVP_ESTIMATORS
+    assert "ipw" not in MVP_ESTIMATORS
+    assert "overlap" not in MVP_ESTIMATORS
