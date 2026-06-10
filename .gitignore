@@ -14,3 +14,10 @@ results/
 *.parquet
 *.log
 .DS_Store
+
+/.quarto/
+**/*.quarto_ipynb
+_freeze/
+.jupyter_cache/
+index_cache/
+.Renviron
