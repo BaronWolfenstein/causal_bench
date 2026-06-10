@@ -180,3 +180,84 @@ class TestConcreteRMSTEstimatorStub:
     def test_concrete_not_in_mvp(self):
         from causal_bench.estimators import MVP_ESTIMATORS
         assert "concrete_RMST" not in MVP_ESTIMATORS
+
+
+# ---------------------------------------------------------------------------
+# Live integration tests — skipped when concrete R package is not installed
+# ---------------------------------------------------------------------------
+
+import pytest
+
+concrete_available = pytest.mark.skipif(
+    not __import__("causal_bench.estimators.concrete_rmst", fromlist=["_concrete_available"])._concrete_available(),
+    reason="concrete R package not installed",
+)
+
+
+@concrete_available
+class TestConcreteRMSTLive:
+
+    def test_estimate_returns_result(self):
+        from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
+        df = _add_event_type(_make_df(n=300, seed=0))
+        results = ConcreteRMSTEstimator().estimate(df)
+        assert len(results) == 1
+        r = results[0]
+        assert r.name == "concrete_RMST"
+        assert r.estimand == "ATE"
+
+    def test_estimate_finite_values(self):
+        from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
+        import numpy as np
+        df = _add_event_type(_make_df(n=300, seed=1))
+        results = ConcreteRMSTEstimator().estimate(df)
+        assert results, "expected non-empty result"
+        r = results[0]
+        assert np.isfinite(r.point_estimate)
+        assert np.isfinite(r.standard_error)
+        assert r.standard_error > 0
+        assert r.ci_lower < r.ci_upper
+
+    def test_estimate_ci_contains_point(self):
+        from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
+        df = _add_event_type(_make_df(n=300, seed=2))
+        r = ConcreteRMSTEstimator().estimate(df)[0]
+        assert r.ci_lower <= r.point_estimate <= r.ci_upper
+
+    def test_collider_l1_not_inflating_se(self):
+        """With collider_strength=0 vs 0.8, SE should be similar — L1 must not
+        enter the outcome model (which would inflate variance via collider bias)."""
+        from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
+        import numpy as np
+        from causal_bench.dgp.config import DGPConfig
+        from causal_bench.dgp.survival import generate_data
+
+        df_no  = generate_data(DGPConfig(n=400, collider_strength=0.0, seed=3))
+        df_no["event_type"] = df_no["Delta"].astype(int)
+        df_hi  = generate_data(DGPConfig(n=400, collider_strength=0.8, seed=3))
+        df_hi["event_type"] = df_hi["Delta"].astype(int)
+
+        se_no = ConcreteRMSTEstimator().estimate(df_no)[0].standard_error
+        se_hi = ConcreteRMSTEstimator().estimate(df_hi)[0].standard_error
+        # If L1 leaked into the outcome model, se_hi would be substantially
+        # larger. Allow up to 3× as a loose guard.
+        assert se_hi < se_no * 3, f"SE ratio {se_hi/se_no:.2f} suggests L1 collider leak"
+
+    def test_sensitivity_returns_dataframe(self):
+        from causal_bench.estimators.concrete_rmst import concrete_sensitivity
+        import pandas as pd
+        df = _add_event_type(_make_df(n=300, seed=4))
+        result = concrete_sensitivity(df, deltas=[0.0, 0.05, 0.10])
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == ["delta", "estimate", "se", "ci_lower", "ci_upper"]
+        assert len(result) == 3
+
+    def test_sensitivity_monotone_or_not_required(self):
+        """Estimates need not be monotone in delta, but all must be finite."""
+        from causal_bench.estimators.concrete_rmst import concrete_sensitivity
+        import numpy as np
+        df = _add_event_type(_make_df(n=300, seed=5))
+        result = concrete_sensitivity(df, deltas=[0.0, 0.05, 0.10, 0.15, 0.20])
+        assert result["estimate"].apply(np.isfinite).all()
+        assert result["se"].apply(np.isfinite).all()
+        assert (result["ci_lower"] < result["ci_upper"]).all()
