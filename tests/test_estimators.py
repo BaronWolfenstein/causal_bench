@@ -204,3 +204,35 @@ def test_cox_l1_in_registry():
 def test_cox_l1_not_in_mvp_estimators():
     from causal_bench.estimators import MVP_ESTIMATORS
     assert "cox_l1" not in MVP_ESTIMATORS
+
+
+def test_ltmle_returns_result():
+    from causal_bench.estimators.ltmle import LTMLEEstimator
+    cfg = DGPConfig(n=400, collider_strength=0.5, seed=0)
+    df = generate_data(cfg)
+    results = LTMLEEstimator(n_folds=3).estimate(df, horizon=1.0)
+    assert results[0].name == "LTMLE"
+    assert not np.isnan(results[0].point_estimate)
+    assert not np.isnan(results[0].standard_error)
+
+
+def test_ltmle_falls_back_without_l1():
+    """Falls back gracefully when L1 is all-NaN."""
+    from causal_bench.estimators.ltmle import LTMLEEstimator
+    cfg = DGPConfig(n=300, collider_strength=0.0, seed=0)
+    df = generate_data(cfg)
+    # Zero out L1 to simulate fallback condition
+    df["L1"] = np.nan
+    results = LTMLEEstimator(n_folds=3).estimate(df)
+    assert len(results) >= 1
+    assert not np.isnan(results[0].point_estimate)
+
+
+def test_ltmle_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    assert "ltmle" in ESTIMATOR_REGISTRY
+
+
+def test_ltmle_not_in_mvp():
+    from causal_bench.estimators import MVP_ESTIMATORS
+    assert "ltmle" not in MVP_ESTIMATORS
