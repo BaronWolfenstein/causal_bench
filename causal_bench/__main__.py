@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from causal_bench.dgp.scenarios import get_scenario, list_scenarios
+from causal_bench.dgp.survival import generate_data
 from causal_bench.estimators import MVP_ESTIMATORS
 from causal_bench.runner import run_simulation
 from causal_bench.viz import plot_forest, generate_summary_table
@@ -30,6 +31,8 @@ def main():
                         help="Output directory (default: results/)")
     parser.add_argument("--no-plots", action="store_true",
                         help="Skip plot generation")
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="Generate overlap, Love plot, and SE calibration diagnostics")
     args = parser.parse_args()
 
     print(f"\ncausal_bench")
@@ -60,6 +63,15 @@ def main():
 
     out_dir = Path(args.out_dir) / args.scenario
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.diagnostics:
+        from causal_bench.diagnostics import plot_overlap, plot_love, plot_se_calibration, se_calibration_table
+        sample_df = generate_data(config)
+        plot_overlap(sample_df, save_path=str(out_dir / "overlap.png"))
+        plot_love(sample_df, save_path=str(out_dir / "love.png"))
+        plot_se_calibration(results, save_path=str(out_dir / "se_calibration.png"))
+        print("\n── SE calibration ──────────────────────────────────")
+        print(se_calibration_table(results).to_string())
 
     table = generate_summary_table(results)
     print("\n── Results ──────────────────────────────────────────")
