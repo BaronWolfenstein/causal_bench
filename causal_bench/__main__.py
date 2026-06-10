@@ -33,6 +33,10 @@ def main():
                         help="Skip plot generation")
     parser.add_argument("--diagnostics", action="store_true",
                         help="Generate overlap, Love plot, and SE calibration diagnostics")
+    parser.add_argument("--tipping-point", action="store_true",
+                        help="Print tipping-point sensitivity table and save tipping_point.png")
+    parser.add_argument("--ess", action="store_true",
+                        help="Compute ESS distribution across 50 sim draws and save ess_distribution.png")
     args = parser.parse_args()
 
     print(f"\ncausal_bench")
@@ -72,6 +76,22 @@ def main():
         plot_se_calibration(results, save_path=str(out_dir / "se_calibration.png"))
         print("\n── SE calibration ──────────────────────────────────")
         print(se_calibration_table(results).to_string())
+
+    if args.tipping_point:
+        from causal_bench.diagnostics import tipping_point_table, plot_tipping_point
+        plot_tipping_point(results, save_path=str(out_dir / "tipping_point.png"))
+        print("\n── Tipping-point sensitivity ────────────────────────")
+        print(tipping_point_table(results).to_string())
+
+    if args.ess:
+        from causal_bench.diagnostics import plot_ess_distribution, ess_across_sims
+        ess_summary = ess_across_sims(config, n_draws=50, seed=args.seed)
+        print(f"\n── ESS summary (50 draws) ────────────────────────────")
+        print(f"  median ESS : {ess_summary['median_ess']:.1f}  ({ess_summary['ess_pct']:.1f}% of n={config.n})")
+        print(f"  min / max  : {ess_summary['min_ess']:.1f} / {ess_summary['max_ess']:.1f}")
+        plot_ess_distribution(config, n_draws=50, seed=args.seed,
+                              save_path=str(out_dir / "ess_distribution.png"))
+        print(f"  Saved ESS distribution → {out_dir}/ess_distribution.png")
 
     table = generate_summary_table(results)
     print("\n── Results ──────────────────────────────────────────")

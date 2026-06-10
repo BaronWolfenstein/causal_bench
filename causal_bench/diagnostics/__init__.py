@@ -220,3 +220,169 @@ def plot_se_calibration(results: dict, save_path: Optional[str] = None) -> plt.F
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 4. Tipping-point sensitivity
+# ---------------------------------------------------------------------------
+
+def tipping_point_table(results: dict, alpha: float = 0.05) -> pd.DataFrame:
+    """Additive tipping-point analysis for each estimator.
+
+    The tipping point is the minimum additive bias needed to move the
+    mean estimate to the null (zero):
+        tipping_bias = |mean(estimates)|
+
+    Also expressed in SE units (how many median SEs away from null):
+        tipping_z = tipping_bias / median(se_estimates)
+
+    Returns DataFrame with columns:
+        mean_estimate, tipping_bias, tipping_se_units, median_se, n_sim
+    """
+    rows = []
+    for name, sr in results.items():
+        if sr is None:
+            continue
+        mean_est  = float(np.mean(sr.estimates))
+        med_se    = float(np.median(sr.se_estimates))
+        tip_bias  = abs(mean_est)
+        tip_z     = tip_bias / med_se if med_se > 1e-10 else np.nan
+        rows.append({
+            "estimator":        name,
+            "mean_estimate":    mean_est,
+            "tipping_bias":     tip_bias,
+            "tipping_se_units": round(tip_z,    2),
+            "median_se":        med_se,
+            "n_sim":            int(sr.n_sim),
+        })
+    if not rows:
+        return pd.DataFrame(
+            columns=["mean_estimate", "tipping_bias", "tipping_se_units", "median_se", "n_sim"]
+        ).rename_axis("estimator")
+    return pd.DataFrame(rows).set_index("estimator")
+
+
+def plot_tipping_point(results: dict, save_path: Optional[str] = None) -> plt.Figure:
+    """Horizontal bar chart of tipping-point bias by estimator.
+
+    Each bar = |mean estimate| = how much additive bias explains away the result.
+    Bars are coloured by estimator (from viz.COLORS).
+    Secondary x-axis label shows SE units for reference.
+    """
+    from causal_bench.viz import COLORS, LABELS
+    tbl = tipping_point_table(results).reset_index()
+    if tbl.empty:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No results", ha="center", va="center")
+        return fig
+
+    tbl = tbl.sort_values("tipping_bias", ascending=True)
+    fig, ax = plt.subplots(figsize=(7, max(3, len(tbl) * 0.5 + 1)))
+    y = np.arange(len(tbl))
+    colors = [COLORS.get(e, "#888888") for e in tbl["estimator"]]
+    bars = ax.barh(y, tbl["tipping_bias"], color=colors, edgecolor="white", height=0.6)
+
+    # Annotate with SE units
+    for bar, (_, row) in zip(bars, tbl.iterrows()):
+        ax.text(
+            bar.get_width() + tbl["tipping_bias"].max() * 0.02,
+            bar.get_y() + bar.get_height() / 2,
+            f"{row['tipping_se_units']:.1f} SE",
+            va="center", fontsize=8, color="#444"
+        )
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([LABELS.get(e, e) for e in tbl["estimator"]])
+    ax.set_xlabel("Tipping-point bias (additive, |mean estimate|)")
+    ax.set_title("Tipping-point sensitivity\n(bars = bias needed to explain away the effect)")
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 5. Effective sample size (ESS) across simulation draws
+# ---------------------------------------------------------------------------
+
+def ess_across_sims(
+    dgp_config,
+    n_draws: int = 50,
+    n_folds: int = 3,
+    seed: int = 0,
+) -> dict:
+    """Compute IPW ESS distribution across n_draws simulation draws.
+
+    For each draw a fresh dataset is generated (seed + i), propensity fitted,
+    and ESS = (sum w)^2 / sum(w^2) computed for stabilised HT weights.
+
+    Returns dict with keys:
+        ess_values   — list of n_draws ESS values
+        mean_ess     — mean ESS
+        median_ess   — median ESS
+        min_ess      — min ESS
+        max_ess      — max ESS
+        ess_pct      — median ESS as % of n (nominal sample size)
+    """
+    from causal_bench.dgp.survival import generate_data
+    from causal_bench.dgp.config import DGPConfig
+    from causal_bench.super_learner import SuperLearner
+
+    rng = np.random.default_rng(seed)
+    seeds = rng.integers(0, 10_000, size=n_draws).tolist()
+
+    # Build a new config with each seed, keeping all other params identical
+    base_kwargs = {k: v for k, v in vars(dgp_config).items() if not k.startswith("_")}
+
+    ess_vals = []
+    W_cols = ["W1", "W2", "W3", "W4"]
+    for s in seeds:
+        cfg_i = DGPConfig(**{**base_kwargs, "seed": int(s)})
+        df_i  = generate_data(cfg_i)
+        A     = df_i["A"].values
+        g_sl  = SuperLearner(task="classification", n_folds=n_folds, random_state=42)
+        g_sl.fit(df_i[W_cols].values, A)
+        g     = g_sl.predict_proba(df_i[W_cols].values)
+        p_A   = A.mean()
+        w     = np.where(A == 1, p_A / g, (1 - p_A) / (1 - g))
+        ess   = float((w.sum() ** 2) / (w ** 2).sum())
+        ess_vals.append(ess)
+
+    n = dgp_config.n
+    return {
+        "ess_values":  ess_vals,
+        "mean_ess":    float(np.mean(ess_vals)),
+        "median_ess":  float(np.median(ess_vals)),
+        "min_ess":     float(np.min(ess_vals)),
+        "max_ess":     float(np.max(ess_vals)),
+        "ess_pct":     float(np.median(ess_vals) / n * 100),
+    }
+
+
+def plot_ess_distribution(
+    dgp_config,
+    n_draws: int = 50,
+    n_folds: int = 3,
+    seed: int = 0,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """Histogram of ESS across simulation draws with summary statistics."""
+    summary = ess_across_sims(dgp_config, n_draws=n_draws, n_folds=n_folds, seed=seed)
+    vals = summary["ess_values"]
+    n    = dgp_config.n
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.hist(vals, bins=20, color="#3182BD", alpha=0.7, edgecolor="white")
+    ax.axvline(summary["median_ess"], color="#E34A33", linewidth=1.5,
+               label=f"Median ESS = {summary['median_ess']:.0f} ({summary['ess_pct']:.1f}% of n={n})")
+    ax.axvline(n, color="#31A354", linewidth=1, linestyle="--",
+               label=f"Nominal n = {n}")
+    ax.set_xlabel("Effective sample size (IPW stabilised)")
+    ax.set_ylabel("Count")
+    ax.set_title(f"ESS distribution across {n_draws} simulation draws")
+    ax.legend()
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig

@@ -152,3 +152,123 @@ class TestSECalibration:
         results["missing"] = None
         tbl = se_calibration_table(results)
         assert "missing" not in tbl.index
+
+
+class TestTippingPoint:
+    def test_table_returns_dataframe(self):
+        from causal_bench.diagnostics import tipping_point_table
+        tbl = tipping_point_table(_make_sim_results())
+        assert isinstance(tbl, pd.DataFrame)
+        assert "tipping_bias" in tbl.columns
+        assert "tipping_se_units" in tbl.columns
+
+    def test_tipping_bias_equals_abs_mean_estimate(self):
+        from causal_bench.diagnostics import tipping_point_table
+        results = _make_sim_results()
+        tbl = tipping_point_table(results)
+        for name, sr in results.items():
+            expected = abs(float(np.mean(sr.estimates)))
+            assert abs(tbl.loc[name, "tipping_bias"] - expected) < 1e-6
+
+    def test_tipping_se_units_positive(self):
+        from causal_bench.diagnostics import tipping_point_table
+        tbl = tipping_point_table(_make_sim_results())
+        assert (tbl["tipping_se_units"] > 0).all()
+
+    def test_none_results_skipped(self):
+        from causal_bench.diagnostics import tipping_point_table
+        results = _make_sim_results()
+        results["missing"] = None
+        tbl = tipping_point_table(results)
+        assert "missing" not in tbl.index
+
+    def test_empty_results(self):
+        from causal_bench.diagnostics import tipping_point_table
+        tbl = tipping_point_table({})
+        assert isinstance(tbl, pd.DataFrame)
+        assert len(tbl) == 0
+
+    def test_plot_returns_figure(self):
+        from causal_bench.diagnostics import plot_tipping_point
+        import matplotlib.pyplot as plt
+        fig = plot_tipping_point(_make_sim_results())
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_plot_saves_file(self, tmp_path):
+        from causal_bench.diagnostics import plot_tipping_point
+        import matplotlib.pyplot as plt
+        path = str(tmp_path / "tipping.png")
+        plot_tipping_point(_make_sim_results(), save_path=path)
+        assert (tmp_path / "tipping.png").exists()
+        plt.close("all")
+
+    def test_plot_handles_empty(self):
+        from causal_bench.diagnostics import plot_tipping_point
+        import matplotlib.pyplot as plt
+        fig = plot_tipping_point({})
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestESSAcrossSims:
+    def test_returns_dict_with_expected_keys(self):
+        from causal_bench.diagnostics import ess_across_sims
+        cfg = DGPConfig(n=200, seed=0)
+        result = ess_across_sims(cfg, n_draws=5, n_folds=2)
+        for k in ["ess_values", "mean_ess", "median_ess", "min_ess", "max_ess", "ess_pct"]:
+            assert k in result, f"missing key: {k}"
+
+    def test_ess_values_length(self):
+        from causal_bench.diagnostics import ess_across_sims
+        cfg = DGPConfig(n=200, seed=0)
+        result = ess_across_sims(cfg, n_draws=5, n_folds=2)
+        assert len(result["ess_values"]) == 5
+
+    def test_ess_positive(self):
+        from causal_bench.diagnostics import ess_across_sims
+        cfg = DGPConfig(n=200, seed=0)
+        result = ess_across_sims(cfg, n_draws=5, n_folds=2)
+        assert result["min_ess"] > 0
+
+    def test_ess_not_exceed_n(self):
+        from causal_bench.diagnostics import ess_across_sims
+        cfg = DGPConfig(n=200, seed=0)
+        result = ess_across_sims(cfg, n_draws=5, n_folds=2)
+        # ESS ≤ n for IPW weights (can occasionally be slightly above due to stabilisation)
+        assert result["median_ess"] <= cfg.n * 1.1
+
+    def test_ess_pct_in_range(self):
+        from causal_bench.diagnostics import ess_across_sims
+        cfg = DGPConfig(n=200, seed=0)
+        result = ess_across_sims(cfg, n_draws=5, n_folds=2)
+        assert 0 < result["ess_pct"] <= 110  # small slack for stabilised weights
+
+    def test_positivity_stress_lowers_ess(self):
+        """High positivity severity should give lower median ESS than clean."""
+        from causal_bench.diagnostics import ess_across_sims
+        cfg_clean  = DGPConfig(n=400, positivity_severity=0.0, seed=1)
+        cfg_stress = DGPConfig(n=400, positivity_severity=2.5, seed=1)
+        r_clean  = ess_across_sims(cfg_clean,  n_draws=10, n_folds=2, seed=1)
+        r_stress = ess_across_sims(cfg_stress, n_draws=10, n_folds=2, seed=1)
+        assert r_stress["median_ess"] < r_clean["median_ess"], (
+            f"Positivity stress should lower ESS: "
+            f"clean={r_clean['median_ess']:.1f}, stress={r_stress['median_ess']:.1f}"
+        )
+
+    def test_plot_returns_figure(self):
+        from causal_bench.diagnostics import plot_ess_distribution
+        import matplotlib.pyplot as plt
+        cfg = DGPConfig(n=200, seed=0)
+        fig = plot_ess_distribution(cfg, n_draws=5, n_folds=2)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_plot_saves_file(self, tmp_path):
+        from causal_bench.diagnostics import plot_ess_distribution
+        import matplotlib.pyplot as plt
+        cfg = DGPConfig(n=200, seed=0)
+        path = str(tmp_path / "ess.png")
+        plot_ess_distribution(cfg, n_draws=5, n_folds=2, save_path=path)
+        assert (tmp_path / "ess.png").exists()
+        plt.close("all")
