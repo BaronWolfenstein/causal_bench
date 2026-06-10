@@ -71,3 +71,67 @@ def test_sim_result_repr_no_array_dump():
                    nc_estimates=est)
     r = repr(sr)
     assert "1000" not in r or "n_sim=1000" in r  # arrays suppressed
+
+
+import pandas as pd
+from causal_bench.dgp.survival import generate_data
+from causal_bench.dgp.config import DGPConfig
+from causal_bench.estimators.naive import NaiveEstimator
+from causal_bench.estimators.kaplan_meier import KaplanMeierEstimator
+from causal_bench.estimators.cox import CoxEstimator
+
+
+def _clean_df(n=500, seed=0):
+    return generate_data(DGPConfig(n=n, censoring_informativeness=0.0,
+                                   unmeasured_confounding_strength=0.0,
+                                   positivity_severity=0.0, seed=seed))
+
+
+def test_naive_returns_result():
+    df = _clean_df()
+    results = NaiveEstimator().estimate(df, horizon=1.0, estimand="ATE")
+    assert len(results) == 1
+    r = results[0]
+    assert r.name == "Naive"
+    assert -2.0 < r.point_estimate < 2.0
+    assert r.ci_lower < r.point_estimate < r.ci_upper
+
+
+def test_naive_all_censored_returns_nan():
+    df = _clean_df()
+    df = df.copy()
+    df["Delta"] = 0.0
+    results = NaiveEstimator().estimate(df, horizon=1.0)
+    assert np.isnan(results[0].point_estimate)
+
+
+def test_km_returns_result():
+    df = _clean_df()
+    results = KaplanMeierEstimator().estimate(df, horizon=1.0)
+    assert len(results) == 1
+    r = results[0]
+    assert r.name == "KM"
+    assert r.ci_lower < r.point_estimate < r.ci_upper
+
+
+def test_cox_returns_result():
+    df = _clean_df(n=300)
+    results = CoxEstimator(n_bootstrap=10).estimate(df, horizon=1.0)
+    assert len(results) == 1
+    r = results[0]
+    assert r.name == "Cox"
+    assert r.ci_lower < r.ci_upper
+
+
+def test_negative_control_near_zero():
+    from causal_bench.estimators.naive import NaiveEstimator
+    df = _clean_df(n=2000, seed=7)
+    nc = NaiveEstimator().estimate_negative_control(df)
+    assert abs(nc) < 0.20  # should be near zero without confounding
+
+
+def test_base_estimator_nc_handles_all_treated():
+    df = _clean_df(n=100)
+    df = df.copy(); df["A"] = 1.0
+    nc = NaiveEstimator().estimate_negative_control(df)
+    assert np.isnan(nc)
