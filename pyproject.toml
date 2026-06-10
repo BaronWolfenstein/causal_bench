@@ -24,3 +24,6 @@ dev = ["pytest>=7", "pytest-cov"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["causal_bench*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
