@@ -12,6 +12,16 @@ Compares:
 Uses the competing_risks_base scenario so event_type ∈ {0, 1, 2},
 matching the data format concrete expects.
 
+NOTE — estimand difference in competing-risks setting:
+  compute_true_effects() returns an all-cause counterfactual risk difference.
+  Python TMLE/AIPW treat competing events (event_type=2) as independent
+  censoring, inflating cause-1 risk toward the all-cause number and producing
+  low apparent bias against that benchmark.  concrete_RMST correctly estimates
+  the cause-specific CIF difference for event_type=1 only (smaller, because
+  competing events properly reduce the at-risk pool), so it shows residual bias
+  against the all-cause benchmark — this is an estimand mismatch, not estimator
+  failure.  The comparison is clean in single-event scenarios.
+
 If concrete is not available, the script runs the Python estimators only
 and leaves the concrete_RMST column as N/A.
 """
