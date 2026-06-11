@@ -47,6 +47,7 @@ run_concrete_bridge <- function(df,
                                 horizon      = 1.0,
                                 covars       = c("W1", "W2", "W3", "W4"),
                                 crossover_col = NULL,
+                                strata_cols  = NULL,
                                 verbose      = FALSE) {
 
   stopifnot(is.data.frame(df))
@@ -103,6 +104,7 @@ run_concrete_bridge <- function(df,
       CVArg       = list(V = 5L),
       CensoringTV = ctv,
       Crossover   = crossover_col,
+      Strata      = strata_cols,
       Verbose     = verbose
     ),
     error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
@@ -265,6 +267,7 @@ run_concrete_sensitivity <- function(df,
                                      deltas        = c(0, 0.05, 0.10, 0.15, 0.20),
                                      mechanism     = "all",
                                      crossover_col = NULL,
+                                     strata_cols   = NULL,
                                      covars        = c("W1", "W2", "W3", "W4"),
                                      verbose       = FALSE) {
 
@@ -306,6 +309,7 @@ run_concrete_sensitivity <- function(df,
       CVArg       = list(V = 5L),
       CensoringTV = ctv,
       Crossover   = crossover_col,
+      Strata      = strata_cols,
       Verbose     = verbose
     ),
     error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
@@ -386,6 +390,7 @@ run_concrete_positivity_dx <- function(df,
                                        horizon       = 1.0,
                                        covars        = c("W1", "W2", "W3", "W4"),
                                        crossover_col = NULL,
+                                       strata_cols   = NULL,
                                        verbose       = FALSE) {
 
   stopifnot(is.data.frame(df))
@@ -413,7 +418,8 @@ run_concrete_positivity_dx <- function(df,
       Intervention = list(`1` = 1L, `0` = 0L),
       TargetTime  = horizon, TargetEvent = 1L,
       Covariates  = covars, CVArg = list(V = 5L),
-      CensoringTV = ctv, Crossover = crossover_col, Verbose = verbose
+      CensoringTV = ctv, Crossover = crossover_col,
+      Strata      = strata_cols, Verbose = verbose
     ),
     error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
   )
