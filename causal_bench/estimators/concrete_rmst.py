@@ -90,6 +90,7 @@ def concrete_sensitivity(
     deltas: list[float] | None = None,
     mechanism: str = "all",
     crossover_col: str | None = None,
+    strata_cols: list[str] | None = None,
 ) -> pd.DataFrame:
     """Run concrete::senseCensoring() and return a tidy DataFrame.
 
@@ -108,6 +109,11 @@ def concrete_sensitivity(
     mechanism     : "all" (default) | "dropout" | "crossover" — which censoring
                     pool to tip. "crossover" requires crossover_col.
     crossover_col : column name of per-subject switch times (None = ITT estimand).
+    strata_cols   : column name(s) of randomization strata (None = iid SE).
+                    When supplied, all reported SEs are corrected for stratified /
+                    covariate-adaptive randomization (concrete PR #29, Bugni-
+                    Canay-Shaikh / Ye-Shao). Only effective once concrete PR #29
+                    is merged and the package updated.
 
     Returns
     -------
@@ -145,11 +151,13 @@ def concrete_sensitivity(
     r_deltas    = ro.FloatVector(deltas)
     r_mechanism = ro.StrVector([mechanism])
     r_crossover = ro.StrVector([crossover_col]) if crossover_col else ro.rinterface.NULL
+    r_strata    = ro.StrVector(strata_cols) if strata_cols else ro.rinterface.NULL
 
     try:
         with localconverter(ro.default_converter + pandas2ri.converter):
             r_df     = ro.conversion.py2rpy(df_r)
-            result_r = run_sens(r_df, float(horizon), r_deltas, r_mechanism, r_crossover)
+            result_r = run_sens(r_df, float(horizon), r_deltas, r_mechanism,
+                                r_crossover, r_strata)
             out = ro.conversion.rpy2py(result_r).reset_index(drop=True)
 
         # Carry forward concrete's own tipping-point attr
@@ -168,6 +176,7 @@ def concrete_positivity_dx(
     df: pd.DataFrame,
     horizon: float = 1.0,
     crossover_col: str | None = None,
+    strata_cols: list[str] | None = None,
 ) -> dict:
     """Run concrete::getPositivityDx() and return summary + byTime DataFrames.
 
@@ -210,12 +219,13 @@ def concrete_positivity_dx(
     df_r["event_type"] = df_r["Delta"].astype(int)
     df_r = prepare_for_r(df_r)
     r_crossover = ro.StrVector([crossover_col]) if crossover_col else ro.rinterface.NULL
+    r_strata    = ro.StrVector(strata_cols) if strata_cols else ro.rinterface.NULL
 
     try:
         with localconverter(ro.default_converter + pandas2ri.converter):
             r_df    = ro.conversion.py2rpy(df_r)
             result_r = run_dx(r_df, float(horizon), ro.StrVector(["W1", "W2", "W3", "W4"]),
-                              r_crossover)
+                              r_crossover, r_strata)
             summary_df = ro.conversion.rpy2py(result_r.rx2("summary")).reset_index(drop=True)
             by_time_r  = result_r.rx2("byTime")
             # byTime is a named list (one entry per arm); flatten to a DataFrame
@@ -247,8 +257,9 @@ class ConcreteRMSTEstimator(BaseEstimator):
 
     name = "concrete_RMST"
 
-    def __init__(self, horizon: float = 1.0):
+    def __init__(self, horizon: float = 1.0, strata_cols: list[str] | None = None):
         self._horizon = horizon
+        self._strata_cols = strata_cols
 
     def estimate(
         self,
@@ -275,11 +286,13 @@ class ConcreteRMSTEstimator(BaseEstimator):
         df_r["event_type"] = df_r["Delta"].astype(int)
         df_r = prepare_for_r(df_r)
 
+        r_strata = ro.StrVector(self._strata_cols) if self._strata_cols else ro.rinterface.NULL
+
         with localconverter(ro.default_converter + pandas2ri.converter):
             r_df = ro.conversion.py2rpy(df_r)
 
         try:
-            result_r = run_bridge(r_df, float(horizon))
+            result_r = run_bridge(r_df, float(horizon), strata_cols=r_strata)
             point = float(np.array(result_r.rx2("ATE"))[0])
             se    = float(np.array(result_r.rx2("SE"))[0])
             if not (np.isfinite(point) and np.isfinite(se)):
