@@ -265,3 +265,73 @@ def compute_true_effects(config: DGPConfig, n_ref: int = 50_000) -> dict:
     ATT = float(np.mean(diff[A_obs == 1]))
 
     return {"ATE": ATE, "ATT": ATT}
+
+
+def compute_true_rmst(config: DGPConfig, n_ref: int = 50_000) -> dict:
+    """Estimate true RMST difference via g-computation on a large reference population.
+
+    RMST(a) = E[min(T_a, horizon)] = integral_0^horizon P(T_a > t) dt.
+    Uses the same shared covariates and Gumbel noise as compute_true_effects()
+    so the two benchmarks are directly comparable.
+
+    Parameters
+    ----------
+    config:
+        DGP configuration.
+    n_ref:
+        Size of the reference population (default 50 000).
+
+    Returns
+    -------
+    dict with keys:
+        "ATE"           — RMST(A=1) − RMST(A=0) marginalised over full population
+        "ATT"           — RMST difference for the treated subgroup
+        "rmst_treated"  — RMST under A=1 (years lived before horizon)
+        "rmst_control"  — RMST under A=0
+    """
+    rng = np.random.default_rng(config.seed ^ 0xDEADBEEF)
+
+    U  = rng.standard_normal(n_ref)
+    W1 = rng.standard_normal(n_ref)
+    W2 = rng.binomial(1, 0.5, n_ref).astype(float)
+    W3 = rng.standard_normal(n_ref)
+    W4 = rng.binomial(1, 0.3, n_ref).astype(float)
+    enrollment_time = rng.uniform(0, config.enrollment_period, n_ref)
+
+    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
+    logit_A = (
+        np.log(p / (1 - p))
+        + 0.3 * W1 + 0.2 * W2 - 0.2 * W3 + 0.1 * W4
+        + 0.5 * U * config.unmeasured_confounding_strength
+        + 0.8 * W1 * W3 * config.positivity_severity
+    )
+    A_obs = rng.binomial(1, _sigmoid(logit_A)).astype(float)
+
+    gumbel_noise = rng.gumbel(0, 1, n_ref)
+
+    def _log_T(a_val: float) -> np.ndarray:
+        return (
+            0.0
+            + 0.4 * W1 - 0.3 * W2 + 0.2 * W3 - 0.2 * W4
+            + 0.3 * U
+            + config.true_tau * a_val
+            + config.enrollment_drift * enrollment_time
+            + config.outcome_nonlinearity * (W1 ** 2 - 1)
+            + config.effect_heterogeneity * a_val * W1
+            + gumbel_noise
+        )
+
+    T1 = np.exp(_log_T(1.0))
+    T0 = np.exp(_log_T(0.0))
+
+    rmst1 = float(np.mean(np.minimum(T1, config.horizon)))
+    rmst0 = float(np.mean(np.minimum(T0, config.horizon)))
+    rmst1_att = float(np.mean(np.minimum(T1[A_obs == 1], config.horizon)))
+    rmst0_att = float(np.mean(np.minimum(T0[A_obs == 1], config.horizon)))
+
+    return {
+        "ATE":           rmst1 - rmst0,
+        "ATT":           rmst1_att - rmst0_att,
+        "rmst_treated":  rmst1,
+        "rmst_control":  rmst0,
+    }

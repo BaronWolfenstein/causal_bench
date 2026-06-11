@@ -31,7 +31,7 @@ def test_dgp_config_is_dataclass():
 
 # --- Survival DGP tests ---
 
-from causal_bench.dgp.survival import generate_data, compute_true_effects
+from causal_bench.dgp.survival import generate_data, compute_true_effects, compute_true_rmst
 
 
 def test_generate_data_shape():
@@ -270,3 +270,78 @@ def test_competing_risks_cause_fractions_nonzero():
     # Each cause should be at least 5% of all patients
     assert n_cause1 / n_total > 0.05, f"cause-1 fraction too low: {n_cause1/n_total:.3f}"
     assert n_cause2 / n_total > 0.05, f"cause-2 fraction too low: {n_cause2/n_total:.3f}"
+
+
+# --- compute_true_rmst tests ---
+
+def test_compute_true_rmst_returns_dict():
+    cfg = DGPConfig(n=500, seed=0)
+    result = compute_true_rmst(cfg)
+    assert isinstance(result, dict)
+    for key in ("ATE", "ATT", "rmst_treated", "rmst_control"):
+        assert key in result, f"missing key: {key}"
+
+
+def test_compute_true_rmst_finite():
+    cfg = DGPConfig(n=500, seed=1)
+    result = compute_true_rmst(cfg)
+    for k, v in result.items():
+        assert np.isfinite(v), f"{k} is not finite: {v}"
+
+
+def test_compute_true_rmst_bounded_by_horizon():
+    """Per-arm RMST must be in (0, horizon]."""
+    cfg = DGPConfig(n=500, horizon=1.0, seed=2)
+    result = compute_true_rmst(cfg)
+    assert 0 < result["rmst_treated"] <= cfg.horizon
+    assert 0 < result["rmst_control"] <= cfg.horizon
+
+
+def test_compute_true_rmst_ate_equals_arm_difference():
+    cfg = DGPConfig(n=500, seed=3)
+    result = compute_true_rmst(cfg)
+    assert abs(result["ATE"] - (result["rmst_treated"] - result["rmst_control"])) < 1e-10
+
+
+def test_compute_true_rmst_sign_matches_treatment_direction():
+    """true_tau=-0.5 shortens log T → treated die sooner → RMST(A=1) < RMST(A=0) → ATE < 0.
+    (Mirrors compute_true_effects where RD > 0: treated have higher event rate.)"""
+    cfg = DGPConfig(n=500, true_tau=-0.5, seed=4)
+    assert cfg.true_tau < 0
+    result = compute_true_rmst(cfg)
+    assert result["ATE"] < 0, f"Expected ATE < 0 for treatment that shortens survival, got {result['ATE']:.4f}"
+
+
+def test_compute_true_rmst_vs_risk_difference_ordering():
+    """RMST diff and RD should have opposite signs: treatment that shortens survival
+    (true_tau < 0) increases event risk (RD > 0) and decreases time lived (RMST diff < 0)."""
+    cfg = DGPConfig(n=500, seed=5)
+    rmst = compute_true_rmst(cfg)
+    rd   = compute_true_effects(cfg)
+    assert np.sign(rmst["ATE"]) != np.sign(rd["ATE"]), (
+        f"RMST ATE ({rmst['ATE']:.4f}) and RD ATE ({rd['ATE']:.4f}) should have opposite signs"
+    )
+
+
+def test_compute_true_rmst_stable_across_seeds():
+    """Two large n_ref runs with different seeds should agree within Monte Carlo noise."""
+    cfg = DGPConfig(seed=0)
+    r1 = compute_true_rmst(cfg, n_ref=20_000)
+    r2 = compute_true_rmst(DGPConfig(seed=1), n_ref=20_000)
+    # With n_ref=20k and true_tau=-0.5, RMST diff is ~0.1; allow 0.05 tolerance
+    assert abs(r1["ATE"] - r2["ATE"]) < 0.05, (
+        f"RMST ATE estimates too far apart: {r1['ATE']:.4f} vs {r2['ATE']:.4f}"
+    )
+
+
+def test_run_simulation_true_value_override():
+    """Passing true_value to run_simulation() skips compute_true_effects()
+    and uses the provided value in SimResult."""
+    from causal_bench.runner import run_simulation
+    cfg = DGPConfig(n=200, seed=0)
+    sentinel = 42.0
+    results = run_simulation(
+        cfg, estimator_names=["naive"], n_sim=5, n_jobs=1, true_value=sentinel
+    )
+    assert "naive" in results
+    assert results["naive"].true_value == sentinel
