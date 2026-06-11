@@ -1,8 +1,16 @@
-"""Exp 7: Edwards combined — all estimators across 3 scenarios.
+"""Exp 7: Edwards combined — pointwise risk-difference estimators across 3 scenarios.
 
 The "money experiment": demonstrates the full estimator hierarchy
 under realistic, optimistic, and pessimistic clinical trial conditions.
-Uses all available estimators so the audience sees the complete picture.
+
+NOTE — estimand scope:
+  All estimators here target the pointwise risk difference at the horizon,
+  which matches the benchmark produced by compute_true_effects(). RMST
+  estimators (concrete_RMST, rmst_k*) target the RMST difference (area
+  under the survival curve) — a different quantity that cannot be fairly
+  compared against the risk-difference benchmark. They are excluded here.
+  See exp8_mccoy.py for the RMST comparison, and GitHub issue #N for a
+  planned exp7 extension with a true RMST benchmark.
 """
 from pathlib import Path
 import numpy as np
@@ -13,8 +21,9 @@ from causal_bench.metrics import SimResult
 from causal_bench.viz import generate_summary_table, plot_forest
 
 SCENARIOS = ["edwards_optimistic", "edwards_realistic", "edwards_pessimistic"]
-# All estimators except cox_l1 (collider-biased by design, misleading in this context)
-ESTIMATORS = [k for k in ESTIMATOR_REGISTRY if k != "cox_l1"]
+_RMST_ESTIMATORS = {"concrete_RMST"} | {f"rmst_k{k}" for k in (2, 5, 10, 20)}
+# Exclude cox_l1 (collider-biased by design) and RMST estimators (different estimand)
+ESTIMATORS = [k for k in ESTIMATOR_REGISTRY if k not in _RMST_ESTIMATORS | {"cox_l1"}]
 OUT_DIR = Path("results/exp7_edwards")
 N_SIMS = 200  # increase to 1000 for publication
 
