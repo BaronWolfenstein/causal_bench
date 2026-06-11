@@ -49,13 +49,24 @@ def run_simulation(
     seed: int = 42,
     estimand: str = "ATE",
     horizon: Optional[float] = None,
+    true_value: Optional[float] = None,
 ) -> dict[str, SimResult]:
+    """Run Monte Carlo simulations for a set of estimators.
+
+    Parameters
+    ----------
+    true_value:
+        Pre-computed true effect value.  When provided, skips the internal
+        call to compute_true_effects() — use this when the estimators target
+        a different estimand than the risk difference (e.g. RMST difference).
+    """
     if horizon is None:
         horizon = dgp_config.horizon
 
-    print(f"Computing true {estimand}...", flush=True)
-    true_effects = compute_true_effects(dgp_config)
-    true_value = true_effects.get(estimand, true_effects["ATE"])
+    if true_value is None:
+        print(f"Computing true {estimand}...", flush=True)
+        true_effects = compute_true_effects(dgp_config)
+        true_value = true_effects.get(estimand, true_effects["ATE"])
 
     # Pass config as plain dict for safe pickling across joblib workers
     config_dict = dgp_config.__dict__.copy()
