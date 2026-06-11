@@ -137,24 +137,77 @@ run_concrete_bridge <- function(df,
   )
 
   ## ---------------------------------------------------------------------------
-  ## Parse result — extract the RMST difference (treated − control).
-  ## concrete's output structure varies across versions; try known layouts.
+  ## Parse result — extract the risk-difference contrast (treated − control).
+  ##
+  ## getRMST() returns per-arm rows for RMST and "Life Years Lost" (cause-
+  ## specific CIF). There is no pre-computed contrast row. We prefer the
+  ## "Life Years Lost" estimand (cause-specific CIF difference) as it is
+  ## comparable to the Python estimators' pointwise risk difference.
+  ##
+  ## Fall-through order:
+  ##   1. Pre-computed contrast row (Diff/RD/ATE in first column)
+  ##   2. "Life Years Lost" per-arm rows → contrast by subtraction
+  ##   3. "RMST" per-arm rows → contrast by subtraction
+  ##   4. Legacy list layouts
   ## ---------------------------------------------------------------------------
   point <- NA_real_
   se    <- NA_real_
 
-  if (is.data.frame(rmst) || is.data.table(rmst)) {
-    ## getRMST / targetRMST data.frame layout: look for the "RMST Diff" row
-    diff_rows <- rmst[grepl("Diff|RD|ATE|diff", rmst[[1]], ignore.case = TRUE), ]
-    if (nrow(diff_rows) == 0) diff_rows <- rmst  # fall back to first row
+  .pt_col <- function(df) grep("Pt\\.Est|Pt Est|Estimate|Point|Est$",
+                                names(df), value = TRUE)[1]
+  .se_col <- function(df) grep("^SE$|^se$|Std\\.Err|StdErr",
+                                names(df), value = TRUE)[1]
+  .arm_col <- function(df) grep("Intervention|Arm|Treatment|arm",
+                                 names(df), value = TRUE)[1]
+  .est_col <- function(df) grep("Estimand|estimand",
+                                 names(df), value = TRUE)[1]
 
-    pt_col <- grep("Pt.Est|Estimate|Point|Est$", names(diff_rows), value = TRUE)[1]
-    se_col <- grep("^SE$|Std.Err|StdErr|se$", names(diff_rows), value = TRUE)[1]
-    if (!is.na(pt_col)) point <- as.numeric(diff_rows[[pt_col]][1])
-    if (!is.na(se_col)) se    <- as.numeric(diff_rows[[se_col]][1])
+  if (is.data.frame(rmst) || is.data.table(rmst)) {
+    rmst_df <- as.data.frame(rmst)
+
+    ## 1. Pre-computed contrast row
+    diff_rows <- rmst_df[grepl("Diff|RD|ATE|diff|contrast",
+                               rmst_df[[1]], ignore.case = TRUE), ]
+    if (nrow(diff_rows) > 0) {
+      pc <- .pt_col(diff_rows); sc <- .se_col(diff_rows)
+      if (!is.na(pc)) point <- as.numeric(diff_rows[[pc]][1])
+      if (!is.na(sc)) se    <- as.numeric(diff_rows[[sc]][1])
+    }
+
+    ## 2. Per-arm rows — compute contrast
+    if (is.na(point)) {
+      ac <- .arm_col(rmst_df); ec <- .est_col(rmst_df)
+      pc <- .pt_col(rmst_df);  sc <- .se_col(rmst_df)
+
+      if (!is.na(ac) && !is.na(pc)) {
+        ## Prefer "Life Years Lost" (cause-specific CIF) over RMST
+        for (estimand_pat in c("Life Years Lost", "RMST")) {
+          if (!is.na(ec)) {
+            sub <- rmst_df[grepl(estimand_pat, rmst_df[[ec]], ignore.case = TRUE), ]
+          } else {
+            sub <- rmst_df
+          }
+          ## Match arm labels: treated=1, control=0
+          arms <- as.character(sub[[ac]])
+          trt_row <- sub[grepl("A=1|=1|trt|treat|1$", arms, ignore.case = TRUE), ]
+          ctl_row <- sub[grepl("A=0|=0|ctrl|control|0$", arms, ignore.case = TRUE), ]
+          if (nrow(trt_row) > 0 && nrow(ctl_row) > 0) {
+            est1 <- as.numeric(trt_row[[pc]][1])
+            est0 <- as.numeric(ctl_row[[pc]][1])
+            point <- est1 - est0
+            if (!is.na(sc)) {
+              se1 <- as.numeric(trt_row[[sc]][1])
+              se0 <- as.numeric(ctl_row[[sc]][1])
+              se  <- sqrt(se1^2 + se0^2)   # delta method (independent arms)
+            }
+            break
+          }
+        }
+      }
+    }
 
   } else if (is.list(rmst)) {
-    ## Legacy list layouts
+    ## 4. Legacy list layouts
     if (!is.null(rmst$Estimate)) {
       point <- as.numeric(rmst$Estimate)
       se    <- as.numeric(rmst$SE)
