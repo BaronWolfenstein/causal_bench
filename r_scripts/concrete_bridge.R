@@ -44,9 +44,10 @@ suppressPackageStartupMessages({
 ##   $raw           the full concrete result object (for debugging)
 ## ---------------------------------------------------------------------------
 run_concrete_bridge <- function(df,
-                                horizon    = 1.0,
-                                covars     = c("W1", "W2", "W3", "W4"),
-                                verbose    = FALSE) {
+                                horizon      = 1.0,
+                                covars       = c("W1", "W2", "W3", "W4"),
+                                crossover_col = NULL,
+                                verbose      = FALSE) {
 
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
@@ -71,8 +72,8 @@ run_concrete_bridge <- function(df,
                       L1   = dt[["L1"]][obs_idx])
     if (verbose) message("concrete_bridge: passing L1 to CensoringTV (not outcome model)")
   }
-  ## Drop L1 from the main table — it's been extracted to CensoringTV and
-  ## formatArguments rejects any column with NaN values in the DataTable.
+  ## Drop L1 (and any other L-columns) from the main table — they've been
+  ## extracted to CensoringTV; formatArguments rejects NaN-valued columns.
   dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
 
   ## Cap TargetTime at the last observed event — concrete errors if the
@@ -84,8 +85,10 @@ run_concrete_bridge <- function(df,
   }
 
   ## formatArguments — wraps data + analysis plan into a single object.
-  ## CensoringTV conditions the IPCW on L1 (LOCF + change-from-baseline),
-  ## correcting informative-censoring bias without touching the outcome hazards.
+  ## CensoringTV conditions the IPCW on L1 (LOCF + change-from-baseline).
+  ## Crossover (when supplied) moves from ITT to the per-protocol "no-switching"
+  ## estimand: each switcher is re-censored at switch time and a separate
+  ## crossover hazard is multiplied into the IPCW.
   args <- tryCatch(
     concrete::formatArguments(
       DataTable   = dt,
@@ -99,6 +102,7 @@ run_concrete_bridge <- function(df,
       Covariates  = covars,
       CVArg       = list(V = 5L),
       CensoringTV = ctv,
+      Crossover   = crossover_col,
       Verbose     = verbose
     ),
     error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
@@ -108,6 +112,12 @@ run_concrete_bridge <- function(df,
   est <- tryCatch(
     concrete::doConcrete(args),
     error = function(e) stop("concrete::doConcrete failed: ", conditionMessage(e))
+  )
+
+  ## Positivity / inverse-weight diagnostics (PR #28: getPositivityDx)
+  pos_dx <- tryCatch(
+    concrete::getPositivityDx(est, Verbose = verbose),
+    error = function(e) NULL   # graceful fallback for older concrete versions
   )
 
   ## Extract RMST contrast — try getRMST() first (current API), fall back to
@@ -159,12 +169,13 @@ run_concrete_bridge <- function(df,
   converged <- !is.na(point) && is.finite(point) && is.finite(se)
 
   list(
-    ATE       = point,
-    SE        = se,
-    CI_lower  = point - 1.96 * se,
-    CI_upper  = point + 1.96 * se,
-    converged = converged,
-    raw       = rmst          # keep for debugging layout changes
+    ATE          = point,
+    SE           = se,
+    CI_lower     = point - 1.96 * se,
+    CI_upper     = point + 1.96 * se,
+    converged    = converged,
+    positivity   = if (!is.null(pos_dx)) pos_dx$summary else NULL,
+    raw          = rmst
   )
 }
 
@@ -183,25 +194,32 @@ run_concrete_bridge <- function(df,
 ## estimate, not the naive IPCW estimate.
 ##
 ## Parameters
-##   df        same data.frame as run_concrete_bridge expects
-##   horizon   target time
-##   deltas    numeric vector of delta values in [0, 1] (default 0..0.20)
-##   covars    outcome covariate column names (L1 is excluded; goes to CensoringTV)
-##   verbose   passed through to concrete
+##   df            same data.frame as run_concrete_bridge expects
+##   horizon       target time
+##   deltas        numeric vector of delta values in [0, 1] (default 0..0.20)
+##   mechanism     "all" | "dropout" | "crossover" — which censoring pool to tip
+##                 (PR #28; "crossover" requires a Crossover model)
+##   crossover_col column name of per-subject switch times (NULL = ITT estimand)
+##   covars        outcome covariate column names
+##   verbose       passed through to concrete
 ##
 ## Returns a data.frame with columns:
-##   delta, estimate, se, ci_lower, ci_upper
+##   mechanism, delta, estimate, se, ci_lower, ci_upper
+##   attr "tipping_point" — concrete's own tipping-point value (list by event)
 ## ---------------------------------------------------------------------------
 run_concrete_sensitivity <- function(df,
-                                     horizon  = 1.0,
-                                     deltas   = c(0, 0.05, 0.10, 0.15, 0.20),
-                                     covars   = c("W1", "W2", "W3", "W4"),
-                                     verbose  = FALSE) {
+                                     horizon       = 1.0,
+                                     deltas        = c(0, 0.05, 0.10, 0.15, 0.20),
+                                     mechanism     = "all",
+                                     crossover_col = NULL,
+                                     covars        = c("W1", "W2", "W3", "W4"),
+                                     verbose       = FALSE) {
 
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
   stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
   stopifnot(is.numeric(deltas), all(deltas >= 0), all(deltas <= 1))
+  mechanism <- match.arg(mechanism, c("all", "dropout", "crossover"))
 
   ## Build data.table + id + CensoringTV (identical logic to run_concrete_bridge)
   dt <- as.data.table(df)
@@ -234,18 +252,23 @@ run_concrete_sensitivity <- function(df,
       Covariates  = covars,
       CVArg       = list(V = 5L),
       CensoringTV = ctv,
+      Crossover   = crossover_col,
       Verbose     = verbose
     ),
     error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
   )
 
   sens_raw <- tryCatch(
-    concrete::senseCensoring(args, deltas = deltas, Estimand = "RD"),
+    concrete::senseCensoring(args, deltas = deltas, Estimand = "RD",
+                             mechanism = mechanism),
     error = function(e) stop("concrete::senseCensoring failed: ", conditionMessage(e))
   )
 
+  ## Stash concrete's own tipping-point attr before we reshape.
+  tipping_pt <- attr(sens_raw, "tippingPoint")
+
   ## Normalize to a stable data.frame regardless of concrete version.
-  ## Try column-name patterns for delta, point estimate, SE, CI bounds.
+  ## PR #28 adds a leading "mechanism" column; preserve it when present.
   if (!(is.data.frame(sens_raw) || is.data.table(sens_raw))) {
     stop("senseCensoring returned unrecognised format (not a data.frame)")
   }
@@ -260,31 +283,94 @@ run_concrete_sensitivity <- function(df,
     NA_character_
   }
 
-  delta_col  <- .pick(c("delta", "Delta", "shift"))
+  mech_col   <- .pick(c("^mechanism$", "^Mechanism$"))
+  delta_col  <- .pick(c("^delta$", "^Delta$", "shift"))
   pt_col     <- .pick(c("Pt.Est", "Pt Est", "Estimate", "point", "coef"))
   se_col     <- .pick(c("^SE$", "StdErr", "Std.Err", "\\.SE$"))
   ci_lo_col  <- .pick(c("CI.Low", "CI Low", "lower", "\\.lo$", "lwr"))
   ci_hi_col  <- .pick(c("CI.Hi",  "CI Hi",  "upper", "\\.hi$", "upr"))
 
   out <- data.frame(
-    delta    = if (!is.na(delta_col))  as.numeric(dt_s[[delta_col]])  else deltas,
-    estimate = if (!is.na(pt_col))     as.numeric(dt_s[[pt_col]])     else NA_real_,
-    se       = if (!is.na(se_col))     as.numeric(dt_s[[se_col]])     else NA_real_,
-    ci_lower = if (!is.na(ci_lo_col))  as.numeric(dt_s[[ci_lo_col]])  else NA_real_,
-    ci_upper = if (!is.na(ci_hi_col))  as.numeric(dt_s[[ci_hi_col]])  else NA_real_
+    mechanism = if (!is.na(mech_col))   as.character(dt_s[[mech_col]]) else mechanism,
+    delta     = if (!is.na(delta_col))  as.numeric(dt_s[[delta_col]])  else deltas,
+    estimate  = if (!is.na(pt_col))     as.numeric(dt_s[[pt_col]])     else NA_real_,
+    se        = if (!is.na(se_col))     as.numeric(dt_s[[se_col]])     else NA_real_,
+    ci_lower  = if (!is.na(ci_lo_col))  as.numeric(dt_s[[ci_lo_col]])  else NA_real_,
+    ci_upper  = if (!is.na(ci_hi_col))  as.numeric(dt_s[[ci_hi_col]])  else NA_real_
   )
 
   ## Fill gaps: derive SE from CI or CI from SE
-  missing_se  <- is.na(out$se)
-  missing_ci  <- is.na(out$ci_lower)
-  if (any(missing_se)  && !any(missing_ci))
+  missing_se <- is.na(out$se)
+  missing_ci <- is.na(out$ci_lower)
+  if (any(missing_se) && !any(missing_ci))
     out$se[missing_se] <- (out$ci_upper[missing_se] - out$ci_lower[missing_se]) / (2 * 1.96)
-  if (any(missing_ci)  && !any(missing_se)) {
+  if (any(missing_ci) && !any(missing_se)) {
     out$ci_lower[missing_ci] <- out$estimate[missing_ci] - 1.96 * out$se[missing_ci]
     out$ci_upper[missing_ci] <- out$estimate[missing_ci] + 1.96 * out$se[missing_ci]
   }
 
+  attr(out, "tipping_point") <- tipping_pt
   out
+}
+
+
+## ---------------------------------------------------------------------------
+## run_concrete_positivity_dx
+##
+## Wraps concrete::getPositivityDx() (PR #28): reports per-arm ESS, max
+## weight, minimum observation probability, and truncation-bound share.
+## Returns the $summary data.frame (one row per intervention) and $byTime
+## (per-evaluation-time detail).
+##
+## Parameters
+##   df        same data.frame as run_concrete_bridge expects
+##   horizon   target time
+##   covars    outcome covariate column names
+##   crossover_col  per-subject switch-time column (NULL = ITT)
+##   verbose   passed through to concrete
+## ---------------------------------------------------------------------------
+run_concrete_positivity_dx <- function(df,
+                                       horizon       = 1.0,
+                                       covars        = c("W1", "W2", "W3", "W4"),
+                                       crossover_col = NULL,
+                                       verbose       = FALSE) {
+
+  stopifnot(is.data.frame(df))
+  stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
+
+  dt <- as.data.table(df)
+  dt[, id         := .I]
+  dt[, event_type := as.integer(event_type)]
+  dt[, A          := as.integer(A)]
+
+  ctv <- NULL
+  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
+    obs_idx <- !is.na(dt[["L1"]])
+    ctv <- data.table(id = dt$id[obs_idx], time = 0.5, L1 = dt[["L1"]][obs_idx])
+  }
+  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
+
+  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  if (horizon >= last_event) horizon <- last_event * 0.999
+
+  args <- tryCatch(
+    concrete::formatArguments(
+      DataTable   = dt, EventTime = "T_obs", EventType = "event_type",
+      Treatment   = "A", ID = "id",
+      Intervention = list(`1` = 1L, `0` = 0L),
+      TargetTime  = horizon, TargetEvent = 1L,
+      Covariates  = covars, CVArg = list(V = 5L),
+      CensoringTV = ctv, Crossover = crossover_col, Verbose = verbose
+    ),
+    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
+  )
+
+  est <- tryCatch(
+    concrete::doConcrete(args),
+    error = function(e) stop("concrete::doConcrete failed: ", conditionMessage(e))
+  )
+
+  concrete::getPositivityDx(est, Verbose = verbose)
 }
 
 

@@ -533,6 +533,8 @@ def tipping_point_concrete(
     df: pd.DataFrame,
     horizon: float,
     deltas: Optional[list[float]] = None,
+    mechanism: str = "all",
+    crossover_col: Optional[str] = None,
 ) -> pd.DataFrame:
     """MAR sensitivity analysis via concrete::senseCensoring() with CensoringTV.
 
@@ -548,17 +550,22 @@ def tipping_point_concrete(
 
     Parameters
     ----------
-    df      : causal_bench DataFrame (with L1 for CensoringTV activation).
-    horizon : study horizon passed to concrete.
-    deltas  : fractions swept (default [0.0, 0.05, 0.10, 0.15, 0.20]).
+    df            : causal_bench DataFrame (with L1 for CensoringTV activation).
+    horizon       : study horizon passed to concrete.
+    deltas        : fractions swept (default [0.0, 0.05, 0.10, 0.15, 0.20]).
+    mechanism     : "all" (default) | "dropout" | "crossover" — which censoring
+                    pool to tip (concrete PR #28). "crossover" requires
+                    crossover_col and a Crossover-aware fit.
+    crossover_col : column name of per-subject switch times (None = ITT).
 
     Returns
     -------
     pd.DataFrame with columns:
-        delta, estimate, se, ci_lower, ci_upper, significant
+        mechanism, delta, estimate, se, ci_lower, ci_upper, significant
     Attributes:
-        .attrs["tipping_delta"]  — smallest delta where CI first crosses 0
-                                   (NaN if the effect holds across all deltas)
+        .attrs["tipping_delta"]  — first delta where CI crosses 0, using
+                                   concrete's own tipping-point value when
+                                   available; falls back to Python scan
         .attrs["mar_estimate"]   — point estimate at delta = 0
 
     Raises
@@ -570,9 +577,10 @@ def tipping_point_concrete(
     if deltas is None:
         deltas = [0.0, 0.05, 0.10, 0.15, 0.20]
 
-    result = concrete_sensitivity(df, horizon=horizon, deltas=deltas)
+    result = concrete_sensitivity(df, horizon=horizon, deltas=deltas,
+                                  mechanism=mechanism, crossover_col=crossover_col)
 
-    # Ensure expected columns exist; fill CI from SE if needed
+    # Ensure CI columns exist
     if "ci_lower" not in result.columns and "se" in result.columns:
         result["ci_lower"] = result["estimate"] - 1.96 * result["se"]
         result["ci_upper"] = result["estimate"] + 1.96 * result["se"]
@@ -581,15 +589,74 @@ def tipping_point_concrete(
         (result["ci_lower"] <= 0) & (0 <= result["ci_upper"])
     )
 
-    # Find tipping delta: first delta where CI crosses 0
-    crossing = result.loc[~result["significant"], "delta"]
-    tipping  = float(crossing.iloc[0]) if len(crossing) else float("nan")
+    # Prefer concrete's own tipping point; fall back to Python scan
+    concrete_tp = result.attrs.get("tipping_point")
+    if concrete_tp is not None and np.isfinite(float(concrete_tp)):
+        tipping = float(concrete_tp)
+    else:
+        crossing = result.loc[~result["significant"], "delta"]
+        tipping  = float(crossing.iloc[0]) if len(crossing) else float("nan")
 
-    mar_row  = result.loc[result["delta"] == min(deltas, key=lambda d: abs(d))]
-    mar_est  = float(mar_row["estimate"].iloc[0]) if len(mar_row) else float("nan")
+    mar_row = result.loc[result["delta"] == min(deltas, key=lambda d: abs(d))]
+    mar_est = float(mar_row["estimate"].iloc[0]) if len(mar_row) else float("nan")
 
     result.attrs["tipping_delta"] = tipping
     result.attrs["mar_estimate"]  = mar_est
+    result.attrs["mechanism"]     = mechanism
+    return result
+
+
+def positivity_dx_concrete(
+    df: pd.DataFrame,
+    horizon: float,
+    crossover_col: Optional[str] = None,
+) -> dict:
+    """Positivity / inverse-weight diagnostics via concrete::getPositivityDx().
+
+    Reports per-arm effective sample size (ESS as fraction of n), max IPCW
+    weight, minimum observation probability, and the share of weights at the
+    truncation bound.  Uses the full IPCW weight 1/(g·S_C[·S_X]), so this is
+    heavier than positivity_summary() which covers only g(A|W).
+
+    A CAUTION flag is set on arms where ESS < 50 %, pct_at_bound > 5 %, or
+    max_weight > 20 — these indicate near-positivity violations that inflate
+    variance and can bias the TMLE targeting step.
+
+    Parameters
+    ----------
+    df            : causal_bench DataFrame.
+    horizon       : study horizon.
+    crossover_col : per-subject switch-time column (None = ITT estimand).
+
+    Returns
+    -------
+    dict with keys:
+        "summary"  — pd.DataFrame, one row per arm:
+                     intervention, n, ESS_overall, ESS_worst, max_weight,
+                     min_obs_prob, pct_at_bound
+        "by_time"  — pd.DataFrame with per-evaluation-time ESS, max_weight,
+                     min_obs_prob columns (one row per time × arm), or None
+        "caution"  — list[str] arm names that triggered the CAUTION threshold
+
+    Raises
+    ------
+    RuntimeError if concrete R package is not available.
+    """
+    from causal_bench.estimators.concrete_rmst import concrete_positivity_dx
+
+    result = concrete_positivity_dx(df, horizon=horizon, crossover_col=crossover_col)
+    summary = result["summary"]
+
+    caution_arms = []
+    if summary is not None and len(summary):
+        mask = (
+            (summary.get("ESS_worst",     pd.Series(dtype=float)) < 0.5) |
+            (summary.get("pct_at_bound",  pd.Series(dtype=float)) > 5.0) |
+            (summary.get("max_weight",    pd.Series(dtype=float)) > 20.0)
+        )
+        caution_arms = list(summary.loc[mask, "Intervention"]) if "Intervention" in summary.columns else []
+
+    result["caution"] = caution_arms
     return result
 
 
@@ -704,10 +771,13 @@ def plot_tipping_point_concrete(
             arrowprops=dict(arrowstyle="->", color="#888", lw=0.8),
         )
 
+    mechanism = tipping_df.attrs.get("mechanism", "all")
+    mech_label = {"all": "all censored", "dropout": "dropout only",
+                  "crossover": "crossover only"}.get(mechanism, mechanism)
     ax.set_xlabel("δ (fraction of censored patients assumed to be events)")
     ax.set_ylabel("Risk difference (TMLE)")
     ax.set_title(
-        title or "Censoring MAR sensitivity  —  concrete::senseCensoring()\n"
+        title or f"Censoring MAR sensitivity  —  concrete::senseCensoring() [{mech_label}]\n"
                  "L1 in CensoringTV: baseline IPCW already conditioned on time-varying covariates"
     )
     ax.legend(loc="upper right", fontsize=8)

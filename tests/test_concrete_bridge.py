@@ -249,7 +249,8 @@ class TestConcreteRMSTLive:
         df = _add_event_type(_make_df(n=300, seed=4))
         result = concrete_sensitivity(df, deltas=[0.0, 0.05, 0.10])
         assert isinstance(result, pd.DataFrame)
-        assert list(result.columns) == ["delta", "estimate", "se", "ci_lower", "ci_upper"]
+        for col in ("mechanism", "delta", "estimate", "se", "ci_lower", "ci_upper"):
+            assert col in result.columns, f"missing column: {col}"
         assert len(result) == 3
 
     def test_sensitivity_monotone_or_not_required(self):

@@ -88,6 +88,8 @@ def concrete_sensitivity(
     df: pd.DataFrame,
     horizon: float = 1.0,
     deltas: list[float] | None = None,
+    mechanism: str = "all",
+    crossover_col: str | None = None,
 ) -> pd.DataFrame:
     """Run concrete::senseCensoring() and return a tidy DataFrame.
 
@@ -99,15 +101,21 @@ def concrete_sensitivity(
 
     Parameters
     ----------
-    df      : causal_bench DataFrame (must have L1 for CensoringTV to activate).
-    horizon : study horizon.
-    deltas  : fractions of censored patients assumed to be events.
-              Default: [0.0, 0.05, 0.10, 0.15, 0.20].
+    df            : causal_bench DataFrame (L1 for CensoringTV, optional
+                    switch-time column for Crossover).
+    horizon       : study horizon.
+    deltas        : fractions swept. Default: [0.0, 0.05, 0.10, 0.15, 0.20].
+    mechanism     : "all" (default) | "dropout" | "crossover" — which censoring
+                    pool to tip. "crossover" requires crossover_col.
+    crossover_col : column name of per-subject switch times (None = ITT estimand).
 
     Returns
     -------
     pd.DataFrame with columns:
-        delta, estimate, se, ci_lower, ci_upper
+        mechanism, delta, estimate, se, ci_lower, ci_upper
+    Attributes:
+        .attrs["tipping_point"] — concrete's tipping-point value (from
+                                  attr(sens_raw, "tippingPoint"))
 
     Raises
     ------
@@ -115,6 +123,8 @@ def concrete_sensitivity(
     """
     if deltas is None:
         deltas = [0.0, 0.05, 0.10, 0.15, 0.20]
+    if mechanism not in ("all", "dropout", "crossover"):
+        raise ValueError(f"mechanism must be 'all', 'dropout', or 'crossover'; got {mechanism!r}")
 
     if not _concrete_available():
         raise RuntimeError(
@@ -132,15 +142,93 @@ def concrete_sensitivity(
     df_r = df.copy()
     df_r["event_type"] = df_r["Delta"].astype(int)
     df_r = prepare_for_r(df_r)
-    r_deltas = ro.FloatVector(deltas)
+    r_deltas    = ro.FloatVector(deltas)
+    r_mechanism = ro.StrVector([mechanism])
+    r_crossover = ro.StrVector([crossover_col]) if crossover_col else ro.rinterface.NULL
 
     try:
         with localconverter(ro.default_converter + pandas2ri.converter):
             r_df     = ro.conversion.py2rpy(df_r)
-            result_r = run_sens(r_df, float(horizon), r_deltas)
-            return ro.conversion.rpy2py(result_r).reset_index(drop=True)
+            result_r = run_sens(r_df, float(horizon), r_deltas, r_mechanism, r_crossover)
+            out = ro.conversion.rpy2py(result_r).reset_index(drop=True)
+
+        # Carry forward concrete's own tipping-point attr
+        tp_r = result_r.do_slot_assign if hasattr(result_r, "do_slot_assign") else None
+        try:
+            tp = list(result_r.slots["tipping_point"])
+            out.attrs["tipping_point"] = tp[0] if len(tp) == 1 else tp
+        except Exception:
+            out.attrs["tipping_point"] = None
+        return out
     except Exception as exc:
         raise RuntimeError(f"concrete sensitivity analysis failed: {exc}") from exc
+
+
+def concrete_positivity_dx(
+    df: pd.DataFrame,
+    horizon: float = 1.0,
+    crossover_col: str | None = None,
+) -> dict:
+    """Run concrete::getPositivityDx() and return summary + byTime DataFrames.
+
+    Reports per-arm effective sample size (ESS as a fraction of n), maximum
+    IPCW weight, minimum observation probability, and the share of weights at
+    the truncation bound. The IPCW weight is 1/(g·S_C[·S_X]) — heavier than
+    the propensity-score ESS in positivity_summary(), which covers g alone.
+
+    Parameters
+    ----------
+    df            : causal_bench DataFrame.
+    horizon       : study horizon.
+    crossover_col : per-subject switch-time column (None = ITT estimand).
+
+    Returns
+    -------
+    dict with keys:
+        "summary"  — pd.DataFrame (one row per intervention arm)
+        "by_time"  — pd.DataFrame (per-evaluation-time ESS etc., one row per
+                     time × arm); None if concrete returns nothing.
+
+    Raises
+    ------
+    RuntimeError if concrete R package is not available.
+    """
+    if not _concrete_available():
+        raise RuntimeError(
+            "concrete R package not available. "
+            "Install with: remotes::install_github('blind-contours/concrete')"
+        )
+
+    import rpy2.robjects as ro
+    import rpy2.robjects.pandas2ri as pandas2ri
+    from rpy2.robjects.conversion import localconverter
+
+    ro.r["source"](str(_R_BRIDGE))
+    run_dx = ro.globalenv["run_concrete_positivity_dx"]
+
+    df_r = df.copy()
+    df_r["event_type"] = df_r["Delta"].astype(int)
+    df_r = prepare_for_r(df_r)
+    r_crossover = ro.StrVector([crossover_col]) if crossover_col else ro.rinterface.NULL
+
+    try:
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            r_df    = ro.conversion.py2rpy(df_r)
+            result_r = run_dx(r_df, float(horizon), ro.StrVector(["W1", "W2", "W3", "W4"]),
+                              r_crossover)
+            summary_df = ro.conversion.rpy2py(result_r.rx2("summary")).reset_index(drop=True)
+            by_time_r  = result_r.rx2("byTime")
+            # byTime is a named list (one entry per arm); flatten to a DataFrame
+            frames = []
+            for arm in list(by_time_r.names):
+                arm_df = ro.conversion.rpy2py(by_time_r.rx2(arm)).reset_index(drop=True)
+                arm_df.insert(0, "intervention", arm)
+                frames.append(arm_df)
+            by_time_df = pd.concat(frames, ignore_index=True) if frames else None
+
+        return {"summary": summary_df, "by_time": by_time_df}
+    except Exception as exc:
+        raise RuntimeError(f"concrete positivity diagnostics failed: {exc}") from exc
 
 
 class ConcreteRMSTEstimator(BaseEstimator):
