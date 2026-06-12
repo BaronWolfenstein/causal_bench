@@ -53,6 +53,44 @@ def _calibrate_censoring_scale(censoring_rate: float, horizon: float,
     return (lo + hi) / 2
 
 
+def _stratified_block_randomize(
+    strata_arrays: list,
+    block_size: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Permuted-block randomization within covariate-defined strata.
+
+    Each array in ``strata_arrays`` is binarised at its median to form a bit
+    of the stratum integer (so k arrays → 2^k strata). Within each stratum
+    patients are shuffled, then assigned in alternating blocks of size
+    ``block_size`` (half treated, half control). A partial final block is
+    filled with Bernoulli(0.5) draws.
+    """
+    n = len(strata_arrays[0])
+    strata_id = np.zeros(n, dtype=int)
+    for bit, arr in enumerate(strata_arrays):
+        strata_id |= (arr >= np.median(arr)).astype(int) << bit
+
+    A = np.empty(n, dtype=float)
+    half = block_size // 2
+    for s in np.unique(strata_id):
+        idx = np.where(strata_id == s)[0]
+        perm = rng.permutation(len(idx))
+        shuffled = idx[perm]
+        n_s = len(shuffled)
+        assignments = np.empty(n_s, dtype=float)
+        pos = 0
+        while pos + block_size <= n_s:
+            block = np.concatenate([np.ones(half), np.zeros(block_size - half)])
+            rng.shuffle(block)
+            assignments[pos:pos + block_size] = block
+            pos += block_size
+        if pos < n_s:
+            assignments[pos:] = rng.binomial(1, 0.5, n_s - pos).astype(float)
+        A[shuffled] = assignments
+    return A
+
+
 def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> pd.DataFrame:
     """Generate one simulated clinical trial dataset.
 
@@ -83,18 +121,25 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     enrollment_time = rng.uniform(0, config.enrollment_period, n)
 
     # --- Treatment assignment ---
-    # Logit intercept adjusted for treatment_prevalence baseline
-    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
-    logit_A = (
-        np.log(p / (1 - p))
-        + 0.3 * W1
-        + 0.2 * W2
-        - 0.2 * W3
-        + 0.1 * W4
-        + 0.5 * U * config.unmeasured_confounding_strength
-        + 0.8 * W1 * W3 * config.positivity_severity
-    )
-    A = rng.binomial(1, _sigmoid(logit_A)).astype(float)
+    _col_map = {"W1": W1, "W2": W2, "W3": W3, "W4": W4}
+    if config.strata_cols:
+        A = _stratified_block_randomize(
+            [_col_map[c] for c in config.strata_cols],
+            block_size=config.strata_block_size,
+            rng=rng,
+        )
+    else:
+        p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
+        logit_A = (
+            np.log(p / (1 - p))
+            + 0.3 * W1
+            + 0.2 * W2
+            - 0.2 * W3
+            + 0.1 * W4
+            + 0.5 * U * config.unmeasured_confounding_strength
+            + 0.8 * W1 * W3 * config.positivity_severity
+        )
+        A = rng.binomial(1, _sigmoid(logit_A)).astype(float)
 
     # --- Survival time (AFT model with Gumbel noise) ---
     gumbel_noise = rng.gumbel(0, 1, n)
@@ -179,7 +224,7 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     # --- Negative control outcome (no treatment effect) ---
     Y_neg = 0.5 * W1 - 0.3 * W3 + 0.4 * U + rng.normal(0, 0.5, n)
 
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "T_obs": T_obs,
         "Delta": Delta,
         "event_type": event_type,
@@ -193,6 +238,10 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
         "Y_neg": Y_neg,
         "L1": L1_obs,
     })
+    # Propagate strata info so concrete bridge can pass Strata argument
+    if config.strata_cols:
+        df.attrs["strata_cols"] = list(config.strata_cols)
+    return df
 
 
 def compute_true_effects(config: DGPConfig, n_ref: int = 50_000) -> dict:

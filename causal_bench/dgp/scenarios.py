@@ -47,6 +47,16 @@ _REGISTRY: dict[str, dict] = {
         outcome_nonlinearity=0.7, effect_heterogeneity=0.5,
         true_tau=-0.5,
     ),
+    # Stratified block randomization — for Exp 11 / SE correction benchmark
+    # W2 (Bern 0.5) × W4 (Bern 0.3) → 4 strata; block size 4.
+    # Strata account for ~20% of outcome variance via their W2/W4 prognostic effects.
+    "stratified_base": {
+        **_CLEAN,
+        "strata_cols": ("W2", "W4"),   # tuple so DGPConfig asdict round-trips cleanly
+        "strata_block_size": 4,
+        "censoring_informativeness": 0.0,
+        "censoring_rate": 0.20,
+    },
     # Competing risks — for Exp 8 / McCoy experiment
     # cause1 = primary event (treatment reduces risk), cause2 = competing event
     "competing_risks_base": {

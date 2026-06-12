@@ -46,4 +46,10 @@ class DGPConfig:
     compliance_available: bool = True
     compliance_censoring_r2: float = 0.3
 
+    # Stratified block randomization
+    # When set, treatment is assigned via permuted blocks within the named strata
+    # rather than Bernoulli. Columns must be in ["W1", "W2", "W3", "W4"].
+    strata_cols: object = None       # list[str] | None; object avoids mutable-default issue
+    strata_block_size: int = 4       # must be even
+
     seed: int = 42
