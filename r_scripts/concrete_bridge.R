@@ -535,8 +535,6 @@ run_concrete_win_ratio <- function(df,
     }
   }, error = function(e) stop("concrete win ratio failed: ", conditionMessage(e)))
 
-  converged <- isTRUE(attr(wr_raw, "WRConverged"))
-
   ## Extract WR, SE, CI — handle data.frame or list layouts defensively
   wr_val      <- NA_real_
   se_val      <- NA_real_
@@ -581,8 +579,11 @@ run_concrete_win_ratio <- function(df,
     if (!is.null(wr_raw$net_benefit)) net_benefit <- as.numeric(wr_raw$net_benefit)
   }
 
+  converged <- isTRUE(attr(wr_raw, "WRConverged")) ||
+               (!is.na(wr_val) && is.finite(wr_val) && !is.na(se_val) && is.finite(se_val))
+
   ## Fill missing CI from SE using asymmetric log-scale CI
-  if (is.na(ci_lo) && !is.na(wr_val) && !is.na(se_val)) {
+  if ((is.na(ci_lo) || is.na(ci_hi)) && !is.na(wr_val) && !is.na(se_val)) {
     ci_lo <- exp(log(wr_val) - 1.96 * se_val / wr_val)
     ci_hi <- exp(log(wr_val) + 1.96 * se_val / wr_val)
   }
