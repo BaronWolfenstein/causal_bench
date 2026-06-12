@@ -1,4 +1,4 @@
-"""Exp 9: Win ratio benchmark — direct TMLE vs plug-in via concrete PR #30.
+"""Exp 10: Win ratio benchmark — direct TMLE vs plug-in via concrete PR #30.
 
 Reproduces the core finding from McCoy PR #30: targetWinRatio() (direct TMLE)
 cuts WR bias ~5x vs getWinRatio() (plug-in) by solving the win/loss EIF
@@ -25,7 +25,7 @@ from causal_bench.runner import run_simulation
 from causal_bench.viz import generate_summary_table, plot_forest
 
 ESTIMATORS = ["concrete_WR_direct", "concrete_WR_plugin"]
-OUT_DIR = Path("results/exp9_win_ratio")
+OUT_DIR = Path("results/exp10_win_ratio")
 N_SIMS = 200  # increase to 500 for publication
 
 

@@ -3,6 +3,7 @@ from dataclasses import asdict
 import numpy as np
 import pandas as pd
 from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.survival import generate_data
 
 
 def test_dgp_config_defaults():
@@ -392,3 +393,46 @@ def test_compute_true_win_ratio_deterministic():
     r1 = compute_true_win_ratio(cfg, n_ref=5_000)
     r2 = compute_true_win_ratio(cfg, n_ref=5_000)
     assert r1["ATE"] == r2["ATE"]
+
+
+# ── Stratified block randomization ──────────────────────────────────────────
+
+def test_stratified_block_randomize_balance():
+    cfg = DGPConfig(n=400, strata_cols=("W2", "W4"), strata_block_size=4, seed=7)
+    df = generate_data(cfg)
+    # Overall balance should be close to 0.5
+    frac = df["A"].mean()
+    assert 0.40 <= frac <= 0.60, f"Treatment fraction {frac:.3f} outside [0.40, 0.60]"
+
+
+def test_stratified_block_randomize_within_strata_balance():
+    cfg = DGPConfig(n=800, strata_cols=("W2", "W4"), strata_block_size=4, seed=99)
+    df = generate_data(cfg)
+    for w2 in [0, 1]:
+        for w4 in [0, 1]:
+            sub = df[(df["W2"] == w2) & (df["W4"] == w4)]
+            if len(sub) < 10:
+                continue
+            frac = sub["A"].mean()
+            assert 0.35 <= frac <= 0.65, (
+                f"Stratum W2={w2} W4={w4}: treatment fraction {frac:.3f} out of range"
+            )
+
+
+def test_stratified_block_randomize_strata_attrs():
+    cfg = DGPConfig(n=200, strata_cols=("W2", "W4"), strata_block_size=4, seed=3)
+    df = generate_data(cfg)
+    assert df.attrs.get("strata_cols") == ["W2", "W4"]
+
+
+def test_stratified_base_scenario():
+    from causal_bench.dgp.scenarios import get_scenario
+    cfg = get_scenario("stratified_base")
+    assert cfg.strata_cols is not None
+    df = generate_data(cfg)
+    assert 0.40 <= df["A"].mean() <= 0.60
+
+
+def test_concrete_rmst_strata_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY
+    assert "concrete_RMST_strata" in ESTIMATOR_REGISTRY
