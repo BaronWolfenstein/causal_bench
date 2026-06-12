@@ -338,3 +338,13 @@ def test_rmst_k20_closer_than_k2():
     # Both should be finite
     assert np.isfinite(r2) and np.isfinite(r20)
     # K=20 estimate should exist and not crash (bias convergence needs MC sims to verify)
+
+
+def test_win_ratio_estimators_in_registry():
+    from causal_bench.estimators import ESTIMATOR_REGISTRY, get_estimator
+    assert "concrete_WR_direct" in ESTIMATOR_REGISTRY
+    assert "concrete_WR_plugin" in ESTIMATOR_REGISTRY
+    direct = get_estimator("concrete_WR_direct")
+    plugin = get_estimator("concrete_WR_plugin")
+    assert direct.name == "concrete_WR_direct"
+    assert plugin.name == "concrete_WR_plugin"
