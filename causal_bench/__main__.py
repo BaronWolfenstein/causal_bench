@@ -43,6 +43,12 @@ def main():
                         help="Estimator for MNAR grid sweep (default: km; use tmle_ipcw for rigour)")
     parser.add_argument("--mnar-grid", type=int, default=10,
                         help="Grid points per axis for MNAR sweep (default: 10, total runs = n^2)")
+    parser.add_argument("--export-r", action="store_true",
+                        help="Export one simulated dataset as CSV + metadata JSON for R/concrete benchmarking")
+    parser.add_argument("--convergence", action="store_true",
+                        help="Show IC-based TMLE convergence diagnostics on a single dataset")
+    parser.add_argument("--overlap-map", action="store_true",
+                        help="Save 'who are we borrowing for?' propensity overlap map")
     args = parser.parse_args()
 
     print(f"\ncausal_bench")
@@ -98,6 +104,33 @@ def main():
         plot_ess_distribution(config, n_draws=50, seed=args.seed,
                               save_path=str(out_dir / "ess_distribution.png"))
         print(f"  Saved ESS distribution → {out_dir}/ess_distribution.png")
+
+    if args.export_r:
+        from causal_bench.diagnostics import export_for_r
+        sample_df = generate_data(config)
+        paths = export_for_r(sample_df, config, out_dir=str(out_dir), prefix=args.scenario)
+        print(f"\n── Export for R ─────────────────────────────────────")
+        print(f"  CSV      → {paths['csv_path']}")
+        print(f"  metadata → {paths['meta_path']}")
+
+    if args.convergence:
+        from causal_bench.diagnostics import convergence_table
+        tmle_names = [e for e in args.estimators if "tmle" in e or "ltmle" in e]
+        if not tmle_names:
+            tmle_names = ["tmle_ipcw"]
+        sample_df = generate_data(config)
+        conv = convergence_table(sample_df, tmle_names)
+        print(f"\n── TMLE convergence diagnostics (single dataset) ────")
+        print(conv.to_string())
+        conv.to_csv(str(out_dir / "convergence.csv"))
+        print(f"  Saved → {out_dir}/convergence.csv")
+
+    if args.overlap_map:
+        from causal_bench.diagnostics import plot_overlap_map
+        sample_df = generate_data(config)
+        plot_overlap_map(sample_df, save_path=str(out_dir / "overlap_map.png"))
+        print(f"\n── Overlap map ───────────────────────────────────────")
+        print(f"  Saved → {out_dir}/overlap_map.png")
 
     if args.mnar_tipping_point:
         from causal_bench.diagnostics import tipping_point_mnar, plot_tipping_point_mnar
