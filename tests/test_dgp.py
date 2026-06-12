@@ -345,3 +345,50 @@ def test_run_simulation_true_value_override():
     )
     assert "naive" in results
     assert results["naive"].true_value == sentinel
+
+
+# --- Win ratio true-value tests ---
+
+from causal_bench.dgp.survival import compute_true_win_ratio
+
+
+def test_compute_true_win_ratio_keys():
+    cfg = DGPConfig(seed=0)
+    result = compute_true_win_ratio(cfg, n_ref=5_000)
+    for key in ("ATE", "ATT", "p_win", "p_loss", "net_benefit"):
+        assert key in result, f"missing key: {key}"
+
+
+def test_compute_true_win_ratio_probabilities_valid():
+    cfg = DGPConfig(seed=0)
+    result = compute_true_win_ratio(cfg, n_ref=5_000)
+    assert 0.0 <= result["p_win"] <= 1.0
+    assert 0.0 <= result["p_loss"] <= 1.0
+    assert result["p_win"] + result["p_loss"] <= 1.0 + 1e-9
+
+
+def test_compute_true_win_ratio_wr_positive():
+    cfg = DGPConfig(seed=0)
+    result = compute_true_win_ratio(cfg, n_ref=5_000)
+    assert result["ATE"] > 0.0
+
+
+def test_compute_true_win_ratio_sign_matches_treatment_direction():
+    # true_tau=-0.5 shortens T → T1 < T0 → p_win < p_loss → WR < 1
+    cfg = DGPConfig(true_tau=-0.5, seed=0)
+    result = compute_true_win_ratio(cfg, n_ref=10_000)
+    assert result["ATE"] < 1.0, f"WR should be <1 for true_tau=-0.5, got {result['ATE']:.3f}"
+
+
+def test_compute_true_win_ratio_net_benefit_consistent():
+    cfg = DGPConfig(seed=1)
+    result = compute_true_win_ratio(cfg, n_ref=5_000)
+    expected_nb = result["p_win"] - result["p_loss"]
+    assert abs(result["net_benefit"] - expected_nb) < 1e-9
+
+
+def test_compute_true_win_ratio_deterministic():
+    cfg = DGPConfig(seed=42)
+    r1 = compute_true_win_ratio(cfg, n_ref=5_000)
+    r2 = compute_true_win_ratio(cfg, n_ref=5_000)
+    assert r1["ATE"] == r2["ATE"]
