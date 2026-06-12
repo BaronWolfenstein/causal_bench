@@ -7,6 +7,7 @@ from causal_bench.estimators.ipw import IPWEstimator
 from causal_bench.estimators.overlap import OverlapEstimator
 from causal_bench.estimators.aipw import AIPWEstimator
 from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
+from causal_bench.estimators.concrete_win_ratio import ConcreteWinRatioEstimator
 from causal_bench.estimators.pointwise_rmst import PointwiseRMSTEstimator
 
 ESTIMATOR_REGISTRY: dict = {
@@ -21,6 +22,8 @@ ESTIMATOR_REGISTRY: dict = {
     "overlap":            OverlapEstimator(),
     "aipw":               AIPWEstimator(),
     "concrete_RMST":      ConcreteRMSTEstimator(),
+    "concrete_WR_direct":  ConcreteWinRatioEstimator(method="direct"),
+    "concrete_WR_plugin":  ConcreteWinRatioEstimator(method="plugin"),
     "rmst_k2":            PointwiseRMSTEstimator(n_grid=2),
     "rmst_k5":            PointwiseRMSTEstimator(n_grid=5),
     "rmst_k10":           PointwiseRMSTEstimator(n_grid=10),

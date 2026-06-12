@@ -713,6 +713,185 @@ def plot_tipping_point_mnar(
     return fig
 
 
+def convergence_table(df: pd.DataFrame, estimator_names: list) -> pd.DataFrame:
+    """Run TMLE estimators on a single dataset and report IC-based convergence stats.
+
+    Convergence condition: |IC.mean()| / IC.std() << 1 (targeting residual small
+    relative to variance). McCoy's TMLE convergence criterion.
+
+    Parameters
+    ----------
+    df               : one simulated dataset (output of generate_data)
+    estimator_names  : names of TMLE-family estimators to diagnose
+
+    Returns
+    -------
+    DataFrame with columns: estimator, ic_mean (eps), ic_sd, ic_ratio, n, converged
+    """
+    from causal_bench.estimators import get_estimator
+    rows = []
+    for name in estimator_names:
+        est = get_estimator(name)
+        try:
+            results = est.estimate(df, horizon=float(df["T_obs"].max()), estimand="ATE")
+        except Exception as exc:
+            rows.append({"estimator": name, "ic_mean": float("nan"), "ic_sd": float("nan"),
+                         "ic_ratio": float("nan"), "n": len(df), "converged": False,
+                         "note": str(exc)[:60]})
+            continue
+        match = next((r for r in results if r.estimand == "ATE"), None)
+        if match is None or match.ic is None:
+            rows.append({"estimator": name, "ic_mean": float("nan"), "ic_sd": float("nan"),
+                         "ic_ratio": float("nan"), "n": len(df), "converged": False,
+                         "note": "no IC"})
+            continue
+        ic = match.ic
+        ic_mean = float(np.mean(ic))
+        ic_sd   = float(np.std(ic))
+        ratio   = abs(ic_mean) / max(ic_sd, 1e-12)
+        rows.append({
+            "estimator": name,
+            "ic_mean":   round(ic_mean, 6),
+            "ic_sd":     round(ic_sd, 6),
+            "ic_ratio":  round(ratio, 4),
+            "n":         len(df),
+            "converged": ratio < 0.1,
+            "note":      "",
+        })
+    return pd.DataFrame(rows).set_index("estimator")
+
+
+def plot_overlap_map(
+    df: pd.DataFrame,
+    x_col: str = "W1",
+    y_col: str = "W3",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """'Who are we borrowing for?' overlap map.
+
+    2D scatter of treated patients in (x_col, y_col) space.
+    Marker size ∝ 1/g (inverse propensity weight — larger = harder to match).
+    Background: KDE density contour of control patients.
+
+    Parameters
+    ----------
+    df       : one simulated dataset with columns A, W1-W4
+    x_col    : x-axis covariate (default W1)
+    y_col    : y-axis covariate (default W3)
+    save_path: if given, saves figure at 150 dpi
+    """
+    from sklearn.linear_model import LogisticRegression
+    from scipy.stats import gaussian_kde
+
+    feat_cols = [c for c in ["W1", "W2", "W3", "W4"] if c in df.columns]
+    if not feat_cols or x_col not in df.columns or y_col not in df.columns:
+        raise ValueError(f"Required columns missing from df: {feat_cols}, {x_col}, {y_col}")
+
+    X = df[feat_cols].values
+    A = df["A"].values
+    lr = LogisticRegression(max_iter=500, C=1.0)
+    lr.fit(X, A)
+    g = np.clip(lr.predict_proba(X)[:, 1], 0.05, 0.95)
+
+    treated  = df[A == 1]
+    controls = df[A == 0]
+
+    g_treated = g[A == 1]
+    ipw_size  = np.clip(1.0 / g_treated, 1, 20)   # cap at 20 for display
+    ipw_size  = 20 * ipw_size / ipw_size.max()     # normalize to [0, 20] point area
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    # Background: control patient density
+    if len(controls) >= 4:
+        ctrl_x = controls[x_col].values
+        ctrl_y = controls[y_col].values
+        try:
+            kde = gaussian_kde(np.vstack([ctrl_x, ctrl_y]))
+            xi = np.linspace(df[x_col].min(), df[x_col].max(), 80)
+            yi = np.linspace(df[y_col].min(), df[y_col].max(), 80)
+            Xi, Yi = np.meshgrid(xi, yi)
+            Zi = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
+            ax.contourf(Xi, Yi, Zi, levels=8, cmap="Blues", alpha=0.35)
+        except Exception:
+            ax.scatter(ctrl_x, ctrl_y, c="#AECDE8", s=6, alpha=0.3, label="Control")
+
+    # Treated patients — size ∝ 1/g
+    sc = ax.scatter(
+        treated[x_col].values, treated[y_col].values,
+        s=ipw_size * 15, c=g_treated,
+        cmap="YlOrRd_r", alpha=0.75, edgecolors="k", linewidths=0.3,
+        label="Treated (size ∝ 1/g)",
+        vmin=0.1, vmax=0.9,
+    )
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.8)
+    cbar.set_label("Propensity g(W)", fontsize=9)
+
+    ax.set_xlabel(x_col, fontsize=10)
+    ax.set_ylabel(y_col, fontsize=10)
+    ax.set_title(
+        "Overlap map: who are we borrowing for?\n"
+        "Large markers = high IPW (extrapolation risk) | Blue = control density",
+        fontsize=10,
+    )
+    ax.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def export_for_r(
+    df: pd.DataFrame,
+    config,
+    out_dir: str,
+    prefix: str = "sim",
+) -> dict:
+    """Export a simulated dataset as CSV + metadata JSON for R/concrete benchmarking.
+
+    Writes:
+      <out_dir>/<prefix>_data.csv   — full dataset with concrete-compatible column names
+      <out_dir>/<prefix>_meta.json  — column name map + horizon + scenario parameters
+
+    Parameters
+    ----------
+    df      : simulated dataset (output of generate_data)
+    config  : DGPConfig used to generate df
+    out_dir : directory to write into (created if absent)
+    prefix  : filename prefix (default "sim")
+
+    Returns
+    -------
+    dict with keys "csv_path", "meta_path"
+    """
+    import json
+    from pathlib import Path
+    from dataclasses import asdict
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    csv_path  = out / f"{prefix}_data.csv"
+    meta_path = out / f"{prefix}_meta.json"
+
+    df.to_csv(csv_path, index=False)
+
+    meta = {
+        "event_time_col":   "T_obs",
+        "event_type_col":   "event_type" if "event_type" in df.columns else "Delta",
+        "treatment_col":    "A",
+        "covariate_cols":   [c for c in ["W1", "W2", "W3", "W4"] if c in df.columns],
+        "L1_col":           "L1_obs" if "L1_obs" in df.columns else None,
+        "compliance_col":   "compliance" if "compliance" in df.columns else None,
+        "horizon":          float(config.horizon),
+        "n":                len(df),
+        "dgp_config":       asdict(config),
+    }
+    meta_path.write_text(json.dumps(meta, indent=2, default=str))
+
+    return {"csv_path": str(csv_path), "meta_path": str(meta_path)}
+
+
 def plot_tipping_point_concrete(
     tipping_df: pd.DataFrame,
     title: Optional[str] = None,

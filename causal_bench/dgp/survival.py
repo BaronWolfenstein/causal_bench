@@ -335,3 +335,84 @@ def compute_true_rmst(config: DGPConfig, n_ref: int = 50_000) -> dict:
         "rmst_treated":  rmst1,
         "rmst_control":  rmst0,
     }
+
+
+def compute_true_win_ratio(config: DGPConfig, n_ref: int = 50_000) -> dict:
+    """Estimate true win ratio via U-statistic on potential outcomes.
+
+    Win ratio = P(T1_i > T0_j) / P(T1_i < T0_j) for independent draws i, j
+    from the treated and control potential-outcome distributions.  Computed
+    exactly in O(n log n) via sorted arrays + searchsorted (no pairwise loop).
+
+    Uses the same shared covariates and Gumbel noise as compute_true_effects()
+    so the reference population is consistent across benchmarks.
+
+    Parameters
+    ----------
+    config : DGPConfig
+    n_ref  : size of the reference population (default 50 000).
+
+    Returns
+    -------
+    dict with keys:
+        "ATE"        — win ratio (marginalised over full population); > 1 means
+                       treated win more often, < 1 means treated lose more often.
+        "ATT"        — win ratio for the treated subgroup vs full control dist.
+        "p_win"      — P(T1 > T0), marginalised
+        "p_loss"     — P(T1 < T0), marginalised
+        "net_benefit" — p_win − p_loss
+    """
+    rng = np.random.default_rng(config.seed ^ 0xDEADBEEF)
+
+    U  = rng.standard_normal(n_ref)
+    W1 = rng.standard_normal(n_ref)
+    W2 = rng.binomial(1, 0.5, n_ref).astype(float)
+    W3 = rng.standard_normal(n_ref)
+    W4 = rng.binomial(1, 0.3, n_ref).astype(float)
+    enrollment_time = rng.uniform(0, config.enrollment_period, n_ref)
+
+    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
+    logit_A = (
+        np.log(p / (1 - p))
+        + 0.3 * W1 + 0.2 * W2 - 0.2 * W3 + 0.1 * W4
+        + 0.5 * U * config.unmeasured_confounding_strength
+        + 0.8 * W1 * W3 * config.positivity_severity
+    )
+    A_obs = rng.binomial(1, _sigmoid(logit_A)).astype(float)
+
+    gumbel_noise = rng.gumbel(0, 1, n_ref)
+
+    def _log_T(a_val: float) -> np.ndarray:
+        return (
+            0.0
+            + 0.4 * W1 - 0.3 * W2 + 0.2 * W3 - 0.2 * W4
+            + 0.3 * U
+            + config.true_tau * a_val
+            + config.enrollment_drift * enrollment_time
+            + config.outcome_nonlinearity * (W1 ** 2 - 1)
+            + config.effect_heterogeneity * a_val * W1
+            + gumbel_noise
+        )
+
+    T1 = np.exp(_log_T(1.0))
+    T0 = np.exp(_log_T(0.0))
+
+    # U-statistic via searchsorted: O(n log n), exact for continuous distributions
+    T0_sorted = np.sort(T0)
+    p_win  = float(np.searchsorted(T0_sorted, T1, side="left").mean())  / n_ref
+    p_loss = float((n_ref - np.searchsorted(T0_sorted, T1, side="right")).mean()) / n_ref
+    win_ratio = p_win / p_loss if p_loss > 1e-12 else float("inf")
+
+    # ATT: restrict treated arm to observed treated subjects
+    T1_att = T1[A_obs == 1]
+    p_win_att  = float(np.searchsorted(T0_sorted, T1_att, side="left").mean())  / n_ref
+    p_loss_att = float((n_ref - np.searchsorted(T0_sorted, T1_att, side="right")).mean()) / n_ref
+    win_ratio_att = p_win_att / p_loss_att if p_loss_att > 1e-12 else float("inf")
+
+    return {
+        "ATE":         win_ratio,
+        "ATT":         win_ratio_att,
+        "p_win":       p_win,
+        "p_loss":      p_loss,
+        "net_benefit": p_win - p_loss,
+    }

@@ -262,3 +262,22 @@ class TestConcreteRMSTLive:
         assert result["estimate"].apply(np.isfinite).all()
         assert result["se"].apply(np.isfinite).all()
         assert (result["ci_lower"] < result["ci_upper"]).all()
+
+
+class TestConcreteWinRatioEstimator:
+    """ConcreteWinRatioEstimator — pure-Python tests (no R required)."""
+
+    def test_import_without_r(self):
+        """Module imports cleanly even if rpy2/R not installed."""
+        from causal_bench.estimators.concrete_win_ratio import ConcreteWinRatioEstimator  # noqa: F401
+
+    def test_returns_empty_when_r_unavailable(self, monkeypatch):
+        """Returns [] gracefully when concrete R package is unavailable."""
+        from causal_bench.estimators import concrete_win_ratio as cwr_mod
+        monkeypatch.setattr(cwr_mod, "_concrete_available", lambda: False)
+        est = cwr_mod.ConcreteWinRatioEstimator(method="direct")
+        cfg = DGPConfig(n=100, seed=0)
+        df = generate_data(cfg)
+        df["event_type"] = df["Delta"].astype(int)
+        result = est.estimate(df, horizon=1.0, estimand="WR")
+        assert result == []
