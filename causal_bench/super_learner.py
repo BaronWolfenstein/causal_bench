@@ -4,7 +4,30 @@ from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.linear_model import LogisticRegression, RidgeCV
 from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier,
                                RandomForestRegressor, GradientBoostingRegressor)
+from sklearn.kernel_approximation import RBFSampler
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
+
+
+def _rks_classifier(gamma: float, n_components: int = 200,
+                    random_state=None) -> Pipeline:
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("rbf",    RBFSampler(gamma=gamma, n_components=n_components,
+                              random_state=random_state)),
+        ("lr",     LogisticRegression(max_iter=1000, C=1.0)),
+    ])
+
+
+def _rks_regressor(gamma: float, n_components: int = 200,
+                   random_state=None) -> Pipeline:
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("rbf",    RBFSampler(gamma=gamma, n_components=n_components,
+                              random_state=random_state)),
+        ("ridge",  RidgeCV()),
+    ])
 
 
 def _default_classifiers(random_state=None):
@@ -14,6 +37,9 @@ def _default_classifiers(random_state=None):
                                random_state=random_state),
         GradientBoostingClassifier(n_estimators=100, max_depth=3,
                                    random_state=random_state),
+        _rks_classifier(gamma=0.1,  random_state=random_state),
+        _rks_classifier(gamma=1.0,  random_state=random_state),
+        _rks_classifier(gamma=10.0, random_state=random_state),
     ]
 
 
@@ -24,6 +50,9 @@ def _default_regressors(random_state=None):
                               random_state=random_state),
         GradientBoostingRegressor(n_estimators=100, max_depth=3,
                                   random_state=random_state),
+        _rks_regressor(gamma=0.1,  random_state=random_state),
+        _rks_regressor(gamma=1.0,  random_state=random_state),
+        _rks_regressor(gamma=10.0, random_state=random_state),
     ]
 
 
