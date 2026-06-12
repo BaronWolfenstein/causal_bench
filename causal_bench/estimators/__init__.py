@@ -2,6 +2,7 @@ from causal_bench.estimators.naive import NaiveEstimator
 from causal_bench.estimators.kaplan_meier import KaplanMeierEstimator
 from causal_bench.estimators.cox import CoxEstimator
 from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
+from causal_bench.estimators.tmle_ipcw_boot import TMLEIPCWBootEstimator
 from causal_bench.estimators.ltmle import LTMLEEstimator
 from causal_bench.estimators.ipw import IPWEstimator
 from causal_bench.estimators.overlap import OverlapEstimator
@@ -16,6 +17,7 @@ ESTIMATOR_REGISTRY: dict = {
     "cox":                CoxEstimator(),
     "tmle_ipcw":          TMLEIPCWEstimator(use_compliance=False),
     "tmle_ipcw_comply":   TMLEIPCWEstimator(use_compliance=True),
+    "tmle_ipcw_boot":     TMLEIPCWBootEstimator(n_bootstrap=200),
     "cox_l1":             CoxEstimator(include_L1=True),
     "ltmle":              LTMLEEstimator(),
     "ipw":                IPWEstimator(),
