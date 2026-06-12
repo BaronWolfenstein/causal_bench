@@ -46,29 +46,7 @@ class TMLEIPCWEstimator(BaseEstimator):
             (censor_df["event_obs"] == 0) & (censor_df["T_obs"] < horizon - 1e-9)
         ).astype(float)
 
-        try:
-            cph = CoxPHFitter(penalizer=0.1)
-            cph.fit(censor_df[censor_feature_cols + ["T_obs", "C_indicator"]],
-                    duration_col="T_obs", event_col="C_indicator",
-                    fit_options={"max_steps": 50})
-
-            unique_times = np.sort(np.unique(T_obs))
-            sf = cph.predict_survival_function(
-                censor_df[censor_feature_cols], times=unique_times
-            )
-            # For each patient i, look up G(C > T_obs_i | covariates_i)
-            G = np.ones(n)
-            for i, t in enumerate(T_obs):
-                col = sf.iloc[:, i]
-                idx_before = sf.index <= t
-                if idx_before.any():
-                    G[i] = float(col[idx_before].iloc[-1])
-                else:
-                    G[i] = 1.0
-        except Exception:
-            G = np.ones(n)
-
-        G = np.clip(G, 0.05, 1.0)
+        G = self._fit_G(censor_df, censor_feature_cols, T_obs, n)
         # Events: upweight by 1/G to represent censored patients with similar patterns.
         # Admin-censored (T_obs >= horizon): Y=0 is known; ipcw=1 (no upweighting needed).
         # Pre-horizon dropouts: ipcw=0 (outcome unknown; excluded from outcome model).
@@ -124,6 +102,31 @@ class TMLEIPCWEstimator(BaseEstimator):
                 ic=IC,
             ))
         return results
+
+    def _fit_G(self, censor_df, censor_feature_cols, T_obs, n):
+        """Fit censoring survival model on the full dataset; return clipped G array."""
+        try:
+            cph = CoxPHFitter(penalizer=0.1)
+            cph.fit(censor_df[censor_feature_cols + ["T_obs", "C_indicator"]],
+                    duration_col="T_obs", event_col="C_indicator",
+                    fit_options={"max_steps": 50})
+            G = self._predict_G_sf(cph, censor_df[censor_feature_cols], T_obs, n)
+        except Exception:
+            G = np.ones(n)
+        return np.clip(G, 0.05, 1.0)
+
+    @staticmethod
+    def _predict_G_sf(cph, cov_df, T_obs, n):
+        """Read G(C > T_obs_i | covariates_i) from a fitted CoxPHFitter."""
+        unique_times = np.sort(np.unique(T_obs))
+        sf = cph.predict_survival_function(cov_df, times=unique_times)
+        G = np.ones(n)
+        for i, t in enumerate(T_obs):
+            col = sf.iloc[:, i]
+            idx_before = sf.index <= t
+            if idx_before.any():
+                G[i] = float(col[idx_before].iloc[-1])
+        return G
 
     def _target_and_se(self, Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, estimand, n,
                        g_oof=None, Q_1W_oof=None, Q_0W_oof=None):
