@@ -328,7 +328,7 @@ lo, hi = ic_bootstrap_ci(result, B=2000, method="percentile")  # plain quantiles
 ```
 
 | Method | Skewness correction | Recommended for |
-|--------|--------------------|-----------------||
+|--------|--------------------|-----------------|
 | `percentile` | None | Large n (> 1000), symmetric IC |
 | `t` | Empirical t-quantiles from per-resample SE* | Small–moderate n, asymmetric IC |
 | `bca` | Bias-correction z₀ + jackknife acceleration a | Skewed estimators; best coverage in theory |
