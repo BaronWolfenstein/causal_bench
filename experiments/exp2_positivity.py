@@ -56,6 +56,15 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
         print("\n── Results at positivity_severity=3.0 ──────────────────")
         print(generate_summary_table(last))
 
+    parquet_dir = OUT_DIR / "parquet"
+    parquet_dir.mkdir(exist_ok=True)
+    for name, sr_list in results.items():
+        for i, val in enumerate(PARAM_VALUES):
+            sr = sr_list[i]
+            if sr is not None:
+                sr.to_parquet(parquet_dir / f"{name}_{val:g}.parquet")
+    print(f"Saved Parquet files → {parquet_dir}/")
+
     return results
 
 
