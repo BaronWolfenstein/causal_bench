@@ -442,3 +442,159 @@ if (!exists("CONCRETE_BRIDGE_SOURCED")) {
     message("concrete_bridge.R loaded. Call run_concrete_bridge(df, horizon) or run_concrete_sensitivity(df, horizon, deltas).")
   }
 }
+
+## ---------------------------------------------------------------------------
+## run_concrete_win_ratio
+##
+## Wraps concrete::targetWinRatio() (direct TMLE, PR #30) or
+## concrete::getWinRatio() (plug-in) depending on `method`.
+##
+## targetWinRatio() fluctuates both arms' cause-specific hazards jointly to
+## solve the win/loss EIF estimating equations directly — removes target-grid
+## sensitivity and cuts WR bias ~5x vs. plug-in (PR #30 validation table).
+##
+## Parameters
+##   df            same data.frame as run_concrete_bridge expects
+##   horizon       target time
+##   method        "direct" (targetWinRatio) | "plugin" (getWinRatio via doConcrete)
+##   covars        outcome covariate column names
+##   crossover_col per-subject switch-time column (NULL = ITT estimand)
+##   strata_cols   randomization strata (NULL = iid SE)
+##   verbose       passed through to concrete
+##
+## Returns named list:
+##   $WR         numeric — win ratio (treated / control)
+##   $SE         numeric — influence-function SE
+##   $CI_lower   numeric
+##   $CI_upper   numeric
+##   $win_odds   numeric
+##   $net_benefit numeric
+##   $converged  logical
+##   $raw        the full concrete result object
+## ---------------------------------------------------------------------------
+run_concrete_win_ratio <- function(df,
+                                   horizon       = 1.0,
+                                   method        = "direct",
+                                   covars        = c("W1", "W2", "W3", "W4"),
+                                   crossover_col = NULL,
+                                   strata_cols   = NULL,
+                                   verbose       = FALSE) {
+
+  method <- match.arg(method, c("direct", "plugin"))
+  stopifnot(is.data.frame(df))
+  stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
+  stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
+
+  dt <- as.data.table(df)
+  dt[, id         := .I]
+  dt[, event_type := as.integer(event_type)]
+  dt[, A          := as.integer(A)]
+
+  ctv <- NULL
+  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
+    obs_idx <- !is.na(dt[["L1"]])
+    ctv <- data.table(id   = dt$id[obs_idx],
+                      time = 0.5,
+                      L1   = dt[["L1"]][obs_idx])
+    if (verbose) message("concrete_bridge: passing L1 to CensoringTV (not outcome model)")
+  }
+  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
+
+  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  if (horizon >= last_event) {
+    horizon <- last_event * 0.999
+    if (verbose) message(sprintf("concrete_bridge: horizon capped to %.6f", horizon))
+  }
+
+  args <- tryCatch(
+    concrete::formatArguments(
+      DataTable    = dt,
+      EventTime    = "T_obs",
+      EventType    = "event_type",
+      Treatment    = "A",
+      ID           = "id",
+      Intervention = list(`1` = 1L, `0` = 0L),
+      TargetTime   = horizon,
+      TargetEvent  = 1L,
+      Covariates   = covars,
+      CVArg        = list(V = 5L),
+      CensoringTV  = ctv,
+      Crossover    = crossover_col,
+      Strata       = strata_cols,
+      Verbose      = verbose
+    ),
+    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
+  )
+
+  wr_raw <- tryCatch({
+    if (method == "direct") {
+      concrete::targetWinRatio(args)
+    } else {
+      est <- concrete::doConcrete(args)
+      concrete::getWinRatio(est)
+    }
+  }, error = function(e) stop("concrete win ratio failed: ", conditionMessage(e)))
+
+  converged <- isTRUE(attr(wr_raw, "WRConverged"))
+
+  ## Extract WR, SE, CI — handle data.frame or list layouts defensively
+  wr_val      <- NA_real_
+  se_val      <- NA_real_
+  ci_lo       <- NA_real_
+  ci_hi       <- NA_real_
+  win_odds    <- NA_real_
+  net_benefit <- NA_real_
+
+  .pick_col <- function(df, patterns) {
+    for (p in patterns) {
+      m <- grep(p, names(df), value = TRUE, ignore.case = TRUE)
+      if (length(m)) return(m[1])
+    }
+    NA_character_
+  }
+
+  if (is.data.frame(wr_raw) || is.data.table(wr_raw)) {
+    df_wr  <- as.data.frame(wr_raw)
+    wr_col <- .pick_col(df_wr, c("^WR$", "^Win.Ratio$", "WinRatio", "Estimate"))
+    se_col <- .pick_col(df_wr, c("^SE$", "^se$", "Std\\.Err", "StdErr"))
+    lo_col <- .pick_col(df_wr, c("CI.Low", "lower", "lwr", "\\.lo$"))
+    hi_col <- .pick_col(df_wr, c("CI.Hi",  "upper", "upr", "\\.hi$"))
+    wo_col <- .pick_col(df_wr, c("WinOdds", "Win.Odds", "win_odds"))
+    nb_col <- .pick_col(df_wr, c("NetBenefit", "Net.Benefit", "net_benefit"))
+
+    wr_rows <- df_wr[grepl("^WR$|WinRatio|Win Ratio", df_wr[[1]], ignore.case = TRUE), ]
+    src <- if (nrow(wr_rows) > 0) wr_rows else df_wr[1, , drop = FALSE]
+
+    if (!is.na(wr_col))  wr_val      <- as.numeric(src[[wr_col]][1])
+    if (!is.na(se_col))  se_val      <- as.numeric(src[[se_col]][1])
+    if (!is.na(lo_col))  ci_lo       <- as.numeric(src[[lo_col]][1])
+    if (!is.na(hi_col))  ci_hi       <- as.numeric(src[[hi_col]][1])
+    if (!is.na(wo_col))  win_odds    <- as.numeric(src[[wo_col]][1])
+    if (!is.na(nb_col))  net_benefit <- as.numeric(src[[nb_col]][1])
+
+  } else if (is.list(wr_raw)) {
+    if (!is.null(wr_raw$WR))          wr_val      <- as.numeric(wr_raw$WR)
+    if (!is.null(wr_raw$SE))          se_val      <- as.numeric(wr_raw$SE)
+    if (!is.null(wr_raw$CI_lower))    ci_lo       <- as.numeric(wr_raw$CI_lower)
+    if (!is.null(wr_raw$CI_upper))    ci_hi       <- as.numeric(wr_raw$CI_upper)
+    if (!is.null(wr_raw$win_odds))    win_odds    <- as.numeric(wr_raw$win_odds)
+    if (!is.null(wr_raw$net_benefit)) net_benefit <- as.numeric(wr_raw$net_benefit)
+  }
+
+  ## Fill missing CI from SE using asymmetric log-scale CI
+  if (is.na(ci_lo) && !is.na(wr_val) && !is.na(se_val)) {
+    ci_lo <- exp(log(wr_val) - 1.96 * se_val / wr_val)
+    ci_hi <- exp(log(wr_val) + 1.96 * se_val / wr_val)
+  }
+
+  list(
+    WR          = wr_val,
+    SE          = se_val,
+    CI_lower    = ci_lo,
+    CI_upper    = ci_hi,
+    win_odds    = win_odds,
+    net_benefit = net_benefit,
+    converged   = converged,
+    raw         = wr_raw
+  )
+}
