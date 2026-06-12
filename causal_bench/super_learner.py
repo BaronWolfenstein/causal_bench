@@ -56,6 +56,30 @@ def _default_regressors(random_state=None):
     ]
 
 
+def hal_classifiers(random_state=None):
+    """Return default classifiers augmented with HALClassifier.
+
+    HAL satisfies the regularity conditions for doubly-robust remainder
+    o(n^{-1/2}), but glmnet CV inside each SuperLearner fold makes it
+    ~3 min/sim at n=500.  Use only when runtime is not a concern.
+
+    Important: HALClassifier is fixed at max_degree=1 (univariate step
+    functions).  Do NOT increase max_degree — the basis explodes
+    combinatorially and triggers glmnet integer-overflow errors.
+    """
+    from causal_bench.hal import HALClassifier
+    return _default_classifiers(random_state) + [HALClassifier()]
+
+
+def hal_regressors(random_state=None):
+    """Return default regressors augmented with HALRegressor.
+
+    See hal_classifiers() for runtime and max_degree warnings.
+    """
+    from causal_bench.hal import HALRegressor
+    return _default_regressors(random_state) + [HALRegressor()]
+
+
 class SuperLearner:
     def __init__(self, candidates=None, n_folds=5, task="classification",
                  random_state=None):
