@@ -193,6 +193,23 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     alive_at_L1 = (T_true > config.t_L1) & (C > config.t_L1)
     L1_obs = np.where(alive_at_L1, L1_raw, np.nan)
 
+    # --- Crossover (treatment switching) ---
+    # RPSFTM: control patients who switch at t_cross have residual time scaled by exp(true_tau)
+    t_crossover_col = np.full(n, np.nan)
+    if config.crossover_rate > 0.0:
+        u_who = rng.uniform(0, 1, n)
+        crosses = (A == 0) & (u_who < config.crossover_rate)
+        # Crossover time: t_cross = T_true * u^(1 + informativeness)
+        # informativeness=0 → uniform fraction; informativeness>0 → concentrated near 0
+        # (smaller T_true patients also get smaller absolute t_cross → sicker cross sooner)
+        u_when = rng.uniform(0, 1, n)
+        t_cross = T_true * (u_when ** (1.0 + config.crossover_informativeness))
+        t_cross = np.clip(t_cross, 0.0, T_true - 1e-9)
+        # RPSFTM: T(1) = T(0)*exp(true_tau), so residual time after switching = (T_true - t_cross)*exp(true_tau)
+        T_crossover = t_cross + (T_true - t_cross) * np.exp(config.true_tau)
+        T_true = np.where(crosses, T_crossover, T_true)
+        t_crossover_col = np.where(crosses, t_cross, np.nan)
+
     # --- Competing risks (optional) ---
     # Two causes race against each other and against censoring.
     # cause1 = primary event (treatment effect = true_tau)
@@ -237,6 +254,7 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
         "enrollment_time": enrollment_time,
         "Y_neg": Y_neg,
         "L1": L1_obs,
+        "t_crossover": t_crossover_col,
     })
     # Propagate strata info so concrete bridge can pass Strata argument
     if config.strata_cols:
