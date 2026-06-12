@@ -24,8 +24,9 @@ from causal_bench.viz import generate_summary_table, plot_forest
 
 SCENARIOS = ["edwards_optimistic", "edwards_realistic", "edwards_pessimistic"]
 _RMST_KEYS = {"concrete_RMST"} | {f"rmst_k{k}" for k in (2, 5, 10, 20)}
+_WR_KEYS        = {k for k in ESTIMATOR_REGISTRY if k.startswith("concrete_WR")}
 # Panel A: pointwise RD estimators only
-RD_ESTIMATORS   = [k for k in ESTIMATOR_REGISTRY if k not in _RMST_KEYS | {"cox_l1"}]
+RD_ESTIMATORS   = [k for k in ESTIMATOR_REGISTRY if k not in _RMST_KEYS | _WR_KEYS | {"cox_l1"}]
 # Panel B: RMST estimators only (concrete_RMST skipped if R unavailable)
 RMST_ESTIMATORS = [k for k in ESTIMATOR_REGISTRY if k in _RMST_KEYS]
 OUT_DIR = Path("results/exp7_edwards")
