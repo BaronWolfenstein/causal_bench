@@ -120,8 +120,7 @@ def plot_gradient_from_summaries() -> None:
 
 
 def _with_n(cfg, n: int):
-    import dataclasses
-    return dataclasses.replace(cfg, n=n)
+    return cfg.with_overrides(n=n)
 
 
 # ─── Part 2: ESS check ────────────────────────────────────────────────────────

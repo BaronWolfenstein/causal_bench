@@ -11,6 +11,8 @@ from causal_bench.estimators.aipw import AIPWEstimator
 from causal_bench.estimators.concrete_rmst import ConcreteRMSTEstimator
 from causal_bench.estimators.concrete_win_ratio import ConcreteWinRatioEstimator
 from causal_bench.estimators.pointwise_rmst import PointwiseRMSTEstimator
+from causal_bench.estimators.concrete_simultaneous import ConcreteSimultaneousEstimator
+from causal_bench.estimators.concrete_clinical_rmtif import ClinicalRMTIFEstimator
 
 ESTIMATOR_REGISTRY: dict = {
     "naive":              NaiveEstimator(),
@@ -34,6 +36,8 @@ ESTIMATOR_REGISTRY: dict = {
     "rmst_k5":            PointwiseRMSTEstimator(n_grid=5),
     "rmst_k10":           PointwiseRMSTEstimator(n_grid=10),
     "rmst_k20":           PointwiseRMSTEstimator(n_grid=20),
+    "concrete_simult":    ConcreteSimultaneousEstimator(horizons=(1.0, 2.0)),
+    "clinical_RMTIF":     ClinicalRMTIFEstimator(),
 }
 
 MVP_ESTIMATORS = ["naive", "km", "cox", "tmle_ipcw", "tmle_ipcw_comply"]

@@ -1,5 +1,3 @@
-from dataclasses import asdict
-
 import numpy as np
 import pandas as pd
 from causal_bench.dgp.config import DGPConfig
@@ -22,9 +20,9 @@ def test_dgp_config_override():
     assert cfg.censoring_informativeness == 0.6
 
 
-def test_dgp_config_is_dataclass():
+def test_dgp_config_is_pydantic_model():
     cfg = DGPConfig()
-    d = asdict(cfg)
+    d = cfg.model_dump()
     assert "n" in d
     assert "true_tau" in d
     assert "compliance_available" in d

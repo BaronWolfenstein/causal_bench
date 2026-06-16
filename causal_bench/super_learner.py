@@ -1,6 +1,5 @@
 import numpy as np
 from scipy.optimize import nnls
-from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.linear_model import LogisticRegression, RidgeCV
 from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier,
                                RandomForestRegressor, GradientBoostingRegressor)
@@ -8,6 +7,8 @@ from sklearn.kernel_approximation import RBFSampler
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
+
+from causal_bench.crossfit import make_folds
 
 
 def _rks_classifier(gamma: float, n_components: int = 200,
@@ -82,15 +83,16 @@ def hal_regressors(random_state=None):
 
 class SuperLearner:
     def __init__(self, candidates=None, n_folds=5, task="classification",
-                 random_state=None):
+                 random_state=None, fold_mode="iid"):
         self.candidates = candidates
         self.n_folds = n_folds
         self.task = task
         self.random_state = random_state
+        self.fold_mode = fold_mode
         self.weights_: np.ndarray | None = None
         self._fitted_candidates: list | None = None
 
-    def fit(self, X, y):
+    def fit(self, X, y, groups=None):
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
         candidates = self.candidates or (
@@ -100,15 +102,12 @@ class SuperLearner:
         n, k = len(y), len(candidates)
         oof = np.zeros((n, k))
 
-        splitter = (
-            StratifiedKFold(n_splits=self.n_folds, shuffle=True,
-                            random_state=self.random_state)
-            if self.task == "classification"
-            else KFold(n_splits=self.n_folds, shuffle=True,
-                       random_state=self.random_state)
+        folds = make_folds(
+            X, y, n_folds=self.n_folds, mode=self.fold_mode, groups=groups,
+            random_state=self.random_state, stratify=(self.task == "classification"),
         )
 
-        for _, (train_idx, val_idx) in enumerate(splitter.split(X, y)):
+        for train_idx, val_idx in folds:
             for j, est in enumerate(candidates):
                 m = clone(est)
                 m.fit(X[train_idx], y[train_idx])

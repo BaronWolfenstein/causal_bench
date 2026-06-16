@@ -15,8 +15,11 @@ class NaiveEstimator(BaseEstimator):
         y0 = df.loc[df["A"] == 0, "Delta"].astype(float)
 
         if len(y1) == 0 or len(y0) == 0:
-            return [EstimatorResult(self.name, estimand, float("nan"),
-                                    float("nan"), float("nan"), float("nan"))]
+            return [EstimatorResult(
+                name=self.name, estimand=estimand,
+                point_estimate=float("nan"), standard_error=float("nan"),
+                ci_lower=float("nan"), ci_upper=float("nan"),
+            )]
 
         point = float(y1.mean() - y0.mean())
         se = float(np.sqrt(y1.var(ddof=1) / len(y1) + y0.var(ddof=1) / len(y0)))

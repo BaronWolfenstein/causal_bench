@@ -866,7 +866,6 @@ def export_for_r(
     """
     import json
     from pathlib import Path
-    from dataclasses import asdict
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -885,7 +884,7 @@ def export_for_r(
         "compliance_col":   "compliance" if "compliance" in df.columns else None,
         "horizon":          float(config.horizon),
         "n":                len(df),
-        "dgp_config":       asdict(config),
+        "dgp_config":       config.model_dump(),
     }
     meta_path.write_text(json.dumps(meta, indent=2, default=str))
 

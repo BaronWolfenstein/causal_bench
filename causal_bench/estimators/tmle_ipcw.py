@@ -8,15 +8,25 @@ from lifelines import CoxPHFitter
 from causal_bench.estimators.base import BaseEstimator
 from causal_bench.metrics import EstimatorResult
 from causal_bench.super_learner import SuperLearner
+from causal_bench.crossfit import make_folds
 
 
 class TMLEIPCWEstimator(BaseEstimator):
 
     def __init__(self, use_compliance: bool = False, n_folds: int = 5,
-                 random_state: int = 42):
+                 random_state: int = 42, fold_mode: str = "iid"):
+        """
+        fold_mode:
+            "iid" (default) — current behavior, ignores any provenance
+            grouping. "group" — rows sharing df["provenance_group"] are
+            kept in the same cross-fitting fold (sklearn GroupKFold), for use
+            with causal_bench.dgp.augmentation.generate_augmented_data, where
+            synthetic units are not independent of their real parent.
+        """
         self.use_compliance = use_compliance
         self.n_folds = n_folds
         self.random_state = random_state
+        self.fold_mode = fold_mode
 
     @property
     def name(self) -> str:
@@ -32,6 +42,7 @@ class TMLEIPCWEstimator(BaseEstimator):
         n = len(A)
 
         Y = ((T_obs <= horizon) & (Delta == 1)).astype(float)
+        groups = df["provenance_group"].values if "provenance_group" in df.columns else None
 
         # ── Step 1: Censoring model ──
         censor_feature_cols = W_cols + ["A"]
@@ -55,8 +66,8 @@ class TMLEIPCWEstimator(BaseEstimator):
 
         # ── Step 2: Propensity model ──
         sl_g = SuperLearner(task="classification", n_folds=self.n_folds,
-                            random_state=self.random_state)
-        sl_g.fit(W, A)
+                            random_state=self.random_state, fold_mode=self.fold_mode)
+        sl_g.fit(W, A, groups=groups)
         g = sl_g.predict_proba(W)
         # OOF g: SuperLearner stores genuine out-of-fold predictions during fit.
         g_oof = sl_g.oof_predictions_
@@ -74,12 +85,14 @@ class TMLEIPCWEstimator(BaseEstimator):
         Q_1W = np.clip(expit(q_model.decision_function(AW1)), 1e-5, 1 - 1e-5)
         Q_0W = np.clip(expit(q_model.decision_function(AW0)), 1e-5, 1 - 1e-5)
 
-        # OOF Q: K-fold cross-fitted predictions for unbiased IC variance.
-        from sklearn.model_selection import KFold
+        # OOF Q: cross-fitted predictions for unbiased IC variance. Uses the
+        # same fold_mode/groups as the propensity model above, so a real unit
+        # and any synthetic unit sharing its provenance_group land in the
+        # same fold under fold_mode="group" for both nuisance models.
         Q_1W_oof = np.zeros(n)
         Q_0W_oof = np.zeros(n)
-        for tr, val in KFold(self.n_folds, shuffle=True,
-                             random_state=self.random_state).split(AW):
+        for tr, val in make_folds(AW, n_folds=self.n_folds, mode=self.fold_mode,
+                                   groups=groups, random_state=self.random_state):
             sw_tr = sample_weights[tr] / max(sample_weights[tr].mean(), 1e-10)
             qc = LogisticRegression(max_iter=1000, C=1.0)
             qc.fit(AW[tr], Y[tr], sample_weight=sw_tr)

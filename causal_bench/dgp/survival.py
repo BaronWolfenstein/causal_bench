@@ -20,36 +20,49 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 @lru_cache(maxsize=256)
-def _calibrate_censoring_scale(censoring_rate: float, horizon: float,
-                                censoring_informativeness: float = 0.0) -> float:
-    """Scale factor so achieved censoring_rate matches target under given informativeness."""
+def _calibrate_censoring_scale(
+    censoring_rate: float,
+    horizon: float,
+    censoring_informativeness: float = 0.0,
+    censoring_mechanism: str = "covariate_dependent",
+    censoring_beta_T: float = 0.0,
+) -> float:
+    """Scale factor so achieved censoring_rate matches target under given mechanism."""
     if censoring_rate <= 0:
         return 1e10
     rng = np.random.default_rng(0)
     n = 5000
-    U = rng.standard_normal(n)
+    U  = rng.standard_normal(n)
     W1 = rng.standard_normal(n)
     W3 = rng.standard_normal(n)
-    A = rng.binomial(1, 0.5, n).astype(float)
-    log_T = 0.0 + 0.4 * W1 + 0.3 * U + rng.gumbel(0, 1, n)
+    A  = rng.binomial(1, 0.5, n).astype(float)
+    log_T  = 0.0 + 0.4 * W1 + 0.3 * U + rng.gumbel(0, 1, n)
     T_true = np.exp(log_T)
-    # Include MAR and MNAR components so calibration matches actual generate_data
-    log_C_base = (1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A
-                  + 0.4 * U * censoring_informativeness
-                  + rng.gumbel(0, 1, n))
-    mnar_weight = max(0.0, censoring_informativeness - 0.5) * 2.0
-    if mnar_weight > 0:
-        log_C_base -= mnar_weight * (T_true < np.median(T_true)).astype(float)
-    C_base = np.exp(log_C_base)
+    gumbel_c = rng.gumbel(0, 1, n)
+
+    if censoring_mechanism == "independent":
+        log_C_base = 1.5 + gumbel_c
+    elif censoring_mechanism == "informative":
+        log_C_base = 1.5 + censoring_beta_T * T_true + gumbel_c
+    else:
+        # "covariate_dependent" — MAR conditional on W, A; optional MNAR via censoring_informativeness
+        log_C_base = (1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A
+                      + 0.4 * U * censoring_informativeness
+                      + gumbel_c)
+        mnar_weight = max(0.0, censoring_informativeness - 0.5) * 2.0
+        if mnar_weight > 0:
+            log_C_base -= mnar_weight * (T_true < np.median(T_true)).astype(float)
+
+    C_base = np.exp(np.clip(log_C_base, -700, 700))  # avoid 0/inf overflow at extreme censoring_beta_T * T_true
     lo, hi = 0.01, 100.0
     for _ in range(40):
         mid = (lo + hi) / 2
         C = C_base * mid
         censor_rate = np.mean((C < T_true) & (C < horizon))
         if censor_rate > censoring_rate:
-            lo = mid  # too much censoring → C too small → increase scale
+            lo = mid
         else:
-            hi = mid  # too little censoring → C too large → decrease scale
+            hi = mid
     return (lo + hi) / 2
 
 
@@ -91,7 +104,16 @@ def _stratified_block_randomize(
     return A
 
 
-def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> pd.DataFrame:
+def generate_data(
+    config: DGPConfig,
+    rng: np.random.Generator | None = None,
+    U: np.ndarray | None = None,
+    W1: np.ndarray | None = None,
+    W2: np.ndarray | None = None,
+    W3: np.ndarray | None = None,
+    W4: np.ndarray | None = None,
+    return_latents: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, np.ndarray]:
     """Generate one simulated clinical trial dataset.
 
     Parameters
@@ -101,11 +123,22 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     rng:
         Optional numpy random Generator.  If None a fresh generator is seeded
         from ``config.seed``.
+    U, W1, W2, W3, W4:
+        Optional pre-specified latent/covariate arrays (each length config.n).
+        When omitted (the default for every existing caller), each is drawn
+        fresh from `rng` exactly as before — this parameter exists solely so
+        causal_bench.dgp.augmentation can splice in parent-correlated latents
+        for provenance-linked synthetic units without duplicating the rest of
+        this function's structural equations.
+    return_latents:
+        If True, also return the U array actually used (drawn or supplied) so
+        a caller can correlate a child unit's latents with this unit's.
 
     Returns
     -------
     pd.DataFrame with columns: T_obs, Delta, A, W1, W2, W3, W4, compliance,
-    enrollment_time, Y_neg.  U is never included.
+    enrollment_time, Y_neg. (U itself is never included as a column.)
+    If return_latents=True, returns (df, U) instead.
     """
     if rng is None:
         rng = np.random.default_rng(config.seed)
@@ -113,11 +146,16 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     n = config.n
 
     # --- Latent + observed covariates ---
-    U = rng.standard_normal(n)
-    W1 = rng.standard_normal(n)
-    W2 = rng.binomial(1, 0.5, n).astype(float)
-    W3 = rng.standard_normal(n)
-    W4 = rng.binomial(1, 0.3, n).astype(float)
+    if U is None:
+        U = rng.standard_normal(n)
+    if W1 is None:
+        W1 = rng.standard_normal(n)
+    if W2 is None:
+        W2 = rng.binomial(1, 0.5, n).astype(float)
+    if W3 is None:
+        W3 = rng.standard_normal(n)
+    if W4 is None:
+        W4 = rng.binomial(1, 0.3, n).astype(float)
     enrollment_time = rng.uniform(0, config.enrollment_period, n)
 
     # --- Treatment assignment ---
@@ -165,25 +203,38 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     compliance = _sigmoid(compliance_raw)
 
     # --- Censoring ---
-    scale_factor = _calibrate_censoring_scale(config.censoring_rate, config.horizon,
-                                               config.censoring_informativeness)
+    scale_factor = _calibrate_censoring_scale(
+        config.censoring_rate, config.horizon,
+        config.censoring_informativeness,
+        config.censoring_mechanism,
+        config.censoring_beta_T,
+    )
 
     gumbel_c = rng.gumbel(0, 1, n)
-    log_C_base = (
-        1.5
-        - 0.2 * W1
-        + 0.1 * W3
-        - 0.1 * A
-        + 0.4 * U * config.censoring_informativeness
-        + gumbel_c
-    )
-    # MNAR component: early events are more likely to be censored
-    mnar_weight = max(0.0, config.censoring_informativeness - 0.5) * 2
-    if mnar_weight > 0:
-        median_T = np.median(T_true)
-        log_C_base -= mnar_weight * (T_true < median_T).astype(float)
+    if config.censoring_mechanism == "independent":
+        # Pure random dropout: C doesn't depend on covariates, treatment, or T_true.
+        log_C_base = 1.5 + gumbel_c
+    elif config.censoring_mechanism == "informative":
+        # MNAR: censoring time directly depends on the (unobservable) event time.
+        # IPCW conditional only on W, A cannot correct this — it requires T_true.
+        log_C_base = 1.5 + config.censoring_beta_T * T_true + gumbel_c
+    else:
+        # "covariate_dependent" — MAR conditional on W, A; optional MNAR-via-U component
+        log_C_base = (
+            1.5
+            - 0.2 * W1
+            + 0.1 * W3
+            - 0.1 * A
+            + 0.4 * U * config.censoring_informativeness
+            + gumbel_c
+        )
+        # MNAR component: early events are more likely to be censored
+        mnar_weight = max(0.0, config.censoring_informativeness - 0.5) * 2
+        if mnar_weight > 0:
+            median_T = np.median(T_true)
+            log_C_base -= mnar_weight * (T_true < median_T).astype(float)
 
-    C = np.exp(log_C_base) * scale_factor
+    C = np.exp(np.clip(log_C_base, -700, 700)) * scale_factor  # avoid 0/inf overflow at extreme censoring_beta_T * T_true
 
     # --- L1: post-treatment time-varying confounder ---
     # Observed only if the patient is still in the study at t_L1: alive (T_true > t_L1)
@@ -259,6 +310,8 @@ def generate_data(config: DGPConfig, rng: np.random.Generator | None = None) -> 
     # Propagate strata info so concrete bridge can pass Strata argument
     if config.strata_cols:
         df.attrs["strata_cols"] = list(config.strata_cols)
+    if return_latents:
+        return df, U
     return df
 
 

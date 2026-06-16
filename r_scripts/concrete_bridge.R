@@ -434,6 +434,242 @@ run_concrete_positivity_dx <- function(df,
 
 
 ## ---------------------------------------------------------------------------
+## run_concrete_simultaneous
+##
+## Multi-horizon TMLE with simultaneous confidence bands via
+## getSimultaneousFamily() (concrete PR #31 + #33).
+##
+## Calls doConcrete once with all requested horizons as TargetTime, then feeds
+## the resulting ConcreteEst to each estimand function — getOutput(Estimand="RD"),
+## getRMST(), getRMTIF(), getWinRatio() — each of which attaches per-subject
+## influence functions (famEst / famIC) to its ConcreteOut object. Those objects
+## are stacked by getSimultaneousFamily(), which builds the joint n×q IC matrix,
+## estimates R̂ = cor(IC_matrix), draws the (1-α) quantile of max_j|Z_j| for
+## Z ~ N(0,R̂) via 10 000 Gaussian-multiplier samples (MASS::mvrnorm), and
+## returns SimCI Low/Hi for every row.
+##
+## The RD IC matrix is also extracted from attr(rd_out, "famIC") and returned
+## separately for the Python-side Gaussian multiplier bootstrap used in Exp 12
+## for non-concrete estimators.
+##
+## Parameters
+##   df        data.frame from generate_data(); must have T_obs, event_type, A
+##   horizons  numeric vector of target times (e.g. c(0.4, 0.7))
+##   covars    outcome covariate column names
+##   signif    significance level for simultaneous bands (default 0.05)
+##   verbose   passed through to concrete
+##
+## Returns named list:
+##   $results    data.frame — one row per scalar estimand in the family:
+##                 estimand, horizon, point, se, ci_lo, ci_hi,
+##                 sim_ci_lo, sim_ci_hi, sim_q
+##               All rows have sim_ci_lo/hi from getSimultaneousFamily; RMTIF
+##               and WR rows have horizon = max(horizons_used).
+##   $ic_matrix  data.frame — n rows × q RD columns (RD_t<time>_ev<event>)
+##               IC1 - IC0 from the doConcrete fit, for Python-side bootstrap.
+##   $sim_q      numeric — simultaneous critical value (attr critValue from fam)
+##   $tmle_diag  data.frame or NULL — getTmleDiagnostics output
+##   $n          integer — sample size
+##   $horizons   numeric — actual horizons used (capped to last event time)
+##   $converged  logical
+## ---------------------------------------------------------------------------
+run_concrete_simultaneous <- function(df,
+                                      horizons = c(0.4, 0.7),
+                                      covars   = c("W1", "W2", "W3", "W4"),
+                                      signif   = 0.05,
+                                      verbose  = FALSE) {
+
+  stopifnot(is.data.frame(df))
+  stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
+  stopifnot(is.numeric(horizons), length(horizons) >= 1)
+
+  dt <- as.data.table(df)
+  dt[, id         := .I]
+  dt[, event_type := as.integer(event_type)]
+  dt[, A          := as.integer(A)]
+
+  ctv <- NULL
+  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
+    obs_idx <- !is.na(dt[["L1"]])
+    ctv <- data.table(id   = dt$id[obs_idx],
+                      time = 0.5,
+                      L1   = dt[["L1"]][obs_idx])
+    if (verbose) message("run_concrete_simultaneous: routing L1 to CensoringTV")
+  }
+  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
+
+  last_event    <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  horizons_used <- pmin(sort(horizons), last_event * 0.999)
+  if (verbose && any(horizons != horizons_used))
+    message("run_concrete_simultaneous: some horizons capped to ", last_event * 0.999)
+
+  ## All horizons as TargetTime so every estimand function sees the same
+  ## doConcrete fit and subject IDs align for getSimultaneousFamily().
+  args <- tryCatch(
+    concrete::formatArguments(
+      DataTable    = dt,
+      EventTime    = "T_obs",
+      EventType    = "event_type",
+      Treatment    = "A",
+      ID           = "id",
+      Intervention = list(`1` = 1L, `0` = 0L),
+      TargetTime   = horizons_used,
+      TargetEvent  = 1L,
+      Covariates   = covars,
+      CVArg        = list(V = 5L),
+      CensoringTV  = ctv,
+      Verbose      = verbose
+    ),
+    error = function(e) stop("formatArguments failed: ", conditionMessage(e))
+  )
+
+  est <- tryCatch(
+    concrete::doConcrete(args),
+    error = function(e) stop("doConcrete failed: ", conditionMessage(e))
+  )
+
+  ## --- Per-estimand outputs (Simultaneous=FALSE so each attaches its own
+  ## famIC without running its own bootstrap; getSimultaneousFamily does the
+  ## joint bootstrap once across the whole family.) ---------------------------
+
+  ## RD: getOutput with Estimand="RD" attaches famIC with IC1-IC0 per
+  ## (time, event), keyed as "RD e<event> t<time>". These are the RD ICs
+  ## that drive the simultaneous bands and the Python-side bootstrap.
+  rd_out <- tryCatch(
+    concrete::getOutput(est, Estimand = "RD", Intervention = c(1L, 2L),
+                        GComp = FALSE, Simultaneous = FALSE, Signif = signif),
+    error = function(e) { warning("getOutput RD failed: ", e$message); NULL }
+  )
+
+  ## RMST at the largest horizon (integrates over all TargetTime grid points).
+  rmst_out <- tryCatch(
+    concrete::getRMST(est, Horizon = max(horizons_used),
+                      Intervention = c(1L, 2L), Signif = signif),
+    error = function(e) { warning("getRMST failed: ", e$message); NULL }
+  )
+
+  ## RMT-IF (single-event competing-risks; reduces to RMST diff when K=1).
+  ## TargetEvent=1L selects the primary cause; pass the priority vector for
+  ## competing-risks when multiple events are targeted.
+  rmtif_out <- tryCatch(
+    concrete::getRMTIF(est, Horizon = max(horizons_used),
+                       Intervention = c(1L, 2L),
+                       TargetEvent  = attr(est, "TargetEvent")[1L],
+                       Signif       = signif),
+    error = function(e) { warning("getRMTIF failed: ", e$message); NULL }
+  )
+
+  ## Win ratio (optional: only meaningful when multiple event types are
+  ## targeted; getWinRatio errors on single-event fits, so wrap gracefully).
+  wr_out <- tryCatch(
+    concrete::getWinRatio(est, Intervention = c(1L, 2L), Signif = signif),
+    error = function(e) NULL     # silently absent for single-event DGPs
+  )
+
+  ## --- Joint simultaneous family -------------------------------------------
+  ## Build argument list: only pass non-NULL outputs. Each object carries
+  ## famEst / famIC (attached by .attachFamily inside the estimand functions)
+  ## and must be produced from the same doConcrete() object so IDs align.
+  fam_args <- list(Signif = signif)
+  if (!is.null(rd_out))    fam_args[["RD"]]    <- rd_out
+  if (!is.null(rmst_out))  fam_args[["RMST"]]  <- rmst_out
+  if (!is.null(rmtif_out)) fam_args[["RMTIF"]] <- rmtif_out
+  if (!is.null(wr_out))    fam_args[["WR"]]    <- wr_out
+
+  fam <- tryCatch(
+    do.call(concrete::getSimultaneousFamily, fam_args),
+    error = function(e) {
+      warning("getSimultaneousFamily failed: ", e$message, " — returning pointwise only")
+      NULL
+    }
+  )
+
+  sim_q <- if (!is.null(fam)) as.numeric(attr(fam, "critValue")) else NA_real_
+
+  ## --- Parse getSimultaneousFamily output → results data.frame -------------
+  results <- data.frame()
+  if (!is.null(fam) && nrow(fam) > 0) {
+    fdf <- as.data.frame(fam)
+    cn  <- names(fdf)
+    .c  <- function(...) {
+      for (p in list(...)) { m <- grep(p, cn, value = TRUE, ignore.case = TRUE); if (length(m)) return(m[1]) }
+      NA_character_
+    }
+    fam_col   <- .c("^family$")
+    est_col   <- .c("^Estimand$")
+    time_col  <- .c("^Time$")
+    pt_col    <- .c("Pt.Est", "Pt Est")
+    se_col    <- .c("^se$", "^SE$")
+    cilo_col  <- .c("CI.Low", "CI Low")
+    cihi_col  <- .c("CI.Hi",  "CI Hi")
+    slo_col   <- .c("SimCI.Low", "SimCI Low")
+    shi_col   <- .c("SimCI.Hi",  "SimCI Hi")
+
+    ## Build a clean estimand label: "<family>_<Estimand>_t<Time>"
+    ## For WR/RMTIF rows the Time may be the horizon; use it as-is.
+    times <- if (!is.na(time_col)) as.numeric(fdf[[time_col]]) else rep(max(horizons_used), nrow(fdf))
+    labels <- paste0(fdf[[fam_col]], "_", gsub(" ", "", fdf[[est_col]]), "_t", times)
+
+    results <- data.frame(
+      estimand  = labels,
+      horizon   = times,
+      point     = as.numeric(fdf[[pt_col]]),
+      se        = as.numeric(fdf[[se_col]]),
+      ci_lo     = if (!is.na(cilo_col)) as.numeric(fdf[[cilo_col]]) else NA_real_,
+      ci_hi     = if (!is.na(cihi_col)) as.numeric(fdf[[cihi_col]]) else NA_real_,
+      sim_ci_lo = if (!is.na(slo_col))  as.numeric(fdf[[slo_col]])  else NA_real_,
+      sim_ci_hi = if (!is.na(shi_col))  as.numeric(fdf[[shi_col]])  else NA_real_,
+      sim_q     = sim_q,
+      stringsAsFactors = FALSE
+    )
+    rownames(results) <- NULL
+  }
+
+  ## --- IC matrix for the Python-side bootstrap (Exp 12 non-concrete) -------
+  ## Extract the RD influence-function long table from rd_out's famIC attribute
+  ## (ekey = "RD e<event> t<time>") and dcast to wide format with Python-
+  ## friendly column names (RD_t<time>_ev<event>).
+  ic_matrix <- tryCatch({
+    fi <- attr(rd_out, "famIC")           # data.table: ekey, ID, ic
+    if (is.null(fi) || nrow(fi) == 0L) stop("famIC is empty")
+    ## ekey format: "RD e1 t0.4" → col name "RD_t0.4_ev1"
+    fi <- data.table::copy(fi)
+    fi[, col_nm := sub("RD e([0-9]+) t(.+)", "RD_t\\2_ev\\1", ekey)]
+    ic_wide <- data.table::dcast(fi, ID ~ col_nm, value.var = "ic")
+    as.data.frame(ic_wide[, !"ID"])
+  }, error = function(e) {
+    warning("IC matrix extraction from famIC failed: ", e$message)
+    ## fall back to manual IC1 - IC0 extraction
+    tryCatch({
+      ic1 <- as.data.table(est[[1L]][["IC"]])[, .(ID, Time, Event, IC1 = IC)]
+      ic0 <- as.data.table(est[[2L]][["IC"]])[, .(ID, Time, Event, IC0 = IC)]
+      ic_rd <- merge(ic1, ic0, by = c("ID", "Time", "Event"))
+      ic_rd[, IC_RD  := IC1 - IC0]
+      ic_rd[, col_nm := paste0("RD_t", Time, "_ev", Event)]
+      ic_wide <- dcast(ic_rd, ID ~ col_nm, value.var = "IC_RD")
+      as.data.frame(ic_wide[, !"ID"])
+    }, error = function(e2) data.frame())
+  })
+
+  ## --- TMLE convergence diagnostics (Exp 13) --------------------------------
+  tmle_diag <- tryCatch(
+    as.data.frame(concrete::getTmleDiagnostics(est)),
+    error = function(e) NULL
+  )
+
+  list(
+    results   = results,
+    ic_matrix = ic_matrix,
+    sim_q     = sim_q,
+    tmle_diag = tmle_diag,
+    n         = nrow(dt),
+    horizons  = horizons_used,
+    converged = nrow(results) > 0 && !all(is.na(results$point))
+  )
+}
+
+
+## ---------------------------------------------------------------------------
 ## Minimal smoke test — run when this file is sourced directly
 ## (not when loaded by rpy2, which sets CONCRETE_BRIDGE_SOURCED)
 ## ---------------------------------------------------------------------------
@@ -597,5 +833,125 @@ run_concrete_win_ratio <- function(df,
     net_benefit = net_benefit,
     converged   = converged,
     raw         = wr_raw
+  )
+}
+
+
+## ---------------------------------------------------------------------------
+## run_clinical_rmtif
+##
+## Wraps concrete::clinicalRMTIF() (PR #33), which estimates the restricted
+## mean time in favorable state (RMT-IF) via the multistate / illness-death
+## engine using an analytic adjoint-value EIF — a different estimator from
+## getRMTIF() (which post-processes a doConcrete fit). clinicalRMTIF takes
+## raw illness/terminal event times directly, not a ConcreteEst object.
+##
+## Signature (concrete 1.1.1.9000+):
+##   clinicalRMTIF(data, arm, illness.time, terminal.time, terminal.status,
+##                 covariates, horizon, n.grid, n.folds, SL.library, Signif,
+##                 id, censoring.tv, nBoot)
+##
+## causal_bench's competing_risks_base DGP has event_type in {0, 1, 2}:
+##   1 = primary (non-fatal) event  -> mapped to "illness"
+##   2 = competing (fatal) event    -> mapped to "terminal"
+## A subject can experience at most one of {illness, terminal} (first wins),
+## so illness.time is set for event_type==1 subjects only; everyone else's
+## illness.time is NA (never ill). terminal.time/terminal.status follow
+## death-priority: only event_type==2 sets terminal.status=1.
+##
+## For single-event DGPs (no event_type==2 ever observed) this degenerates
+## to a standard right-censored death-only analysis (illness.time always NA).
+##
+## Parameters
+##   df       data.frame with T_obs, event_type, A (event_type in {0,1,2})
+##   horizon  target time
+##   covars   covariate column names
+##   signif   significance level
+##   verbose  unused (clinicalRMTIF has no Verbose arg); kept for API symmetry
+##
+## Returns named list:
+##   $point      numeric — RMT-IF treated-vs-control contrast
+##   $se         numeric
+##   $ci_lower   numeric
+##   $ci_upper   numeric
+##   $converged  logical
+##   $raw        the full concrete::clinicalRMTIF() result object
+## ---------------------------------------------------------------------------
+run_clinical_rmtif <- function(df,
+                               horizon = 1.0,
+                               covars  = c("W1", "W2", "W3", "W4"),
+                               signif  = 0.05,
+                               verbose = FALSE) {
+
+  stopifnot(is.data.frame(df))
+  stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
+  stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
+
+  dt <- as.data.table(df)
+  dt[, id         := .I]
+  dt[, event_type := as.integer(event_type)]
+  dt[, A          := as.integer(A)]
+
+  ## Death-priority illness/terminal mapping (see header comment).
+  dt[, illness_time  := ifelse(event_type == 1L, T_obs, NA_real_)]
+  dt[, terminal_time := T_obs]
+  dt[, terminal_status := as.integer(event_type == 2L)]
+
+  result <- tryCatch(
+    concrete::clinicalRMTIF(
+      data             = as.data.frame(dt),
+      arm              = "A",
+      illness.time     = "illness_time",
+      terminal.time    = "terminal_time",
+      terminal.status  = "terminal_status",
+      covariates       = covars,
+      horizon          = horizon,
+      Signif           = signif,
+      id               = "id"
+    ),
+    error = function(e) stop("concrete::clinicalRMTIF failed: ", conditionMessage(e))
+  )
+
+  .pick_col <- function(d, patterns) {
+    for (p in patterns) {
+      m <- grep(p, names(d), value = TRUE, ignore.case = TRUE)
+      if (length(m)) return(m[1])
+    }
+    NA_character_
+  }
+
+  point <- se <- ci_lo <- ci_hi <- NA_real_
+
+  if (is.data.frame(result) || is.data.table(result)) {
+    rdf    <- as.data.frame(result)
+    pt_col <- .pick_col(rdf, c("Pt.Est", "Pt Est", "^estimate$", "^RMT.IF$"))
+    se_col <- .pick_col(rdf, c("^se$", "^SE$"))
+    lo_col <- .pick_col(rdf, c("CI.Low", "CI Low", "lower"))
+    hi_col <- .pick_col(rdf, c("CI.Hi", "CI Hi", "upper"))
+    row    <- rdf[1, , drop = FALSE]
+    if (!is.na(pt_col)) point <- as.numeric(row[[pt_col]][1])
+    if (!is.na(se_col)) se    <- as.numeric(row[[se_col]][1])
+    if (!is.na(lo_col)) ci_lo <- as.numeric(row[[lo_col]][1])
+    if (!is.na(hi_col)) ci_hi <- as.numeric(row[[hi_col]][1])
+  } else if (is.list(result)) {
+    if (!is.null(result$estimate)) point <- as.numeric(result$estimate)
+    if (!is.null(result$se))       se    <- as.numeric(result$se)
+    if (!is.null(result$ci.lower)) ci_lo <- as.numeric(result$ci.lower)
+    if (!is.null(result$ci.upper)) ci_hi <- as.numeric(result$ci.upper)
+  }
+
+  if ((is.na(ci_lo) || is.na(ci_hi)) && !is.na(point) && !is.na(se)) {
+    z     <- stats::qnorm(1 - signif / 2)
+    ci_lo <- point - z * se
+    ci_hi <- point + z * se
+  }
+
+  list(
+    point     = point,
+    se        = se,
+    ci_lower  = ci_lo,
+    ci_upper  = ci_hi,
+    converged = !is.na(point) && !is.na(se) && is.finite(point) && is.finite(se),
+    raw       = result
   )
 }
