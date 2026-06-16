@@ -8,6 +8,22 @@ The R bridge passes L1 as CensoringTV (not as an outcome covariate), which
 is required since concrete 1.1.1.9000 (2026-06-10 commit d37e37c).
 
 Gracefully returns [] if rpy2 or the concrete R package is not installed.
+
+FUTURE NOTE — reticulate / R-to-Python direction: this bridge currently only
+goes Python -> R (via rpy2/pandas2ri), so DGPConfig and the other Pydantic
+models here only ever see values built natively in Python. If a future bridge
+direction is added where *R* calls into Python via reticulate (e.g. R driving
+a DGPConfig construction directly, such as DGPConfig(n=600L, ...)), watch for:
+  - R integer literals (600L) typically arrive as numpy scalars (np.int32),
+    not builtin int — Pydantic v2 coerces these fine via __index__, so this
+    alone is not a problem.
+  - The actual risk is a length-1 R vector arriving as a numpy *array* rather
+    than a scalar, or an R NULL marshaling to Python None for a field that
+    isn't Optional — both fail loudly now (ValidationError) thanks to
+    extra="forbid" + Field bounds on DGPConfig, rather than silently
+    misbehaving, but they will need a small marshaling shim at that call site
+    (e.g. float(x) / x.item() before construction) if/when that path exists.
+No such call site exists in this repo today, so no action is needed yet.
 """
 from __future__ import annotations
 
@@ -16,12 +32,34 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pandera.pandas as pa
+from pandera.pandas import Column, DataFrameSchema
 
 from causal_bench.estimators.base import BaseEstimator
 from causal_bench.metrics import EstimatorResult
 
 # Required columns that concrete's formatArguments expects
 _REQUIRED_COLS = {"T_obs", "event_type", "A"}
+
+# Validated at the rpy2/concrete boundary, after generate_data() but before
+# pandas2ri conversion — this is the one place all four concrete_*.py
+# estimators funnel through (via prepare_for_r), so a single schema here
+# catches malformed input regardless of which estimator triggered it. Columns
+# not listed (L1, compliance, enrollment_time, t_crossover, Y_neg, ...) are
+# passed through unchecked since which ones are present is scenario-dependent.
+_R_BRIDGE_SCHEMA = DataFrameSchema(
+    {
+        "T_obs": Column(float, pa.Check.gt(0), nullable=False),
+        "event_type": Column(int, pa.Check.isin([0, 1, 2]), nullable=False),
+        "A": Column(int, pa.Check.isin([0, 1]), nullable=False),
+        "W1": Column(float, nullable=False, required=False),
+        "W2": Column(float, nullable=False, required=False),
+        "W3": Column(float, nullable=False, required=False),
+        "W4": Column(float, nullable=False, required=False),
+    },
+    strict=False,
+    coerce=False,
+)
 
 # Absolute path to the R bridge script (same repo, fixed relative location)
 _R_BRIDGE = Path(__file__).parent.parent.parent / "r_scripts" / "concrete_bridge.R"
@@ -42,14 +80,16 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
 
     Applies all normalizations that concrete's formatArguments requires:
     - Validates required columns are present
+    - Drops columns that are entirely NaN (concrete checks the full DataTable
+      for missing/infinite values, not just the named Covariates; all-NaN
+      columns like t_crossover trigger the check even when not in Covariates)
     - Upcasts float32 → float64 (avoids silent truncation in pandas2ri)
     - Casts event_type and A to int64
     - Resets index to 0..n-1 (R doesn't handle non-default row indices)
 
-    L1 is intentionally left as-is (NaN values preserved). The R bridge
-    routes L1 into CensoringTV, not the outcome covariate set, so NaN rows
-    are filtered there. Imputing NaN here would send imputed L1 to the
-    censoring model, which is incorrect.
+    L1 is intentionally left as-is (partially NaN values preserved). The R
+    bridge routes L1 into CensoringTV and removes it from the DataTable before
+    formatArguments sees it, so partial NaN in L1 is fine.
 
     Parameters
     ----------
@@ -63,12 +103,24 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
     Raises
     ------
     ValueError if any required column is missing.
+    pandera.errors.SchemaError if T_obs/event_type/A/W1-4 fail their checks
+    (e.g. a non-positive T_obs or an event_type outside {0,1,2}) — this is
+    the trust boundary where a malformed DataFrame (hand-built in a test,
+    or produced by a future DGP change) would otherwise cross into R and
+    fail with a much less legible error inside concrete itself.
     """
     missing = _REQUIRED_COLS - set(df.columns)
     if missing:
         raise ValueError(f"prepare_for_r: missing required columns {missing}")
 
     out = df.copy()
+
+    # Drop entirely-NaN columns — concrete::formatArguments validates the full
+    # DataTable and errors on any column with all-NaN values (e.g. t_crossover
+    # when no crossover events occur in the DGP).
+    all_nan = [c for c in out.columns if out[c].isna().all()]
+    if all_nan:
+        out = out.drop(columns=all_nan)
 
     # Upcast float32 → float64 to avoid silent precision loss in pandas2ri
     for col in out.select_dtypes(include=[np.float32]).columns:
@@ -80,6 +132,8 @@ def prepare_for_r(df: pd.DataFrame) -> pd.DataFrame:
 
     # Reset index — R doesn't handle non-default row indices
     out = out.reset_index(drop=True)
+
+    _R_BRIDGE_SCHEMA.validate(out)
 
     return out
 
