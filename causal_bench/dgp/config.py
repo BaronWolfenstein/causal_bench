@@ -17,7 +17,6 @@ class DGPConfig(BaseModel):
 
     # Sample
     n: int = Field(500, ge=1, le=100_000)
-    n_treated_fraction: float = 0.5   # target fraction for post-stratification (unused in MVP)
 
     # Treatment
     true_tau: float = -0.5
@@ -50,27 +49,19 @@ class DGPConfig(BaseModel):
     sigma_L: float = 0.5
     t_L1: float = 0.5
 
-    # Competing risks (unused in MVP)
-    # NOTE: cause1_fraction and cause1_treatment_effect are accepted but never
-    # read by generate_data() (verified — grep finds zero references in
-    # survival.py). The actual cause-1/primary-event treatment effect is
-    # `true_tau`. This is a pre-existing dead-field issue, not something this
-    # pass fixes (it's a DGP semantics question, not a validation one) — left
-    # here as a flag rather than silently "fixed" by a config-layer change.
+    # Competing risks
+    # cause-1 (primary event): treatment effect is true_tau, same as single-event case.
+    # cause-2 (competing event): cause2_treatment_effect controls treatment's effect on
+    # the competing cause's hazard (0.0 = no treatment effect on competing cause,
+    # the most common assumption).
     competing_risks: bool = False
-    cause1_fraction: float = Field(0.4, ge=0.0, le=1.0)
-    cause1_treatment_effect: float = -0.3
-    cause2_treatment_effect: float = -0.6
+    cause2_treatment_effect: float = 0.0
 
     # Enrollment drift
     enrollment_drift: float = Field(0.0, ge=0.0, le=1.0)
     enrollment_period: float = Field(1.0, gt=0.0)
 
     # Compliance covariate
-    # NOTE: compliance_available is accepted but never read by generate_data()
-    # (the `compliance` column is always computed) — same dead-field caveat
-    # as above.
-    compliance_available: bool = True
     # Used unconditionally as rho = sqrt(compliance_censoring_r2) (survival.py)
     # — rho is a correlation coefficient, so this must stay in [0, 1] or the
     # sqrt is mathematically meaningless (previously: silent NaN propagation).
@@ -117,8 +108,8 @@ class DGPConfig(BaseModel):
             )
         # cause2_treatment_effect only has any effect when competing_risks=True
         # (survival.py's competing-risks branch is skipped entirely otherwise)
-        # — setting it without competing_risks=True is a silent no-op.
-        if self.cause2_treatment_effect != -0.6 and not self.competing_risks:
+        # — setting a non-zero value without competing_risks=True is a silent no-op.
+        if self.cause2_treatment_effect != 0.0 and not self.competing_risks:
             raise ValueError(
                 f"cause2_treatment_effect={self.cause2_treatment_effect} has no "
                 "effect when competing_risks=False — likely a misconfiguration"

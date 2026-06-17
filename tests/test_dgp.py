@@ -9,7 +9,6 @@ def test_dgp_config_defaults():
     assert cfg.n == 500
     assert cfg.true_tau == -0.5
     assert cfg.censoring_informativeness == 0.0
-    assert cfg.compliance_available is True
     assert cfg.seed == 42
 
 
@@ -25,7 +24,7 @@ def test_dgp_config_is_pydantic_model():
     d = cfg.model_dump()
     assert "n" in d
     assert "true_tau" in d
-    assert "compliance_available" in d
+    assert "compliance_censoring_r2" in d
 
 
 # --- Survival DGP tests ---
