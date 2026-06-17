@@ -32,6 +32,7 @@ import numpy as np
 
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.estimators import ESTIMATOR_REGISTRY
+from causal_bench.metrics import ComparisonSpec
 from causal_bench.runner import run_simulation
 from causal_bench.viz import generate_summary_table, plot_forest
 
@@ -56,6 +57,19 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
           f"| n={cfg.n} | n_sims={n_sims}")
     print(f"  estimators: {available}")
 
+    # concrete_RMST correctly estimates the cause-specific CIF difference
+    # (event_type=1 only), while compute_true_effects() returns an all-cause
+    # counterfactual risk difference — a known estimand mismatch documented in
+    # this experiment's module docstring.  Python estimators (tmle_ipcw, aipw,
+    # ltmle, rmst_k*) treat competing events as independent censoring and inflate
+    # their cause-1 estimate toward the all-cause number, so they appear well-
+    # calibrated against the all-cause benchmark despite the wrong censoring
+    # assumption — that's a *different* flaw, not an estimand mismatch.
+    _concrete_rmst_spec = ComparisonSpec(
+        estimator_estimand="cause_specific_CIF_diff",
+        truth_estimand="all_cause_RD",
+        allow_known_mismatch=True,
+    )
     results = run_simulation(
         dgp_config=cfg,
         estimator_names=available,
@@ -63,6 +77,7 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
         n_jobs=n_jobs,
         seed=seed,
         horizon=cfg.horizon,
+        comparison_specs={"concrete_RMST": _concrete_rmst_spec},
     )
 
     # Drop None results (concrete unavailable)

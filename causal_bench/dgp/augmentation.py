@@ -28,9 +28,12 @@ DGP (no shared structure); leakage_strength=1 reduces exactly to the
 synthetic unit's latents being identical to its parent's.
 """
 from __future__ import annotations
+from typing import Literal
 
 import numpy as np
 import pandas as pd
+import pandera.pandas as pa
+from pydantic import BaseModel, Field, model_validator
 
 from causal_bench.dgp.config import DGPConfig
 from causal_bench.dgp.survival import generate_data
@@ -39,11 +42,58 @@ _BINARY_COVS = ("W2", "W4")
 _CONTINUOUS_COVS = ("W1", "W3")
 
 
+class AugmentationConfig(BaseModel):
+    """Parameters governing provenance-linked synthetic augmentation and the
+    cross-fitting strategy that should accompany it.
+
+    n_real and n_synth_per_real together determine total augmented cohort size
+    (n_real * (1 + n_synth_per_real)); leakage_strength controls how tightly
+    synthetic children are tied to their real parent; fold_mode determines
+    whether cross-fitting respects provenance groups (use 'group' when
+    leakage_strength > 0 to avoid the independence violation that motivates
+    this whole module).
+    """
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    n_real: int = Field(..., ge=1)
+    n_synth_per_real: int = Field(..., ge=0)
+    leakage_strength: float = Field(..., ge=0.0, le=1.0)
+    fold_mode: Literal["iid", "group"] = "group"
+
+    @model_validator(mode="after")
+    def _warn_iid_with_leakage(self) -> "AugmentationConfig":
+        if self.leakage_strength > 0 and self.fold_mode == "iid" and self.n_synth_per_real > 0:
+            import warnings
+            warnings.warn(
+                f"AugmentationConfig: fold_mode='iid' with leakage_strength="
+                f"{self.leakage_strength} > 0 — synthetic children share latent "
+                "structure with their real parent, so iid cross-fitting violates "
+                "the fold-independence assumption and will understate the EIC-based "
+                "SE. Consider fold_mode='group' to keep each provenance_group intact "
+                "within a single fold.",
+                stacklevel=2,
+            )
+        return self
+
+
+# Cross-row provenance integrity check: every synthetic unit's provenance_group
+# must refer to a real unit's group, not to a synthetic one or a phantom id.
+# Validates as a whole-dataframe check after augmented output is assembled.
+_PROVENANCE_SCHEMA = pa.DataFrameSchema(
+    checks=pa.Check(
+        lambda df: (
+            set(df.loc[df["is_synthetic"] == 1, "provenance_group"])
+            <= set(df.loc[df["is_synthetic"] == 0, "provenance_group"])
+        ),
+        error="Synthetic provenance_group values must be a strict subset of real rows' groups",
+    ),
+    strict=False,
+)
+
+
 def generate_augmented_data(
     cfg: DGPConfig,
-    n_real: int,
-    n_synth_per_real: int,
-    leakage_strength: float,
+    aug_config: AugmentationConfig,
     rng: np.random.Generator | None = None,
 ) -> pd.DataFrame:
     """Draw a real cohort plus provenance-linked synthetic augmentation.
@@ -51,20 +101,16 @@ def generate_augmented_data(
     Parameters
     ----------
     cfg:
-        Base DGP config. Its `n` field is ignored — `n_real` and
-        `n_synth_per_real` control sample sizes instead. compute_true_effects
-        should still be called on this same `cfg` (unmodified `n` is fine,
-        since compute_true_effects uses its own n_ref reference population) —
+        Base DGP config. Its `n` field is ignored — aug_config.n_real and
+        aug_config.n_synth_per_real control sample sizes. compute_true_effects
+        should still be called on this same `cfg` (unmodified `n` is fine) —
         augmentation does not change the estimand.
-    n_real:
-        Number of real (parent) units to draw from generate_data(cfg).
-    n_synth_per_real:
-        Number of synthetic children generated per real parent. 0 returns
-        just the real cohort with provenance/is_synthetic columns added.
-    leakage_strength:
-        In [0, 1]. 0 = synthetic units are fresh independent DGP draws
-        (no shared structure). 1 = synthetic units share the parent's exact
-        latent U and covariates W1-W4 (strongest shared structure).
+    aug_config:
+        AugmentationConfig controlling n_real, n_synth_per_real,
+        leakage_strength, and fold_mode.  fold_mode is not used inside this
+        function (it governs cross-fitting downstream) but lives here so
+        callers that pass aug_config to make_folds / TMLEIPCWEstimator share
+        a single source of truth for both the data-generation and CV settings.
     rng:
         Optional shared generator; defaults to one seeded from cfg.seed.
 
@@ -76,8 +122,9 @@ def generate_augmented_data(
         key for fold assignment (see causal_bench.crossfit.make_folds).
       - is_synthetic (0/1).
     """
-    if not 0.0 <= leakage_strength <= 1.0:
-        raise ValueError(f"leakage_strength must be in [0, 1], got {leakage_strength}")
+    n_real = aug_config.n_real
+    n_synth_per_real = aug_config.n_synth_per_real
+    leakage_strength = aug_config.leakage_strength
     if rng is None:
         rng = np.random.default_rng(cfg.seed)
 
@@ -88,6 +135,7 @@ def generate_augmented_data(
     df_real["is_synthetic"] = 0
 
     if n_synth_per_real == 0:
+        _PROVENANCE_SCHEMA.validate(df_real)
         return df_real
 
     n_synth = n_real * n_synth_per_real
@@ -126,4 +174,6 @@ def generate_augmented_data(
     df = pd.concat([df_real, df_synth], ignore_index=True)
     if cfg.strata_cols:
         df.attrs["strata_cols"] = list(cfg.strata_cols)
+
+    _PROVENANCE_SCHEMA.validate(df)
     return df

@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import numpy as np
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator, Field
 
 
 def gaussian_multiplier_quantile(
@@ -37,6 +37,56 @@ def gaussian_multiplier_quantile(
     return float(np.quantile(np.max(np.abs(standardized), axis=1), 1.0 - alpha))
 
 
+class ComparisonSpec(BaseModel):
+    """Declares the estimand coherence between an estimator's output and the
+    truth it is compared against.
+
+    The Exp 8 case is the canonical example: compute_true_effects() returns
+    an *all-cause* counterfactual risk difference, but concrete_RMST correctly
+    estimates the *cause-specific* CIF difference in competing-risk scenarios —
+    the comparison is estimand-mismatched.  Both sides carry the label "ATE"
+    (since estimand labels are user-supplied strings, not semantic types), so a
+    simple string-equality check wouldn't catch this.  The mismatch must be
+    *declared* explicitly by the experiment author.
+
+    Usage
+    -----
+    Well-matched comparison (most experiments):
+        No ComparisonSpec needed — comparison is implicitly coherent.
+
+    Known-mismatched comparison (e.g. Exp 8 concrete_RMST):
+        ComparisonSpec(
+            estimator_estimand="cause_specific_CIF_diff",
+            truth_estimand="all_cause_RD",
+            allow_known_mismatch=True,
+        )
+        Constructing this without allow_known_mismatch=True raises immediately,
+        forcing the author to consciously opt in.
+
+    The spec is stored on SimResult.comparison_spec so the known mismatch
+    annotation travels with the result and is visible in summaries/audits.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    estimator_estimand: str
+    truth_estimand: str
+    allow_known_mismatch: bool = False
+
+    @model_validator(mode="after")
+    def _check_coherence(self) -> "ComparisonSpec":
+        if self.estimator_estimand != self.truth_estimand and not self.allow_known_mismatch:
+            raise ValueError(
+                f"estimator targets '{self.estimator_estimand}' but truth was "
+                f"computed as '{self.truth_estimand}' — these are different "
+                "estimands and the comparison will be biased.  Set "
+                "allow_known_mismatch=True to suppress this if the mismatch "
+                "is intentional and documented (e.g. Exp 8: concrete_RMST "
+                "computes cause-specific CIF while compute_true_effects() "
+                "returns the all-cause risk difference)."
+            )
+        return self
+
+
 class EstimatorResult(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -56,6 +106,35 @@ class EstimatorResult(BaseModel):
         if v is None:
             return None
         return np.asarray(v)
+
+    # NOTE: estimand is intentionally left as plain `str`, not a Literal —
+    # concrete_simultaneous.py emits dynamically-built labels like
+    # "RD_t0.4"/"RMST_t0.7" (one per evaluation time, see its line ~142
+    # `est_lbl = str(row.get("estimand", ...))`), and overlap.py uses "ATO".
+    # A fixed Literal set would reject those real, currently-passing results.
+
+    @model_validator(mode="after")
+    def _check_coherence(self) -> "EstimatorResult":
+        # NaN is the codebase's established "did not converge" sentinel
+        # (see e.g. naive.py's empty-arm branch, tmle_ipcw.py:179,
+        # concrete_simultaneous.py's `row.get(..., np.nan)` fallback) — it
+        # must pass through untouched, not be treated as a coherence
+        # violation. Only finite values are checked.
+        se = self.standard_error
+        if np.isfinite(se) and se <= 0:
+            raise ValueError(
+                f"standard_error must be > 0 (got {se}); use NaN to signal "
+                "a non-converged replicate instead of 0 or a negative value"
+            )
+        pt, lo, hi = self.point_estimate, self.ci_lower, self.ci_upper
+        if np.isfinite(pt) and np.isfinite(lo) and np.isfinite(hi):
+            tol = 1e-9 * max(1.0, abs(pt))
+            if not (lo - tol <= pt <= hi + tol):
+                raise ValueError(
+                    f"CI must bracket the point estimate: ci_lower={lo}, "
+                    f"point_estimate={pt}, ci_upper={hi}"
+                )
+        return self
 
     def __repr__(self) -> str:
         fields = ", ".join(
@@ -78,6 +157,12 @@ class SimResult(BaseModel):
     ci_lowers: np.ndarray
     ci_uppers: np.ndarray
     nc_estimates: np.ndarray
+    # If the estimator's estimand and the truth's estimand are semantically
+    # different (e.g. cause-specific CIF vs all-cause RD in Exp 8), the
+    # experiment author must attach a ComparisonSpec with allow_known_mismatch=True
+    # to document the deliberate mismatch.  None means the comparison is
+    # implicitly coherent (the default for all non-competing-risk experiments).
+    comparison_spec: Optional[ComparisonSpec] = None
 
     def __repr__(self) -> str:
         fields = ", ".join(

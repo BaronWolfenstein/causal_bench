@@ -9,7 +9,7 @@ from numpy.random import SeedSequence
 from causal_bench.dgp.config import DGPConfig
 from causal_bench.dgp.survival import generate_data, compute_true_effects
 from causal_bench.estimators import get_estimator
-from causal_bench.metrics import SimResult
+from causal_bench.metrics import ComparisonSpec, SimResult
 
 # Generous per-task bound for joblib.Parallel(timeout=...). The slowest known
 # single-replicate call (tmle_ipcw_boot at its registry-default 200 bootstrap
@@ -104,6 +104,7 @@ def run_simulation(
     true_value: Optional[float] = None,
     debug_first_replicate: bool = True,
     task_timeout: float = SIM_TASK_TIMEOUT_SECONDS,
+    comparison_specs: Optional[dict[str, ComparisonSpec]] = None,
 ) -> dict[str, SimResult]:
     """Run Monte Carlo simulations for a set of estimators.
 
@@ -183,6 +184,7 @@ def run_simulation(
             ci_lowers=np.array(ci_lows),
             ci_uppers=np.array(ci_highs),
             nc_estimates=np.array(nc_vals),
+            comparison_spec=comparison_specs.get(name) if comparison_specs else None,
         )
     return results
 

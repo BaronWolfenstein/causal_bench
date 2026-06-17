@@ -42,7 +42,7 @@ from joblib import Parallel, delayed
 from numpy.random import SeedSequence
 from tqdm import tqdm
 
-from causal_bench.dgp.augmentation import generate_augmented_data
+from causal_bench.dgp.augmentation import AugmentationConfig, generate_augmented_data
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.dgp.survival import compute_true_effects
 from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
@@ -66,8 +66,15 @@ def _run_one_cell_sim(cfg_dict: dict, n_real: int, n_synth_per_real: int,
 
     rng = np.random.default_rng(child_entropy)
     cfg = DGPConfig.model_construct(**cfg_dict)
-    df = generate_augmented_data(cfg, n_real=n_real, n_synth_per_real=n_synth_per_real,
-                                  leakage_strength=leakage_strength, rng=rng)
+
+    # Draw one augmented dataset shared across both fold modes — fold_mode
+    # doesn't affect generate_augmented_data's output, only how downstream
+    # cross-fitting respects provenance groups.
+    aug = AugmentationConfig(
+        n_real=n_real, n_synth_per_real=n_synth_per_real,
+        leakage_strength=leakage_strength, fold_mode="group",
+    )
+    df = generate_augmented_data(cfg, aug, rng=rng)
 
     out: dict = {}
     errors: dict[str, str] = {}
