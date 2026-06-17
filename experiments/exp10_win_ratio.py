@@ -37,7 +37,7 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
     available = [e for e in ESTIMATORS if e in ESTIMATOR_REGISTRY]
     missing   = set(ESTIMATORS) - set(available)
     if missing:
-        warnings.warn(f"Exp 9: estimators not in registry, skipping: {missing}")
+        warnings.warn(f"Exp 10: estimators not in registry, skipping: {missing}")
     if not available:
         print("No estimators available — is concrete installed?")
         return {}
@@ -50,7 +50,7 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
     print(f"  P(loss)          = {wr_true_dict['p_loss']:.4f}")
     print(f"  Net benefit      = {wr_true_dict['net_benefit']:.4f}")
 
-    print(f"\nExp 9: Win ratio | scenario=competing_risks_base "
+    print(f"\nExp 10: Win ratio | scenario=competing_risks_base "
           f"| n={cfg.n} | n_sims={n_sims}")
     print(f"  estimators: {available}")
 
