@@ -1,4 +1,4 @@
-"""Clinical RMT-IF estimator — rpy2 bridge to concrete::clinicalRMTIF() (PR #33).
+"""Clinical RMT-IF estimator — rpy2 bridge to concrete::clinicalRMTIF().
 
 clinicalRMTIF uses the multistate / illness-death engine with an analytic
 adjoint-value EIF — a different estimator implementation from getRMTIF()
