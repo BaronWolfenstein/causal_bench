@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.1 (2026-06-19)
+
+### New estimator
+- `ClinicalPSNBEstimator` (`"clinical_PSNB"`) — rpy2 bridge to `concrete::clinicalPSNB()` (McCoy PR #34, now merged). Wraps the priority-standardized net benefit (PSNB) and win ratio (PSWR) with a configurable `charter` vector; returns two `EstimatorResult` objects per call. PSWR CIs use concrete's log-scale construction.
+
+### Fixes
+- R bridge `run_clinical_psnb()`: corrected extraction to match actual `clinicalPSNB()` output — a `data.table` keyed by `Estimand` column, not a named list. PSWR normal-theory CI fallback removed (log-scale CIs from concrete are already correct).
+- `exp10_win_ratio.py`: corrected two stale "Exp 9" labels in print/warn strings.
+
+### Docs
+- README install comment updated to mention PR #33 (RMT-IF) and PR #34 (PSNB), both now merged.
+- `ClinicalRMTIFEstimator` docstring: removed stale "(PR #33)" pending marker.
+
 ## v0.2.0 (2026-06-17)
 
 First versioned release. Scope substantially exceeds the original MVP plan.
