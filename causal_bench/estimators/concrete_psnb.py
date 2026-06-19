@@ -1,4 +1,4 @@
-"""Clinical PSNB/PSWR estimator — rpy2 bridge to concrete::clinicalPSNB() (PR #34).
+"""Clinical PSNB/PSWR estimator — rpy2 bridge to concrete::clinicalPSNB().
 
 clinicalPSNB replaces the implicit reach weights in the standard hierarchical
 win ratio with a user-supplied charter vector, producing the

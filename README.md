@@ -173,7 +173,7 @@ True ATE/ATT: G-computation on n=50,000 with shared Gumbel noise. True RMST: sam
 ## R integration (concrete)
 
 ```r
-# Install concrete (McCoy's package — includes PR #29 BCS correction, PR #30 win ratio, PR #33 RMT-IF)
+# Install concrete (McCoy's package — includes PR #29 BCS correction, PR #30 win ratio, PR #33 RMT-IF, PR #34 PSNB)
 remotes::install_github("blind-contours/concrete", upgrade = "always")
 install.packages(c("reticulate", "data.table"))
 

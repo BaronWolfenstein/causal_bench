@@ -957,7 +957,7 @@ run_clinical_rmtif <- function(df,
 }
 
 ## ---------------------------------------------------------------------------
-## run_clinical_psnb — bridge to concrete::clinicalPSNB() (PR #34, open).
+## run_clinical_psnb — bridge to concrete::clinicalPSNB() (PR #34).
 ##
 ## clinicalPSNB replaces the implicit reach weights in the standard hierarchical
 ## win ratio with a user-supplied charter vector α, producing the
@@ -966,6 +966,12 @@ run_clinical_rmtif <- function(df,
 ##
 ## Uses the same illness-death / multistate mapping as run_clinical_rmtif:
 ##   event_type==1 -> illness; event_type==2 -> terminal/death-priority.
+##
+## Output format (concrete PR #34): clinicalPSNB() returns a data.table
+## (class ConcreteOut) with one row per estimand, keyed by the Estimand
+## column: "PSNB", "PSWR", "Reach[D]", "NetBenefit[D]", etc. Columns are
+## "Pt Est", "se", "CI Low", "CI Hi" (with spaces). PSWR CIs are log-scale
+## (CI Low = pswr*exp(-z*slwr), CI Hi = pswr*exp(z*slwr)), already correct.
 ##
 ## Parameters
 ##   df       data.frame with T_obs, event_type, A (event_type in {0,1,2})
@@ -978,14 +984,14 @@ run_clinical_rmtif <- function(df,
 ##   $psnb          numeric — priority-standardized net benefit
 ##   $pswr          numeric — priority-standardized win ratio
 ##   $se_psnb       numeric
-##   $se_pswr       numeric
+##   $se_pswr       numeric (delta-method SE on original PSWR scale)
 ##   $ci_lower_psnb numeric
 ##   $ci_upper_psnb numeric
-##   $ci_lower_pswr numeric
+##   $ci_lower_pswr numeric (log-scale CI, already exponentiated)
 ##   $ci_upper_pswr numeric
 ##   $converged     logical
 ##   $raw           the full concrete::clinicalPSNB() result object
-##   $tier_components  data.frame of per-tier reach and stage-conditional NB
+##   $tier_components  data.frame of per-tier Reach and NetBenefit rows
 ## ---------------------------------------------------------------------------
 run_clinical_psnb <- function(df,
                                horizon = 1.0,
@@ -1005,8 +1011,8 @@ run_clinical_psnb <- function(df,
   dt[, terminal_time := T_obs]
   dt[, terminal_status := as.integer(event_type == 2L)]
 
-  ## Default charter: equal weight across 2 tiers (illness, death).
-  ## clinicalPSNB requires the charter to sum to 1.
+  ## Default charter: equal weight across 2 tiers (death, illness).
+  ## clinicalPSNB rescales internally but requires non-negative, non-zero.
   n_tiers <- 2L
   if (is.null(charter)) {
     charter <- rep(1.0 / n_tiers, n_tiers)
@@ -1032,42 +1038,46 @@ run_clinical_psnb <- function(df,
     error = function(e) stop("concrete::clinicalPSNB failed: ", conditionMessage(e))
   )
 
-  ## Extract scalars — result shape mirrors clinicalRMTIF but with two
-  ## top-level estimands (PSNB and PSWR) plus a tier_components slot.
+  ## clinicalPSNB returns a data.table (ConcreteOut) with one row per estimand.
+  ## Columns: Estimand, "Pt Est", se, "CI Low", "CI Hi", pValue.
+  ## PSWR CIs are already log-scale (CI Low = pswr*exp(-z*slwr)); no fallback needed.
   psnb <- pswr <- se_psnb <- se_pswr <- NA_real_
   ci_lo_psnb <- ci_hi_psnb <- ci_lo_pswr <- ci_hi_pswr <- NA_real_
   tier_components <- NULL
 
-  if (is.list(result)) {
-    if (!is.null(result$PSNB)) {
-      nb <- result$PSNB
-      if (!is.null(nb$estimate)) psnb    <- as.numeric(nb$estimate)
-      if (!is.null(nb$se))       se_psnb <- as.numeric(nb$se)
-      if (!is.null(nb$ci.lower)) ci_lo_psnb <- as.numeric(nb$ci.lower)
-      if (!is.null(nb$ci.upper)) ci_hi_psnb <- as.numeric(nb$ci.upper)
-    }
-    if (!is.null(result$PSWR)) {
-      wr <- result$PSWR
-      if (!is.null(wr$estimate)) pswr    <- as.numeric(wr$estimate)
-      if (!is.null(wr$se))       se_pswr <- as.numeric(wr$se)
-      if (!is.null(wr$ci.lower)) ci_lo_pswr <- as.numeric(wr$ci.lower)
-      if (!is.null(wr$ci.upper)) ci_hi_pswr <- as.numeric(wr$ci.upper)
-    }
-    if (!is.null(result$tier_components)) {
-      tier_components <- as.data.frame(result$tier_components)
-    }
+  rdf <- as.data.frame(result)
+  .row <- function(est) rdf[rdf$Estimand == est, , drop = FALSE]
+  .val <- function(row, col) {
+    v <- row[[col]]
+    if (length(v) == 0 || is.null(v)) NA_real_ else as.numeric(v[1])
   }
 
-  ## Fallback: normal-theory CIs from SE when output omits them.
-  z <- stats::qnorm(1 - signif / 2)
+  nb_row <- .row("PSNB")
+  wr_row <- .row("PSWR")
+
+  if (nrow(nb_row) > 0) {
+    psnb       <- .val(nb_row, "Pt Est")
+    se_psnb    <- .val(nb_row, "se")
+    ci_lo_psnb <- .val(nb_row, "CI Low")
+    ci_hi_psnb <- .val(nb_row, "CI Hi")
+  }
+  if (nrow(wr_row) > 0) {
+    pswr       <- .val(wr_row, "Pt Est")
+    se_pswr    <- .val(wr_row, "se")
+    ci_lo_pswr <- .val(wr_row, "CI Low")   # log-scale CI — already correct
+    ci_hi_pswr <- .val(wr_row, "CI Hi")
+  }
+
+  ## Fallback normal-theory CI for PSNB only (PSWR CI is log-scale from concrete).
   if ((is.na(ci_lo_psnb) || is.na(ci_hi_psnb)) && !is.na(psnb) && !is.na(se_psnb)) {
+    z          <- stats::qnorm(1 - signif / 2)
     ci_lo_psnb <- psnb - z * se_psnb
     ci_hi_psnb <- psnb + z * se_psnb
   }
-  if ((is.na(ci_lo_pswr) || is.na(ci_hi_pswr)) && !is.na(pswr) && !is.na(se_pswr)) {
-    ci_lo_pswr <- pswr - z * se_pswr
-    ci_hi_pswr <- pswr + z * se_pswr
-  }
+
+  ## Tier-level diagnostics: rows whose Estimand starts with Reach or NetBenefit.
+  tier_mask <- grepl("^Reach\\[|^NetBenefit\\[", rdf$Estimand)
+  if (any(tier_mask)) tier_components <- rdf[tier_mask, , drop = FALSE]
 
   list(
     psnb          = psnb,
