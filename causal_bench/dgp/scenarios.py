@@ -65,6 +65,29 @@ _REGISTRY: dict[str, dict] = {
         "censoring_informativeness": 0.3, "censoring_rate": 0.20,
         "true_tau": -0.3,
     },
+    # ENCIRCLE-calibrated — for Exp 16 / calibrated replication
+    # Calibrated to published 1-year ENCIRCLE marginals (device arm, n=299):
+    #   composite 25.2% (device) / ~45% (historical performance goal)
+    #   mortality 13.9%, HF hospitalization 16.7%, ~5.4% overlap
+    #   ~19% missing at 1-year visit
+    # DGP validation (n=100k): device comp≈0.257, HFH≈0.166, death≈0.090
+    #                           control comp≈0.465, ATE≈−0.144
+    # NOTE: true_tau > 0 means device EXTENDS survival (fewer bad events).
+    # The reverse sign convention from other scenarios where true_tau < 0 means
+    # treatment causes the event sooner (those scenarios use a beneficial-event framing).
+    "encircle_calibrated": {
+        "n": 700,
+        "treatment_prevalence": 0.43,       # ~299 treated in n=700
+        "true_tau": 0.48,                   # device reduces HFH risk (extends T1)
+        "competing_risks": True,
+        "cause2_treatment_effect": 0.32,    # device also reduces mortality (extends T2)
+        "hfh_death_escalation": 0.55,       # HFH-prone patients die sooner (shared frailty)
+        "censoring_rate": 0.19,             # ~19% missing at 1-year visit
+        "censoring_informativeness": 0.25,  # mild informative: sicker patients miss more
+        "horizon": 0.77,
+        "positivity_severity": 0.5,         # mild enrollment heterogeneity
+        "unmeasured_confounding_strength": 0.1,
+    },
 }
 
 

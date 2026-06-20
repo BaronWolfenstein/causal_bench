@@ -266,13 +266,19 @@ def generate_data(
     # cause1 = primary event (treatment effect = true_tau)
     # cause2 = competing event (e.g. death from other cause, no treatment on cause2)
     if config.competing_risks:
-        # Cause-2 AFT: different baseline hazard, no treatment effect on cause 2 by default
+        # Cause-2 AFT: different baseline hazard, no treatment effect on cause 2 by default.
+        # hfh_death_escalation couples cause-1 and cause-2 propensity via shared frailty:
+        # patients with low T1 baseline (high HFH risk) are also at higher death risk.
+        # The coupling term uses the cause-1 log-time baseline (no noise, no treatment)
+        # so treatment effects on the two causes remain orthogonally specified.
+        cause1_log_T_baseline = 0.4 * W1 - 0.3 * W2 + 0.2 * W3 - 0.2 * W4
         log_T2 = (
             0.3                                          # higher baseline → later cause-2
             + 0.2 * W1
             - 0.1 * W3
             + 0.2 * U
             + config.cause2_treatment_effect * A
+            + config.hfh_death_escalation * cause1_log_T_baseline
             + rng.gumbel(0, 1, n)
         )
         T2_true = np.exp(log_T2)

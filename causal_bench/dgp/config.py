@@ -56,6 +56,11 @@ class DGPConfig(BaseModel):
     # the most common assumption).
     competing_risks: bool = False
     cause2_treatment_effect: float = 0.0
+    # Shared-frailty coupling between cause-1 (HFH) propensity and cause-2 (death)
+    # propensity. Patients with higher HFH risk also die sooner when > 0, approximating
+    # McCoy's 1.2^popcount state-dependent hazard escalation in a first-event model.
+    # 0.0 = independent causes; 0.5 = moderate; 1.0 = strong coupling.
+    hfh_death_escalation: float = Field(0.0, ge=0.0, le=2.0)
 
     # Enrollment drift
     enrollment_drift: float = Field(0.0, ge=0.0, le=1.0)
@@ -113,6 +118,11 @@ class DGPConfig(BaseModel):
             raise ValueError(
                 f"cause2_treatment_effect={self.cause2_treatment_effect} has no "
                 "effect when competing_risks=False — likely a misconfiguration"
+            )
+        if self.hfh_death_escalation != 0.0 and not self.competing_risks:
+            raise ValueError(
+                f"hfh_death_escalation={self.hfh_death_escalation} has no effect "
+                "when competing_risks=False — likely a misconfiguration"
             )
         return self
 
