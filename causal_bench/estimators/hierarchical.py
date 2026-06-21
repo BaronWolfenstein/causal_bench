@@ -267,8 +267,8 @@ def population_level_borrow(
         ess_data=ess_data,
         ess_total=ess_total,
         map_weight=map_w,
-        rejects_null=abs(post_mean / max(post_sd, 1e-12)) > z,
-        covers_truth=ci_lo <= target_summary.true_ate <= ci_hi,
+        rejects_null=bool(abs(post_mean / max(post_sd, 1e-12)) > z),
+        covers_truth=bool(ci_lo <= target_summary.true_ate <= ci_hi),
         true_ate=target_summary.true_ate,
     )
 
@@ -373,8 +373,8 @@ def patient_level_borrow(
         ess_data=ess_data,
         ess_total=ess_total,
         map_weight=float(phi),
-        rejects_null=abs(aug_ate / max(post_sd, 1e-12)) > z,
-        covers_truth=(aug_ate - z * post_sd) <= target_true_ate <= (aug_ate + z * post_sd),
+        rejects_null=bool(abs(aug_ate / max(post_sd, 1e-12)) > z),
+        covers_truth=bool((aug_ate - z * post_sd) <= target_true_ate <= (aug_ate + z * post_sd)),
         true_ate=target_true_ate,
     )
 
