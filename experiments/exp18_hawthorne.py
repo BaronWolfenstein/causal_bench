@@ -1,4 +1,4 @@
-"""Exp 12: Hawthorne Decomposition — durable vs transient monitoring artifact.
+"""Exp 18: Hawthorne Decomposition — durable vs transient monitoring artifact.
 
 Answers: "Of the outcome improvement at app-deployed sites, how much is durable
 process improvement and how much is a transient Hawthorne monitoring effect?"
@@ -60,7 +60,7 @@ from causal_bench.estimators.hawthorne import (
     HawthorneEstimate,
 )
 
-OUT_DIR = Path("results/exp12_hawthorne")
+OUT_DIR = Path("results/exp18_hawthorne")
 N_SIMS = 50   # increase to 200 for publication
 
 
@@ -122,7 +122,7 @@ def plot_event_study(
     ax.axvline(0, color="black", linewidth=0.5)
     ax.set_xlabel("Event-time (periods since deployment)")
     ax.set_ylabel("Estimated ATT")
-    ax.set_title(f"Exp 12: Event-study plot — Hawthorne halflife={config.hawthorne_halflife}")
+    ax.set_title(f"Exp 18: Event-study plot — Hawthorne halflife={config.hawthorne_halflife}")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -150,7 +150,7 @@ def plot_decomposition(config: HawthorneConfig, save_path: str) -> None:
     ax.set_xlabel("Event-time (periods since deployment)")
     ax.set_ylabel("Effect magnitude")
     ax.set_title(
-        f"Exp 12: True effect decomposition — halflife={config.hawthorne_halflife} periods\n"
+        f"Exp 18: True effect decomposition — halflife={config.hawthorne_halflife} periods\n"
         f"Hawthorne fades; durable + learning persist"
     )
     ax.legend()
@@ -197,7 +197,7 @@ def plot_neg_weight(config: HawthorneConfig, n_sims: int, save_path: str) -> Non
     ax2.set_title("Negative weight fraction vs TWFE bias")
     ax2.legend(fontsize=8)
 
-    fig.suptitle("Exp 12: TWFE negative weight diagnostic (staggered adoption)", fontsize=10)
+    fig.suptitle("Exp 18: TWFE negative weight diagnostic (staggered adoption)", fontsize=10)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
@@ -242,7 +242,7 @@ def plot_secular_panel(
     ax_est.legend(fontsize=8)
     ax_est.grid(alpha=0.3)
 
-    fig.suptitle("Exp 12: Secular trend confounding — TWFE vs robust DiD", fontsize=10)
+    fig.suptitle("Exp 18: Secular trend confounding — TWFE vs robust DiD", fontsize=10)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
@@ -286,7 +286,7 @@ def plot_dose_response(
     ax.set_xlabel("Compliance steady state")
     ax.set_ylabel("Estimated ATT at final event-time")
     ax.set_title(
-        "Exp 12: Dose-response — compliance vs long-run outcome\n"
+        "Exp 18: Dose-response — compliance vs long-run outcome\n"
         f"Slope should ≈ durable_effect = {config.durable_effect}"
     )
     ax.legend()
@@ -341,7 +341,7 @@ def plot_concordance(
     ax2.set_title("Concordance scatter by event-time")
     ax2.legend(fontsize=8)
 
-    fig.suptitle("Exp 12: DCHD vs Callaway-Sant'Anna concordance check", fontsize=10)
+    fig.suptitle("Exp 18: DCHD vs Callaway-Sant'Anna concordance check", fontsize=10)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
@@ -420,7 +420,7 @@ def run(n_sims: int = N_SIMS, seed: int = 42) -> dict:
 
     base_config = HawthorneConfig(seed=seed)
 
-    print("Exp 12: Hawthorne Decomposition")
+    print("Exp 18: Hawthorne Decomposition")
     print(f"  n_sites={base_config.n_sites}  n_periods={base_config.n_periods}  "
           f"n_sims={n_sims}")
     print(f"  durable={base_config.durable_effect}  "
@@ -465,7 +465,7 @@ def run(n_sims: int = N_SIMS, seed: int = 42) -> dict:
         ax.set_xlabel("Event-time")
         if ax is axes_hl[0]:
             ax.set_ylabel("ATT (DCHD dynamic)")
-    fig_hl.suptitle("Exp 12: Hawthorne halflife sweep — event study by halflife", fontsize=10)
+    fig_hl.suptitle("Exp 18: Hawthorne halflife sweep — event study by halflife", fontsize=10)
     fig_hl.tight_layout()
     hl_path = str(OUT_DIR / "halflife_sweep.png")
     fig_hl.savefig(hl_path, dpi=150)
@@ -503,7 +503,7 @@ def run(n_sims: int = N_SIMS, seed: int = 42) -> dict:
 
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="Exp 12: Hawthorne Decomposition")
+    p = argparse.ArgumentParser(description="Exp 18: Hawthorne Decomposition")
     p.add_argument("--n-sims", type=int, default=N_SIMS)
     p.add_argument("--seed",   type=int, default=42)
     args = p.parse_args()

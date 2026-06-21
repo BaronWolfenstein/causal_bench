@@ -1,4 +1,4 @@
-"""Exp 11: Transport Decomposition — trial-to-commercial generalizability.
+"""Exp 17: Transport Decomposition — trial-to-commercial generalizability.
 
 Answers: "Does the treatment effect estimated in the trial apply to the
 commercial population, or does the population shift change the answer?"
@@ -48,7 +48,7 @@ from causal_bench.estimators.transport import (
     transport_quantile,
 )
 
-OUT_DIR = Path("results/exp11_transport")
+OUT_DIR = Path("results/exp17_transport")
 N_SIMS = 100
 
 
@@ -176,7 +176,7 @@ def plot_transport_bias(sweep_results: dict, save_path: str) -> None:
     ax_bias.legend(fontsize=8)
     ax_bias.grid(alpha=0.3)
 
-    fig.suptitle("Exp 11: Transport Decomposition — Heterogeneity Sweep (asymmetric pattern)",
+    fig.suptitle("Exp 17: Transport Decomposition — Heterogeneity Sweep (asymmetric pattern)",
                  fontsize=10)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
@@ -254,7 +254,7 @@ def plot_quantile_heatmap(
 
     pattern = config.divergence_pattern
     hetero = config.transport_heterogeneity
-    fig.suptitle(f"Exp 11: Quantile Divergence — {pattern} pattern, "
+    fig.suptitle(f"Exp 17: Quantile Divergence — {pattern} pattern, "
                  f"hetero={hetero:.1f}", fontsize=10)
     fig.tight_layout()
     if save_path is None:
@@ -309,7 +309,7 @@ def plot_overlap_diagnostic(
 
     ess = float((w.sum() ** 2) / (w ** 2).sum())
     fig.suptitle(
-        f"Exp 11: Overlap Diagnostic — {config.divergence_pattern} pattern, "
+        f"Exp 17: Overlap Diagnostic — {config.divergence_pattern} pattern, "
         f"hetero={config.transport_heterogeneity:.1f}\n"
         f"ESS={ess:.0f}/{len(trial_df)} trial patients (higher = better overlap)",
         fontsize=9,
@@ -327,7 +327,7 @@ def plot_overlap_diagnostic(
 def run(n_sims: int = N_SIMS, seed: int = 42) -> dict:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Exp 11: Transport Decomposition")
+    print("Exp 17: Transport Decomposition")
     print(f"  n_sims={n_sims} per configuration")
 
     base_config = TransportConfig(seed=seed)
@@ -409,7 +409,7 @@ def run(n_sims: int = N_SIMS, seed: int = 42) -> dict:
 
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="Exp 11: Transport Decomposition")
+    p = argparse.ArgumentParser(description="Exp 17: Transport Decomposition")
     p.add_argument("--n-sims", type=int, default=N_SIMS)
     p.add_argument("--seed",   type=int, default=42)
     args = p.parse_args()
