@@ -14,6 +14,7 @@ from causal_bench.estimators.subgroup import (
     SubgroupBorrowingResult,
     SubgroupModel,
     assign_subgroups,
+    assign_subgroups_soft,
     discover_subgroups,
     estimate_cates,
     reconcile_ess,
@@ -141,6 +142,99 @@ class TestDiscoverSubgroups:
         m2 = discover_subgroups(main_df, emb["main"], n_subgroups=3, random_state=0)
         np.testing.assert_array_equal(m1.subgroup_labels, m2.subgroup_labels)
 
+    # ── GMM clustering ────────────────────────────────────────────────────────
+
+    def test_gmm_returns_subgroup_model(self):
+        cfg = _cfg(seed=11)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        assert isinstance(model, SubgroupModel)
+
+    def test_gmm_classifier_type(self):
+        cfg = _cfg(seed=12)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        assert model.classifier_type == "gmm"
+
+    def test_gmm_n_subgroups_at_most_requested(self):
+        cfg = _cfg(seed=13)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=4,
+                                   clustering="gmm")
+        assert 1 <= model.n_subgroups <= 4
+
+    def test_gmm_component_covariances_shape(self):
+        cfg = _cfg(seed=14)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        assert model.component_covariances is not None
+        d = emb["main"].shape[1]
+        assert model.component_covariances.shape == (model.n_subgroups, d, d)
+
+    def test_gmm_component_weights_sum_to_one(self):
+        cfg = _cfg(seed=15)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        assert model.component_weights is not None
+        assert model.component_weights.sum() == pytest.approx(1.0, abs=1e-6)
+
+    def test_gmm_component_weights_non_negative(self):
+        cfg = _cfg(seed=16)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        assert np.all(model.component_weights >= 0)
+
+    def test_kmeans_has_no_component_covariances(self):
+        """K-means path leaves GMM fields as None."""
+        model, *_ = _model(n_subgroups=3)
+        assert model.component_covariances is None
+        assert model.component_weights is None
+
+    def test_gmm_labels_cover_all_patients(self):
+        cfg = _cfg(seed=17)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        assert len(model.subgroup_labels) == len(main_df)
+
+    def test_gmm_cluster_centers_shape(self):
+        cfg = _cfg(seed=18)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        d = emb["main"].shape[1]
+        assert model.cluster_centers.shape == (model.n_subgroups, d)
+
+    def test_gmm_cate_ordered(self):
+        cfg = _cfg(seed=19)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        if model.n_subgroups > 1:
+            assert model.cate_by_subgroup[0] <= model.cate_by_subgroup[-1]
+
+    def test_gmm_reproducibility(self):
+        cfg = _cfg(seed=20)
+        main_df, _, _, emb = _data(cfg)
+        m1 = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                 clustering="gmm", random_state=0)
+        m2 = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                 clustering="gmm", random_state=0)
+        np.testing.assert_array_equal(m1.subgroup_labels, m2.subgroup_labels)
+
+    def test_invalid_clustering_falls_through_to_classifier_error(self):
+        """Invalid classifier is still caught when clustering='kmeans'."""
+        cfg = _cfg()
+        main_df, _, _, emb = _data(cfg)
+        with pytest.raises(ValueError, match="classifier"):
+            discover_subgroups(main_df, emb["main"], clustering="kmeans",
+                               classifier="xgboost")
+
 
 # ── assign_subgroups ──────────────────────────────────────────────────────────
 
@@ -180,6 +274,84 @@ class TestAssignSubgroups:
         labels = assign_subgroups(main_df, emb["main"], model)
         agreement = np.mean(labels == model.subgroup_labels)
         assert agreement > 0.80, f"KNN/K-means agreement too low: {agreement:.2f}"
+
+    def test_gmm_assignment_labels_in_valid_range(self):
+        cfg = _cfg(seed=21)
+        main_df, teer_df, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        labels = assign_subgroups(teer_df, emb["teer"], model)
+        assert labels.min() >= 0
+        assert labels.max() < model.n_subgroups
+
+    def test_gmm_assignment_length_matches_target(self):
+        cfg = _cfg(seed=22)
+        main_df, teer_df, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        labels = assign_subgroups(teer_df, emb["teer"], model)
+        assert len(labels) == len(teer_df)
+
+    def test_gmm_main_cohort_self_assignment_exact(self):
+        """GMM predict() on training data should exactly reproduce stored labels."""
+        cfg = _cfg(seed=23)
+        main_df, _, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   clustering="gmm")
+        labels = assign_subgroups(main_df, emb["main"], model)
+        np.testing.assert_array_equal(labels, model.subgroup_labels)
+
+
+# ── assign_subgroups_soft ─────────────────────────────────────────────────────
+
+class TestAssignSubgroupsSoft:
+    def _gmm_model(self, seed=30, n_subgroups=3):
+        cfg = _cfg(seed=seed)
+        main_df, teer_df, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"],
+                                   n_subgroups=n_subgroups, clustering="gmm")
+        return model, main_df, teer_df, emb
+
+    def test_soft_shape(self):
+        model, _, teer_df, emb = self._gmm_model()
+        proba = assign_subgroups_soft(teer_df, emb["teer"], model)
+        assert proba.shape == (len(teer_df), model.n_subgroups)
+
+    def test_soft_rows_sum_to_one(self):
+        model, _, teer_df, emb = self._gmm_model()
+        proba = assign_subgroups_soft(teer_df, emb["teer"], model)
+        np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+
+    def test_soft_non_negative(self):
+        model, _, teer_df, emb = self._gmm_model()
+        proba = assign_subgroups_soft(teer_df, emb["teer"], model)
+        assert np.all(proba >= 0)
+
+    def test_soft_argmax_consistent_with_hard(self):
+        """Hard assignment should equal argmax of soft probabilities."""
+        model, _, teer_df, emb = self._gmm_model()
+        proba = assign_subgroups_soft(teer_df, emb["teer"], model)
+        hard = assign_subgroups(teer_df, emb["teer"], model)
+        np.testing.assert_array_equal(np.argmax(proba, axis=1), hard)
+
+    def test_soft_raises_for_knn_model(self):
+        model, _, teer_df, _, emb, _ = _model()  # default K-means+KNN
+        with pytest.raises(ValueError, match="gmm"):
+            assign_subgroups_soft(teer_df, emb["teer"], model)
+
+    def test_soft_raises_for_logistic_model(self):
+        cfg = _cfg(seed=31)
+        main_df, teer_df, _, emb = _data(cfg)
+        model = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                   classifier="logistic")
+        with pytest.raises(ValueError, match="gmm"):
+            assign_subgroups_soft(teer_df, emb["teer"], model)
+
+    def test_gmm_log_density_finite(self):
+        """GMM score_samples (log density) should be finite for all patients."""
+        model, _, teer_df, emb = self._gmm_model()
+        log_dens = model._classifier.score_samples(emb["teer"])
+        assert np.all(np.isfinite(log_dens))
 
 
 # ── subgroup_level_borrow ─────────────────────────────────────────────────────
@@ -265,6 +437,19 @@ class TestSubgroupLevelBorrow:
         )
         assert len(results) >= 1
         assert all(np.isfinite(r.borrowing.ate_posterior) for r in results)
+
+    def test_gmm_clustering_also_works(self):
+        cfg = _cfg(seed=40)
+        main_df, teer_df, _, emb = _data(cfg)
+        model_gmm = discover_subgroups(main_df, emb["main"], n_subgroups=3,
+                                        clustering="gmm")
+        results = subgroup_level_borrow(
+            main_df, teer_df, emb["main"], emb["teer"],
+            model_gmm, target_true_ate=cfg.true_ate_teer,
+        )
+        assert len(results) >= 1
+        assert all(np.isfinite(r.borrowing.ate_posterior) for r in results)
+        assert all(r.borrowing.level == "subgroup" for r in results)
 
     def test_degenerate_subgroup_skipped_gracefully(self):
         """Very high min_subgroup_n forces most subgroups to be skipped."""

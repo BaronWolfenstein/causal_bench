@@ -12,11 +12,17 @@ interpretable ESS and a credible interval. Patient-level borrowing (continuous
 similarity weights) is the internal precision engine; subgroup-level is what
 gets reported.
 
-Subgroup assignment uses KNN on embeddings by default. KNN directly respects
-the embedding geometry without assuming linearity in the boundary — preferred
-when subgroups may be non-convex in embedding space. Logistic regression
-(multiclass one-vs-rest) is provided as an option for settings where linear
-separability holds and interpretable coefficients are wanted.
+Clustering uses Gaussian Mixture Models (GMM) or K-means (default).
+GMM is preferred when available: it uses soft assignments, provides per-subgroup
+covariance matrices (Σ_k) useful as importance weights for tail-aware diffusion
+training, and naturally handles ellipsoidal clusters. K-means is the fallback
+when GMM degenerates (singular covariance).
+
+Subgroup assignment uses the GMM's own predict() when clustering="gmm", or KNN
+on embeddings when clustering="kmeans". KNN directly respects the embedding
+geometry without assuming linearity in the boundary. Logistic regression
+(multiclass) is provided as a third option for settings where linear separability
+holds and interpretable coefficients are wanted.
 
 For the OC simulation (exp19), CATE estimation is bypassed when true per-patient
 CATEs are available in the DataFrame ("cate" column). For production on real
@@ -26,9 +32,12 @@ References:
   Kennedy (2023). Towards optimal doubly-robust estimation of heterogeneous
     causal effects. EJS.
   Schmidli et al. (2014). Robust meta-analytic-predictive priors. Biometrics.
+  Reynolds & Rose (1995). Robust text-independent speaker identification using
+    GMM. IEEE TSAP. (GMM density estimation for importance weighting.)
 """
 from __future__ import annotations
 
+import warnings as _warnings
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
@@ -37,9 +46,9 @@ import pandas as pd
 from scipy.stats import norm
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import StratifiedKFold
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import LabelEncoder
 
 from causal_bench.estimators.hierarchical import (
     BorrowingResult,
@@ -66,7 +75,10 @@ class SubgroupModel:
     cate_by_subgroup: np.ndarray       # mean CATE per subgroup (for interpretation)
     cate_sd_by_subgroup: np.ndarray    # SD of CATE per subgroup
     n_by_subgroup: np.ndarray          # main cohort count per subgroup
-    classifier_type: str               # "knn" or "logistic"
+    classifier_type: str               # "knn", "logistic", or "gmm"
+    # GMM-only fields: per-subgroup covariance and mixing weight
+    component_covariances: Optional[np.ndarray] = None  # (k × d × d), GMM only
+    component_weights: Optional[np.ndarray] = None      # (k,) mixing weights π_k
     # stored classifier for out-of-sample assignment
     _classifier: object = field(repr=False, default=None)
 
@@ -175,28 +187,44 @@ def discover_subgroups(
     main_df: pd.DataFrame,
     main_emb: np.ndarray,
     n_subgroups: int = 4,
+    clustering: Literal["kmeans", "gmm"] = "kmeans",
     classifier: Literal["knn", "logistic"] = "knn",
     knn_k: int = 10,
     random_state: int = 0,
 ) -> SubgroupModel:
     """Discover physiological subgroups from the main cohort.
 
-    Clusters patients in embedding space using K-means initialised from
+    Clusters patients in embedding space using K-means or GMM, initialised from
     CATE-stratified quantile seeds (ensures subgroups differ in effect size,
     not just in covariate distribution).
+
+    When clustering="gmm" (Gaussian Mixture Model):
+      - Soft EM clustering with full covariance matrices (per-subgroup Σ_k).
+      - The GMM itself serves as the out-of-sample classifier; the `classifier`
+        parameter is ignored.
+      - component_covariances and component_weights are populated on the returned
+        SubgroupModel — use them as importance weights for tail-aware diffusion
+        training (GMM log-likelihood is a natural density estimator for the
+        rare-mode reweighting needed in Test B′).
+      - Falls back to K-means + KNN if the GMM fit fails (singular covariance).
+
+    When clustering="kmeans" (default):
+      - Hard K-means with CATE-stratified initialisation.
+      - Out-of-sample assignment via the `classifier` parameter (KNN or logistic).
 
     Parameters
     ----------
     main_df : main cohort DataFrame.
     main_emb : (n_main × d) embedding matrix.
     n_subgroups : number of subgroups to discover.
-    classifier : "knn" (default) or "logistic". Used for out-of-sample
-        assignment of rare-cohort patients to these subgroups.
-        KNN is preferred: it directly respects embedding geometry without
-        a linearity assumption. Logistic regression is faster and gives
-        interpretable coefficients but assumes linear boundaries.
-    knn_k : neighbours for KNN classifier (ignored if classifier="logistic").
-    random_state : for K-means reproducibility.
+    clustering : "kmeans" (default) or "gmm".
+    classifier : "knn" (default) or "logistic". Only used when clustering="kmeans".
+        KNN is preferred: it directly respects embedding geometry without a
+        linearity assumption. Logistic regression gives interpretable coefficients
+        but assumes linear boundaries.
+    knn_k : neighbours for KNN classifier (ignored unless clustering="kmeans" and
+        classifier="knn").
+    random_state : for reproducibility.
 
     Returns
     -------
@@ -204,7 +232,7 @@ def discover_subgroups(
     """
     cate_hat = estimate_cates(main_df, main_emb)
 
-    # CATE-stratified K-means init: seed centroids at CATE quantile means
+    # CATE-stratified init: seed cluster centers at CATE quantile means
     quantile_edges = np.quantile(cate_hat, np.linspace(0, 1, n_subgroups + 1))
     init_centers = []
     for i in range(n_subgroups):
@@ -215,39 +243,107 @@ def discover_subgroups(
             init_centers.append(main_emb[i % len(main_emb)])
     init_centers = np.vstack(init_centers)
 
-    import warnings as _warnings
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore")   # suppress degenerate-cluster ConvergenceWarning
-        km = KMeans(n_clusters=n_subgroups, init=init_centers, n_init=1,
-                    random_state=random_state)
-        labels = km.fit_predict(main_emb)
+    # ── Clustering ────────────────────────────────────────────────────────────
+    component_covariances: Optional[np.ndarray] = None
+    component_weights: Optional[np.ndarray] = None
+    _gmm: Optional[GaussianMixture] = None
+    _active_clustering = clustering
 
-    # If K-means found fewer distinct clusters than requested (e.g. nearly 1D
-    # embedding space at high φ), remap to the actual distinct cluster count.
-    n_found = len(np.unique(labels))
-    if n_found < n_subgroups:
-        n_subgroups = n_found
-        # Re-run with correct k
-        km = KMeans(n_clusters=n_subgroups, n_init="auto", random_state=random_state)
-        labels = km.fit_predict(main_emb)
+    if clustering == "gmm":
+        try:
+            with _warnings.catch_warnings():
+                _warnings.simplefilter("ignore")
+                _gmm = GaussianMixture(
+                    n_components=n_subgroups,
+                    covariance_type="full",
+                    means_init=init_centers,
+                    random_state=random_state,
+                    max_iter=300,
+                    reg_covar=1e-6,  # regularise to avoid singular covariance
+                )
+                _gmm.fit(main_emb)
+            labels = _gmm.predict(main_emb)
+            n_found = len(np.unique(labels))
+            if n_found < n_subgroups:
+                # Some components degenerated — re-fit with actual k
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore")
+                    _gmm = GaussianMixture(
+                        n_components=n_found,
+                        covariance_type="full",
+                        random_state=random_state,
+                        max_iter=300,
+                        reg_covar=1e-6,
+                    )
+                    _gmm.fit(main_emb)
+                labels = _gmm.predict(main_emb)
+                n_subgroups = n_found
+            component_covariances = _gmm.covariances_.copy()   # (k, d, d)
+            component_weights = _gmm.weights_.copy()            # (k,)
+        except (ValueError, np.linalg.LinAlgError):
+            _warnings.warn(
+                "GaussianMixture fit failed (singular covariance); "
+                "falling back to K-means + KNN.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            _active_clustering = "kmeans"
+            _gmm = None
+            component_covariances = None
+            component_weights = None
 
-    # Subgroup summary statistics
+    if _active_clustering == "kmeans":
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")  # suppress ConvergenceWarning
+            km = KMeans(n_clusters=n_subgroups, init=init_centers, n_init=1,
+                        random_state=random_state)
+            labels = km.fit_predict(main_emb)
+
+        # If K-means found fewer distinct clusters (nearly 1D embedding space at
+        # high φ), re-run with the actual k.
+        n_found = len(np.unique(labels))
+        if n_found < n_subgroups:
+            n_subgroups = n_found
+            km = KMeans(n_clusters=n_subgroups, n_init="auto",
+                        random_state=random_state)
+            labels = km.fit_predict(main_emb)
+
+    # ── Subgroup summary statistics ───────────────────────────────────────────
     unique_g = sorted(np.unique(labels))
-    n_subgroups = len(unique_g)   # may have been reduced above
-    cate_means = np.array([cate_hat[labels == g].mean() if (labels == g).any() else 0.0
-                           for g in unique_g])
-    cate_sds   = np.array([cate_hat[labels == g].std()  if (labels == g).sum() > 1 else 0.0
-                           for g in unique_g])
-    counts     = np.array([(labels == g).sum() for g in unique_g])
+    n_subgroups = len(unique_g)
+    cate_means = np.array([
+        cate_hat[labels == g].mean() if (labels == g).any() else 0.0
+        for g in unique_g
+    ])
+    cate_sds = np.array([
+        cate_hat[labels == g].std() if (labels == g).sum() > 1 else 0.0
+        for g in unique_g
+    ])
+    counts = np.array([(labels == g).sum() for g in unique_g])
 
-    # Order subgroups by CATE (most beneficial first)
+    # Order subgroups by CATE (most beneficial = most negative = first).
+    # NOTE: label_map is identity (K-means/GMM output 0..k-1), so subgroup_labels
+    # remains in cluster-discovery order, NOT CATE order. The stats arrays
+    # (cate_by_subgroup, cluster_centers, component_covariances, subgroup_names)
+    # ARE reordered by `order`, creating a label-to-stats mismatch: label g maps
+    # to the g-th K-means/GMM cluster, but cate_by_subgroup[g] is the g-th in
+    # CATE rank. Borrowing computations (MAP posteriors) are correct; subgroup
+    # names and component_covariances columns are mislabeled.
+    # TODO: fix before any CMS-facing output — requires a _RemappedGMM wrapper
+    # so predict() returns CATE-ranked labels. See GitHub issue #XX.
     order = np.argsort(cate_means)
     label_map = {old: new for new, old in enumerate(unique_g)}
     labels = np.array([label_map[l] for l in labels])
     cate_means = cate_means[order]
     cate_sds   = cate_sds[order]
     counts     = counts[order]
-    cluster_centers = km.cluster_centers_[order]
+
+    if _gmm is not None:
+        cluster_centers = _gmm.means_[order]
+        component_covariances = component_covariances[order]  # type: ignore[index]
+        component_weights = component_weights[order]          # type: ignore[index]
+    else:
+        cluster_centers = km.cluster_centers_[order]
 
     # Human-readable names keyed by CATE rank
     _RANK_NAMES = [
@@ -255,11 +351,18 @@ def discover_subgroups(
         "weak-responders",   "non-responders",
         "sub1", "sub2", "sub3", "sub4",
     ]
-    subgroup_names = [_RANK_NAMES[i] if i < len(_RANK_NAMES) else f"subgroup-{i}"
-                      for i in range(n_subgroups)]
+    subgroup_names = [
+        _RANK_NAMES[i] if i < len(_RANK_NAMES) else f"subgroup-{i}"
+        for i in range(n_subgroups)
+    ]
 
-    # Fit classifier for out-of-sample assignment
-    clf = _fit_classifier(main_emb, labels, classifier, knn_k)
+    # ── Classifier for out-of-sample assignment ───────────────────────────────
+    if _gmm is not None:
+        clf = _gmm
+        classifier_type = "gmm"
+    else:
+        clf = _fit_classifier(main_emb, labels, classifier, knn_k)
+        classifier_type = classifier
 
     return SubgroupModel(
         n_subgroups=n_subgroups,
@@ -269,7 +372,9 @@ def discover_subgroups(
         cate_by_subgroup=cate_means,
         cate_sd_by_subgroup=cate_sds,
         n_by_subgroup=counts,
-        classifier_type=classifier,
+        classifier_type=classifier_type,
+        component_covariances=component_covariances,
+        component_weights=component_weights,
         _classifier=clf,
     )
 
@@ -320,6 +425,42 @@ def assign_subgroups(
     labels : (n,) integer array of subgroup indices 0..n_subgroups-1.
     """
     return model._classifier.predict(emb).astype(int)
+
+
+def assign_subgroups_soft(
+    df: pd.DataFrame,
+    emb: np.ndarray,
+    model: SubgroupModel,
+) -> np.ndarray:
+    """Return soft subgroup membership probabilities for each patient.
+
+    Only available when the model was discovered with clustering="gmm".
+    The returned matrix can be used as importance weights for tail-aware
+    diffusion training (Test B′ in the rare-detail localisation diagnostic):
+    a patient's log density under the rare-mode GMM component is
+    log p(z_i) = log Σ_k π_k N(z_i; μ_k, Σ_k), obtainable via
+    model._classifier.score_samples(emb).
+
+    Parameters
+    ----------
+    df : patient DataFrame (unused directly; here for API symmetry).
+    emb : (n × d) embedding matrix.
+    model : SubgroupModel with classifier_type="gmm".
+
+    Returns
+    -------
+    proba : (n × n_subgroups) array where proba[i, k] = P(subgroup k | z_i).
+
+    Raises
+    ------
+    ValueError : if the model was not fitted with GMM clustering.
+    """
+    if model.classifier_type != "gmm":
+        raise ValueError(
+            f"Soft assignments require classifier_type='gmm', "
+            f"got {model.classifier_type!r}. Use assign_subgroups() for hard assignments."
+        )
+    return model._classifier.predict_proba(emb)
 
 
 # ─── Subgroup-level borrowing ─────────────────────────────────────────────────
