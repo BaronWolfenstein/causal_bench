@@ -59,6 +59,38 @@ from causal_bench.estimators.hierarchical import (
 )
 
 
+# ─── _RemappedGMM ─────────────────────────────────────────────────────────────
+
+class _RemappedGMM:
+    """Wraps a fitted GaussianMixture so predict/predict_proba return CATE-ranked labels.
+
+    GaussianMixture.predict() returns component indices in fit order (0..k-1),
+    which is not CATE order.  This wrapper applies the permutation so all
+    outputs align with SubgroupModel.cate_by_subgroup, .component_covariances,
+    and .subgroup_names — which are stored in CATE rank order.
+    """
+
+    def __init__(self, gmm: GaussianMixture, order: np.ndarray) -> None:
+        # order[cate_rank] = gmm_component_index
+        self._gmm   = gmm
+        self._order = order
+        # inv_order[gmm_component_index] = cate_rank
+        self._inv_order = np.empty(len(order), dtype=int)
+        for cate_rank, gmm_idx in enumerate(order):
+            self._inv_order[gmm_idx] = cate_rank
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return self._inv_order[self._gmm.predict(X)]
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        # Permute columns so column cate_rank = old column order[cate_rank]
+        return self._gmm.predict_proba(X)[:, self._order]
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        """Full mixture log-density — unaffected by component ordering."""
+        return self._gmm.score_samples(X)
+
+
 # ─── Data structures ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -322,18 +354,15 @@ def discover_subgroups(
     counts = np.array([(labels == g).sum() for g in unique_g])
 
     # Order subgroups by CATE (most beneficial = most negative = first).
-    # NOTE: label_map is identity (K-means/GMM output 0..k-1), so subgroup_labels
-    # remains in cluster-discovery order, NOT CATE order. The stats arrays
-    # (cate_by_subgroup, cluster_centers, component_covariances, subgroup_names)
-    # ARE reordered by `order`, creating a label-to-stats mismatch: label g maps
-    # to the g-th K-means/GMM cluster, but cate_by_subgroup[g] is the g-th in
-    # CATE rank. Borrowing computations (MAP posteriors) are correct; subgroup
-    # names and component_covariances columns are mislabeled.
-    # TODO: fix before any CMS-facing output — requires a _RemappedGMM wrapper
-    # so predict() returns CATE-ranked labels. See GitHub issue #13.
+    # order[cate_rank] = original_cluster_index
     order = np.argsort(cate_means)
-    label_map = {old: new for new, old in enumerate(unique_g)}
-    labels = np.array([label_map[l] for l in labels])
+    # Remap patient labels from cluster-discovery order to CATE rank so that
+    # subgroup_labels[i] == k means patient i is in CATE-rank-k subgroup —
+    # consistent with cate_by_subgroup[k], subgroup_names[k], etc.
+    inv_order = np.empty(n_subgroups, dtype=int)
+    for cate_rank, cluster_id in enumerate(order):
+        inv_order[cluster_id] = cate_rank
+    labels = inv_order[labels]
     cate_means = cate_means[order]
     cate_sds   = cate_sds[order]
     counts     = counts[order]
@@ -358,7 +387,7 @@ def discover_subgroups(
 
     # ── Classifier for out-of-sample assignment ───────────────────────────────
     if _gmm is not None:
-        clf = _gmm
+        clf = _RemappedGMM(_gmm, order)
         classifier_type = "gmm"
     else:
         clf = _fit_classifier(main_emb, labels, classifier, knn_k)

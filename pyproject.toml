@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "causal_bench"
-version = "0.2.1"
+version = "0.3.0"
 description = "Monte Carlo benchmarking of causal estimators for clinical trials"
 requires-python = ">=3.10"
 dependencies = [
