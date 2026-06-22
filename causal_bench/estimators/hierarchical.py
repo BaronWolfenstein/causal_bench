@@ -177,7 +177,10 @@ def robust_map_posterior(
     w_map_prior = 1.0 - robust_weight
     log_w_map_post   = np.log(w_map_prior)   + log_lik_map
     log_w_vague_post = np.log(robust_weight) + log_lik_vague
-    log_norm = np.logaddexp(log_w_map_post, log_w_vague_post)
+    log_max  = max(log_w_map_post, log_w_vague_post)
+    log_norm = log_max + np.log(
+        np.exp(log_w_map_post - log_max) + np.exp(log_w_vague_post - log_max)
+    )
     w_map_post   = float(np.exp(log_w_map_post   - log_norm))
     w_vague_post = float(np.exp(log_w_vague_post - log_norm))
 
