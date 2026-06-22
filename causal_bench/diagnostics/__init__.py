@@ -1,6 +1,6 @@
 """Diagnostics for causal_bench simulations.
 
-Four areas:
+Five areas:
   1. Positivity/overlap  — propensity score distribution, extreme weight fraction
   2. Covariate balance   — standardized mean differences (SMD), Love plot
   3. SE calibration      — median(SE) vs empirical SE across estimators
@@ -9,6 +9,15 @@ Four areas:
      - cluster_condition_numbers: cond(Σ_k) from GMM covariances
      - zca_whiten / zca_unwhiten: invertible whitening for diffusion pre-processing
      - run_diagnostic: three-test A→B→B'→C decision procedure (CPU scaffolding)
+       NOTE: run_diagnostic() assumes the observational design is already validated
+       (area 5). Run design_validity.rdd_placebo_test() first.
+  5. Design validity — RDD placebo calibration (design_validity submodule)
+     - rdd_placebo_test: test for spurious discontinuity in a null/pre-period window
+     - plot_running_var_density: density of patients along running variable; shows
+       whether the rare cohort clusters near the threshold (prerequisite for RDD as
+       primary identification of the rare subgroup)
+     - plot_rdd_scatter: (running_var, outcome) scatter with local linear fits on
+       each side of the cutoff; visual gap = RDD estimate
 """
 from __future__ import annotations
 import numpy as np
