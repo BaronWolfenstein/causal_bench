@@ -1,9 +1,14 @@
 """Diagnostics for causal_bench simulations.
 
-Three areas:
+Four areas:
   1. Positivity/overlap  — propensity score distribution, extreme weight fraction
   2. Covariate balance   — standardized mean differences (SMD), Love plot
   3. SE calibration      — median(SE) vs empirical SE across estimators
+  4. Embedding EDA + rare-detail localisation (embedding_eda, localization submodules)
+     - phi_proxy: empirical embedding fidelity (Spearman ρ)
+     - cluster_condition_numbers: cond(Σ_k) from GMM covariances
+     - zca_whiten / zca_unwhiten: invertible whitening for diffusion pre-processing
+     - run_diagnostic: three-test A→B→B'→C decision procedure (CPU scaffolding)
 """
 from __future__ import annotations
 import numpy as np

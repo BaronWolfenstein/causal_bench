@@ -330,7 +330,7 @@ def discover_subgroups(
     # CATE rank. Borrowing computations (MAP posteriors) are correct; subgroup
     # names and component_covariances columns are mislabeled.
     # TODO: fix before any CMS-facing output — requires a _RemappedGMM wrapper
-    # so predict() returns CATE-ranked labels. See GitHub issue #XX.
+    # so predict() returns CATE-ranked labels. See GitHub issue #13.
     order = np.argsort(cate_means)
     label_map = {old: new for new, old in enumerate(unique_g)}
     labels = np.array([label_map[l] for l in labels])
