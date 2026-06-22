@@ -1096,7 +1096,7 @@ run_clinical_psnb <- function(df,
 
 
 ## ---------------------------------------------------------------------------
-## run_concrete_pro_win_ratio   (concrete PR #35 — pro= tiers)
+## run_concrete_pro_win_ratio   (concrete PR #35 + PR #36 — pro= tiers, GPC rewrite)
 ##
 ## Parameters
 ##   df               data.frame with survival + PRO marker columns
@@ -1107,7 +1107,13 @@ run_clinical_psnb <- function(df,
 ##   terminal_status  character scalar, 0/1 death indicator
 ##   covariates       character vector of covariate column names
 ##   pro_specs        R list of PRO spec lists, each with:
-##                      marker, landmark, margin, direction, type
+##                      marker, landmark (must equal horizon post-#36),
+##                      margin, direction, type
+##   crossover_col    character scalar or NULL — per-subject treatment-switch
+##                    time column for the hypothetical no-switching estimand
+##                    (concrete PR #36: IPCW = 1/(S_dropout * S_crossover)).
+##                    Accepted here; wired into clinicalWinRatio() below once
+##                    PR #36 merges (see TODO).
 ##
 ## Returns named list:
 ##   $WR         numeric — win ratio (treated / control)
@@ -1124,7 +1130,8 @@ run_concrete_pro_win_ratio <- function(df,
                                        terminal_time   = "T_obs",
                                        terminal_status = "Delta",
                                        covariates      = c("W1", "W2", "W3", "W4"),
-                                       pro_specs       = NULL) {
+                                       pro_specs       = NULL,
+                                       crossover_col   = NULL) {
   stopifnot(is.data.frame(df))
   stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
 
@@ -1136,9 +1143,15 @@ run_concrete_pro_win_ratio <- function(df,
                 as.character(illness_time)
 
   ## Unwrap single-element StrVectors from rpy2
-  term_col   <- as.character(terminal_time)[1L]
-  status_col <- as.character(terminal_status)[1L]
+  term_col      <- as.character(terminal_time)[1L]
+  status_col    <- as.character(terminal_status)[1L]
+  crossover_arg <- if (is.null(crossover_col) || length(crossover_col) == 0) NULL else
+                     as.character(crossover_col)[1L]
 
+  ## TODO(#36): uncomment `crossover = crossover_arg` once concrete PR #36 merges.
+  ## The argument is accepted above and passed through from Python; the R call is
+  ## the only remaining wiring needed. Current concrete (post-#35) does not have
+  ## the crossover parameter and will error if it is passed.
   result <- clinicalWinRatio(
     data             = df,
     arm              = "arm",
@@ -1147,6 +1160,7 @@ run_concrete_pro_win_ratio <- function(df,
     terminal.status  = status_col,
     covariates       = as.character(covariates),
     horizon          = as.numeric(horizon),
+    ## crossover     = crossover_arg,   # TODO: uncomment on concrete PR #36 merge
     pro              = pro_specs
   )
 
