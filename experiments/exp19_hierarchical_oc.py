@@ -9,9 +9,8 @@ The decisive lever is φ (embedding_fidelity) ∈ [0, 1]:
 
 Three borrowing levels evaluated at each φ:
   population  — single τ² shrinkage, robust MAP prior; no embedding dependency
-  patient     — continuous similarity-weighted borrowing; φ-dependent
-
-(Subgroup-level requires real DR-Learner embeddings; gated on SMB Phase 2.)
+  subgroup    — CATE-stratified K-means subgroups, per-subgroup MAP prior (CMS layer)
+  patient     — continuous similarity-weighted borrowing; φ-dependent (internal layer)
 
 Scenario grid (fully crossed):
   φ ∈ {0.0, 0.25, 0.50, 0.75, 1.0}       — embedding fidelity sweep (key)
@@ -46,6 +45,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import warnings
+
 from causal_bench.dgp.registry import RegistryConfig, generate_registry_data
 from causal_bench.estimators.hierarchical import (
     summarise_registry,
@@ -55,15 +56,21 @@ from causal_bench.estimators.hierarchical import (
     BorrowingResult,
     OCMetrics,
 )
+from causal_bench.estimators.subgroup import (
+    discover_subgroups,
+    subgroup_level_borrow,
+    SubgroupBorrowingResult,
+)
 
 OUT_DIR = Path("results/exp19_hierarchical_oc")
 N_REPS = 200   # increase to 1000+ for final OC report (rare cohort: high-variance)
+N_SUBGROUPS = 4  # target subgroups for subgroup-level borrowing
 
 # Scenario grid
 PHI_VALUES       = (0.0, 0.25, 0.50, 0.75, 1.0)
 CONFLICT_VALUES  = (0.0, 0.5, 1.0)
 SCENARIOS        = ("alternative", "null")
-LEVELS           = ("population", "patient")
+LEVELS           = ("population", "subgroup", "patient")
 TARGET_REGISTRIES = ("teer", "mac")
 
 
@@ -101,6 +108,15 @@ def _run_one_rep(
         level: {} for level in LEVELS
     }
 
+    # Subgroup model: fit once per rep from main cohort, shared across targets
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        subgroup_model = discover_subgroups(
+            main_df, embeddings["main"],
+            n_subgroups=N_SUBGROUPS,
+            classifier="knn",
+        )
+
     for target_name, target_sum, target_df, target_emb, target_true in [
         ("teer", teer_sum, teer_df, embeddings["teer"], cfg.true_ate_teer),
         ("mac",  mac_sum,  mac_df,  embeddings["mac"],  cfg.true_ate_mac),
@@ -112,6 +128,22 @@ def _run_one_rep(
             robust_weight=cfg.robust_weight,
             vague_sd=cfg.vague_sd,
         )
+
+        # Subgroup level: aggregate across subgroups to a single population-style
+        # BorrowingResult via ESS-weighted mean for OC comparisons.
+        sub_results = subgroup_level_borrow(
+            main_df, target_df,
+            embeddings["main"], target_emb,
+            subgroup_model,
+            target_true_ate=target_true,
+            tau_prior_sd=cfg.tau_prior_sd,
+            robust_weight=cfg.robust_weight,
+            vague_sd=cfg.vague_sd,
+        )
+        results["subgroup"][target_name] = _aggregate_subgroup_results(
+            sub_results, target_name, target_true,
+        )
+
         results["patient"][target_name] = patient_level_borrow(
             main_df=main_df,
             target_df=target_df,
@@ -122,6 +154,65 @@ def _run_one_rep(
         )
 
     return results
+
+
+def _aggregate_subgroup_results(
+    sub_results: list[SubgroupBorrowingResult],
+    target_registry: str,
+    true_ate: float,
+    alpha: float = 0.05,
+) -> BorrowingResult:
+    """ESS-weighted aggregate of per-subgroup BorrowingResults.
+
+    Aggregation rule: weight each subgroup's posterior by its ESS_total
+    (information content). Pooled ATE is ESS-weighted mean; pooled variance
+    is ESS-weighted mean of posterior variances (conservative — ignores
+    between-subgroup heterogeneity for the OC comparison metric).
+    """
+    from scipy.stats import norm as _norm
+
+    if not sub_results:
+        # All subgroups degenerate — fall back to NaN BorrowingResult
+        return BorrowingResult(
+            level="subgroup", target_registry=target_registry,
+            ate_posterior=float("nan"), se_posterior=float("nan"),
+            ci_lower=float("nan"), ci_upper=float("nan"),
+            ess_prior=0.0, ess_data=0.0, ess_total=0.0,
+            map_weight=float("nan"),
+            rejects_null=False, covers_truth=False, true_ate=true_ate,
+        )
+
+    weights = np.array([r.borrowing.ess_total for r in sub_results])
+    weights = np.maximum(weights, 1e-8)
+    w_norm  = weights / weights.sum()
+
+    ate_pooled = float(np.sum(w_norm * [r.borrowing.ate_posterior for r in sub_results]))
+    var_pooled = float(np.sum(w_norm * [r.borrowing.se_posterior ** 2 for r in sub_results]))
+    se_pooled  = float(np.sqrt(max(var_pooled, 1e-12)))
+
+    z = _norm.ppf(1.0 - alpha / 2.0)
+    ci_lo = ate_pooled - z * se_pooled
+    ci_hi = ate_pooled + z * se_pooled
+
+    ess_prior = sum(r.borrowing.ess_prior for r in sub_results)
+    ess_data  = sum(r.borrowing.ess_data  for r in sub_results)
+    map_w_avg = float(np.mean([r.borrowing.map_weight for r in sub_results]))
+
+    return BorrowingResult(
+        level="subgroup",
+        target_registry=target_registry,
+        ate_posterior=ate_pooled,
+        se_posterior=se_pooled,
+        ci_lower=ci_lo,
+        ci_upper=ci_hi,
+        ess_prior=ess_prior,
+        ess_data=ess_data,
+        ess_total=ess_prior + ess_data,
+        map_weight=map_w_avg,
+        rejects_null=bool(abs(ate_pooled / max(se_pooled, 1e-12)) > z),
+        covers_truth=bool(ci_lo <= true_ate <= ci_hi),
+        true_ate=true_ate,
+    )
 
 
 def run_scenario_cell(
@@ -136,7 +227,7 @@ def run_scenario_cell(
     Returns dict[level][target_registry] → list of BorrowingResult.
     """
     collected: dict[str, dict[str, list[BorrowingResult]]] = {
-        level: {reg: [] for reg in TARGET_REGISTRIES} for level in LEVELS
+        level: {reg: [] for reg in TARGET_REGISTRIES} for level in LEVELS  # population/subgroup/patient
     }
     rng = np.random.default_rng(base_seed + int(phi * 1000) + int(conflict * 100))
     seeds = [int(rng.integers(0, 2**31)) for _ in range(n_reps)]
@@ -157,7 +248,8 @@ def run_scenario_cell(
 # ─── Plots ────────────────────────────────────────────────────────────────────
 
 _LEVEL_STYLE = {
-    "population": ("tab:blue",  "o-",  "Population-level"),
+    "population": ("tab:blue",   "o-",  "Population-level"),
+    "subgroup":   ("tab:green",  "^-",  "Subgroup-level (CMS)"),
     "patient":    ("tab:orange", "s--", "Patient-level"),
 }
 _CONFLICT_ALPHA = {0.0: 1.0, 0.5: 0.6, 1.0: 0.3}

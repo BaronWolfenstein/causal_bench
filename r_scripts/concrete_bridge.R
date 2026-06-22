@@ -1093,3 +1093,85 @@ run_clinical_psnb <- function(df,
     tier_components = tier_components
   )
 }
+
+
+## ---------------------------------------------------------------------------
+## run_concrete_pro_win_ratio   (concrete PR #35 — pro= tiers)
+##
+## Parameters
+##   df               data.frame with survival + PRO marker columns
+##   horizon          numeric scalar
+##   illness_time     character vector of non-terminal event time columns
+##                    (NULL for death-only hierarchy)
+##   terminal_time    character scalar, terminal event time column
+##   terminal_status  character scalar, 0/1 death indicator
+##   covariates       character vector of covariate column names
+##   pro_specs        R list of PRO spec lists, each with:
+##                      marker, landmark, margin, direction, type
+##
+## Returns named list:
+##   $WR         numeric — win ratio (treated / control)
+##   $SE         numeric — delta-method SE on log scale, back-transformed
+##   $CI_lower   numeric
+##   $CI_upper   numeric
+##   $n_tiers    integer — total tiers (hard-event + PRO)
+##   $converged  logical
+##   $raw        full ConcreteOut object
+## ---------------------------------------------------------------------------
+run_concrete_pro_win_ratio <- function(df,
+                                       horizon,
+                                       illness_time    = NULL,
+                                       terminal_time   = "T_obs",
+                                       terminal_status = "Delta",
+                                       covariates      = c("W1", "W2", "W3", "W4"),
+                                       pro_specs       = NULL) {
+  stopifnot(is.data.frame(df))
+  stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
+
+  df[[terminal_status]] <- as.integer(df[[terminal_status]])
+  df[["arm"]]           <- as.integer(df[["A"]])
+
+  ## Resolve illness times: NULL → empty (death-only hierarchy)
+  ill_cols <- if (is.null(illness_time) || length(illness_time) == 0) character(0) else
+                as.character(illness_time)
+
+  ## Unwrap single-element StrVectors from rpy2
+  term_col   <- as.character(terminal_time)[1L]
+  status_col <- as.character(terminal_status)[1L]
+
+  result <- clinicalWinRatio(
+    data             = df,
+    arm              = "arm",
+    illness.time     = ill_cols,
+    terminal.time    = term_col,
+    terminal.status  = status_col,
+    covariates       = as.character(covariates),
+    horizon          = as.numeric(horizon),
+    pro              = pro_specs
+  )
+
+  rdf  <- as.data.frame(result)
+  .val <- function(df, col) {
+    if (!col %in% names(df)) return(NA_real_)
+    v <- df[[col]][1L]
+    if (is.null(v) || length(v) == 0) NA_real_ else as.numeric(v)
+  }
+
+  wr_row <- rdf[grepl("^WinRatio", rdf$Estimand, ignore.case = TRUE), , drop = FALSE]
+  if (nrow(wr_row) == 0) wr_row <- rdf[1L, , drop = FALSE]
+
+  wr   <- .val(wr_row, "Estimate")
+  se   <- .val(wr_row, "se")
+  lo   <- .val(wr_row, "CI Low")
+  hi   <- .val(wr_row, "CI Hi")
+
+  list(
+    WR        = wr,
+    SE        = se,
+    CI_lower  = lo,
+    CI_upper  = hi,
+    n_tiers   = as.integer(attr(result, "Tiers")),
+    converged = !is.na(wr) && is.finite(wr),
+    raw       = result
+  )
+}
