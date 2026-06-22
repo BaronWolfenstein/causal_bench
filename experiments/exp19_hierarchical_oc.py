@@ -352,8 +352,8 @@ def plot_ess_conflict(oc_grid: dict, target: str, save_path: str) -> None:
             conf_vals.append(conflict)
             ess_vals.append(m.ess_prior_mean)
             mw_vals.append(m.map_weight_mean)
-        ax_ess.plot(conf_vals, ess_vals, ls, color=color, label=label, marker="o")
-        ax_mw.plot(conf_vals, mw_vals,  ls, color=color, label=label, marker="o")
+        ax_ess.plot(conf_vals, ess_vals, ls, color=color, label=label)
+        ax_mw.plot(conf_vals, mw_vals,  ls, color=color, label=label)
 
     ax_ess.set_xlabel("Prior-data conflict strength")
     ax_ess.set_ylabel("Mean ESS contributed by prior")
@@ -422,7 +422,7 @@ def plot_power(oc_grid: dict, target: str, save_path: str) -> None:
             if not np.isnan(m.power):
                 phi_vals.append(phi)
                 power_vals.append(m.power)
-        ax.plot(phi_vals, power_vals, ls, color=color, label=label, marker="o")
+        ax.plot(phi_vals, power_vals, ls, color=color, label=label)
 
     ax.axhline(0.80, color="gray", linestyle=":", linewidth=0.8, label="80% target")
     ax.set_ylim(0, 1.05)
