@@ -63,7 +63,7 @@ from causal_bench.estimators.subgroup import (
 )
 
 OUT_DIR = Path("results/exp19_hierarchical_oc")
-N_REPS = 200   # increase to 1000+ for final OC report (rare cohort: high-variance)
+N_REPS = 1000
 N_SUBGROUPS = 4  # target subgroups for subgroup-level borrowing
 
 # Scenario grid
