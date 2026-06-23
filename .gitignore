@@ -8,7 +8,9 @@ build/
 .pytest_cache/
 uv.lock
 results/
+!results/exp19_hierarchical_oc/
 *.png
+!results/exp19_hierarchical_oc/*.png
 *.pdf
 *.csv
 *.parquet
