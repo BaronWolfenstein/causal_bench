@@ -16,6 +16,16 @@ PR #36 commits (all pending merge):
   9f330b81 — audit round 2: log-scale RR CIs fixed in `addWaldInference()`; `clinicalRMTIF()`
              gains `crossover=` and `min.cens.surv=`; `clinicalPSNB()` reach guard; etc.
              CI parsing unchanged for WinRatio (was already log-scale). Transparent to bridge.
+  67a0300  — audit round 3: log-scale ratio p-values (`log(est)/se_log` in
+             `addWaldInference()`; ratio NI margins also on the log scale); explicit
+             `CensoringTVLibrary` arg on `formatArguments()` (defaults to
+             `c("SL.mean","SL.glm")` — no longer borrows the treatment library, which is
+             `SL.mean` in an RCT, making censoring intercept-only); horizon snap + `stop()`
+             in `getWinRatio()`/`getRMTIF()` for off-grid horizons; zero-denominator guards
+             (warn → Inf/NaN) in `getWinRatio()`, `targetWinRatio()`, `clinicalPSNB()`.
+             All changes transparent to bridge: `CensoringTVLibrary` is on
+             `formatArguments()` (not the clinical function signatures), so the improved
+             default applies automatically; p-value and guard changes alter no return shapes.
 
 Python-side wiring (crossover_col, min_cens_surv accepted and passed to R) is live.
 R-side calls are scaffolded but inactive — TODO comments at each clinicalWinRatio()/
