@@ -108,8 +108,12 @@ def robust_map_posterior(
     tau_prior_sd: float = 0.10,
     robust_weight: float = 0.10,
     vague_sd: float = 0.50,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     """Robust MAP prior (Schmidli et al. 2014) for the target registry.
+
+    Returns (posterior_mean, posterior_sd, map_weight, sigma2_map) where
+    sigma2_map is the MAP component prior variance — pass to compute_ess as
+    prior_sd=sqrt(sigma2_map) so ESS uses the actual prior, not post_var.
 
     Step 1 — MAP prior: meta-analytic summary of donor registries.
         Random-effects model: θ_i ~ N(μ, τ²), each θ_i observed as N(â_i, se_i²).
@@ -191,7 +195,7 @@ def robust_map_posterior(
         + w_vague_post * (post_var_vague + (post_mean_vague - post_mean) ** 2)
     )
 
-    return float(post_mean), float(np.sqrt(max(post_var, 1e-12))), float(w_map_post)
+    return float(post_mean), float(np.sqrt(max(post_var, 1e-12))), float(w_map_post), float(sigma2_map)
 
 
 # ─── ESS ─────────────────────────────────────────────────────────────────────
@@ -199,29 +203,27 @@ def robust_map_posterior(
 def compute_ess(
     prior_sd: float,
     likelihood_sd: float,
-    posterior_sd: float,
+    posterior_sd: float,  # kept for API compatibility; not used in ESS calculation
     target_n: int,
 ) -> tuple[float, float, float]:
-    """Effective sample size via variance ratio.
+    """Effective sample size (Morita et al. 2008) via variance ratio.
 
-    ESS_prior = (1/posterior_var - 1/likelihood_var) / (1/unit_info)
-    where unit_info = 1/likelihood_var * target_n (information per patient).
+    ESS_prior = (like_var × target_n) / prior_var
+
+    where like_var = likelihood_sd² is the SE² of the target estimator (σ²/n,
+    a dataset-level variance), so like_var × target_n recovers the effective
+    per-observation variance, and prior_var = prior_sd² is the MAP prior
+    variance (sigma2_map from robust_map_posterior, passed directly — NOT
+    back-solved through post_var, which would introduce a conflict-dependent
+    bias for the mixture posterior).
 
     Returns (ess_prior, ess_data, ess_total).
     """
     prior_var = prior_sd ** 2
     like_var  = likelihood_sd ** 2
-    post_var  = posterior_sd ** 2
-
-    # Unit information: information per target patient
-    unit_info = 1.0 / like_var * target_n if like_var > 0 else float("inf")
-
-    info_posterior  = 1.0 / max(post_var, 1e-12)
-    info_likelihood = 1.0 / max(like_var, 1e-12)
-    info_prior      = max(info_posterior - info_likelihood, 0.0)
 
     ess_data  = float(target_n)
-    ess_prior = float(info_prior / (unit_info / target_n)) if unit_info > 0 else 0.0
+    ess_prior = float(like_var * target_n / prior_var) if prior_var > 0 else 0.0
     ess_total = ess_data + ess_prior
     return ess_prior, ess_data, ess_total
 
@@ -240,7 +242,7 @@ def population_level_borrow(
 
     Standard hierarchical model with one τ² parameter. No embedding dependency.
     """
-    post_mean, post_sd, map_w = robust_map_posterior(
+    post_mean, post_sd, map_w, sigma2_map = robust_map_posterior(
         donor_summaries=[main_summary],
         target_summary=target_summary,
         tau_prior_sd=tau_prior_sd,
@@ -253,7 +255,7 @@ def population_level_borrow(
     ci_hi = post_mean + z * post_sd
 
     ess_prior, ess_data, ess_total = compute_ess(
-        prior_sd=float(np.sqrt(main_summary.se_hat ** 2 + tau_prior_sd ** 2)),
+        prior_sd=float(np.sqrt(sigma2_map)),
         likelihood_sd=target_summary.se_hat,
         posterior_sd=post_sd,
         target_n=target_summary.n,

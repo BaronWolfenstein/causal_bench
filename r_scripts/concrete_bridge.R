@@ -878,10 +878,12 @@ run_concrete_win_ratio <- function(df,
 ##   $raw        the full concrete::clinicalRMTIF() result object
 ## ---------------------------------------------------------------------------
 run_clinical_rmtif <- function(df,
-                               horizon = 1.0,
-                               covars  = c("W1", "W2", "W3", "W4"),
-                               signif  = 0.05,
-                               verbose = FALSE) {
+                               horizon        = 1.0,
+                               covars         = c("W1", "W2", "W3", "W4"),
+                               signif         = 0.05,
+                               crossover_col  = NULL,
+                               min_cens_surv  = 0.05,
+                               verbose        = FALSE) {
 
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
@@ -897,6 +899,10 @@ run_clinical_rmtif <- function(df,
   dt[, terminal_time := T_obs]
   dt[, terminal_status := as.integer(event_type == 2L)]
 
+  crossover_arg <- if (is.null(crossover_col) || length(crossover_col) == 0) NULL else
+                     as.character(crossover_col)[1L]
+
+  ## TODO(#36): uncomment both lines marked below once concrete PR #36 merges.
   result <- tryCatch(
     concrete::clinicalRMTIF(
       data             = as.data.frame(dt),
@@ -906,6 +912,8 @@ run_clinical_rmtif <- function(df,
       terminal.status  = "terminal_status",
       covariates       = covars,
       horizon          = horizon,
+      ## crossover     = crossover_arg,            # TODO: uncomment on concrete PR #36 merge
+      ## min.cens.surv = as.numeric(min_cens_surv), # TODO: uncomment on concrete PR #36 merge
       Signif           = signif,
       id               = "id"
     ),
@@ -994,10 +1002,11 @@ run_clinical_rmtif <- function(df,
 ##   $tier_components  data.frame of per-tier Reach and NetBenefit rows
 ## ---------------------------------------------------------------------------
 run_clinical_psnb <- function(df,
-                               horizon = 1.0,
-                               charter = NULL,
-                               covars  = c("W1", "W2", "W3", "W4"),
-                               signif  = 0.05) {
+                               horizon       = 1.0,
+                               charter       = NULL,
+                               covars        = c("W1", "W2", "W3", "W4"),
+                               signif        = 0.05,
+                               min_cens_surv = 0.05) {
 
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
@@ -1022,6 +1031,7 @@ run_clinical_psnb <- function(df,
       stop("charter must sum to 1 (got ", sum(charter), ")")
   }
 
+  ## TODO(#36): uncomment the line marked below once concrete PR #36 merges.
   result <- tryCatch(
     concrete::clinicalPSNB(
       data             = as.data.frame(dt),
@@ -1032,6 +1042,7 @@ run_clinical_psnb <- function(df,
       covariates       = covars,
       horizon          = horizon,
       charter          = charter,
+      ## min.cens.surv = as.numeric(min_cens_surv), # TODO: uncomment on concrete PR #36 merge
       Signif           = signif,
       id               = "id"
     ),
@@ -1131,7 +1142,8 @@ run_concrete_pro_win_ratio <- function(df,
                                        terminal_status = "Delta",
                                        covariates      = c("W1", "W2", "W3", "W4"),
                                        pro_specs       = NULL,
-                                       crossover_col   = NULL) {
+                                       crossover_col   = NULL,
+                                       min_cens_surv   = 0.05) {
   stopifnot(is.data.frame(df))
   stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
 
@@ -1148,10 +1160,9 @@ run_concrete_pro_win_ratio <- function(df,
   crossover_arg <- if (is.null(crossover_col) || length(crossover_col) == 0) NULL else
                      as.character(crossover_col)[1L]
 
-  ## TODO(#36): uncomment `crossover = crossover_arg` once concrete PR #36 merges.
-  ## The argument is accepted above and passed through from Python; the R call is
-  ## the only remaining wiring needed. Current concrete (post-#35) does not have
-  ## the crossover parameter and will error if it is passed.
+  ## TODO(#36): uncomment both lines marked below once concrete PR #36 merges.
+  ## crossover_arg and min_cens_surv are accepted above and wired through from
+  ## Python; the R call below is the only remaining wiring needed.
   result <- clinicalWinRatio(
     data             = df,
     arm              = "arm",
@@ -1160,7 +1171,8 @@ run_concrete_pro_win_ratio <- function(df,
     terminal.status  = status_col,
     covariates       = as.character(covariates),
     horizon          = as.numeric(horizon),
-    ## crossover     = crossover_arg,   # TODO: uncomment on concrete PR #36 merge
+    ## crossover     = crossover_arg,            # TODO: uncomment on concrete PR #36 merge
+    ## min.cens.surv = as.numeric(min_cens_surv), # TODO: uncomment on concrete PR #36 merge
     pro              = pro_specs
   )
 

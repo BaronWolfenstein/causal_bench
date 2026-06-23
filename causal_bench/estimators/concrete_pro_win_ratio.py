@@ -5,24 +5,21 @@ Targets concrete PR #35 (merged 2026-06-19) + PR #36 (open as of 2026-06-22).
 PR #35 added the `pro` argument: continuous/ordinal PRO tiers appended at the
 bottom of the win hierarchy, compared with a reach-weighted IPCW-corrected CDF.
 
-PR #36 (GPC rewrite, commit 80ab8af) changes the PRO block to a reach-weighted
-IPCW-corrected sequential generalized pairwise comparison (GPC) on the joint
-marker vectors. Key API changes relative to #35:
-  - `clinicalWinRatio()` and `clinicalPSNB()` gain a `crossover` argument:
-    a per-subject treatment-switch time column enabling the hypothetical
-    no-switching estimand (IPCW = 1/(S_dropout × S_crossover)).
-  - `landmark` in each PRO spec must equal the horizon (final-visit design).
-    Passing landmark != horizon will error in #36.
-  - `n.grid` is no longer a PRO spec field (GPC does not use a cutpoint grid).
-  - PRO win/loss components are rescaled by residual_reach / reachEmp internally
-    (keeps P(win)+P(loss) ≤ 1); transparent to this bridge.
-  - CI columns for Rel Risk are now log-scale in getOutput() — WinRatio CI
-    was already log-scale; no change to our result parsing.
+PR #36 commits (all pending merge):
+  80ab8af — crossover IPCW: `clinicalWinRatio()`/`clinicalPSNB()` gain `crossover=`
+            for the hypothetical no-switching estimand (IPCW = 1/(S_dropout × S_crossover)).
+            GPC rewrite: PRO block is a sequential GPC, not bilinear; `landmark` must
+            equal `horizon`; `n.grid` dropped; P(win)+P(loss)≤1 enforced by rescaling.
+  63e7027 — robustness: `min.cens.surv` exposed on `clinicalWinRatio()`/`clinicalPSNB()`/
+            `clinicalRMTIF()` (default 0.05); `.tvCensLaggedSurv()` now uses the analyst's
+            SL library instead of fixed defaults. Matters with heavy crossover (EVOQUE 49%).
+  9f330b81 — audit round 2: log-scale RR CIs fixed in `addWaldInference()`; `clinicalRMTIF()`
+             gains `crossover=` and `min.cens.surv=`; `clinicalPSNB()` reach guard; etc.
+             CI parsing unchanged for WinRatio (was already log-scale). Transparent to bridge.
 
-Python-side changes (crossover_col accepted, landmark==horizon validated) are
-live. R-side crossover wiring in run_concrete_pro_win_ratio is scaffolded but
-not yet active — TODO marked at the clinicalWinRatio() call site; uncomment
-when #36 merges.
+Python-side wiring (crossover_col, min_cens_surv accepted and passed to R) is live.
+R-side calls are scaffolded but inactive — TODO comments at each clinicalWinRatio()/
+clinicalPSNB()/clinicalRMTIF() call site; uncomment when #36 merges.
 
 Each PRO spec is a dict with keys:
   marker     (required) column name in the DataFrame
@@ -81,6 +78,7 @@ class ConcretePROWinRatioEstimator(BaseEstimator):
         terminal_status_col: str = "Delta",
         covariate_cols: list[str] | None = None,
         crossover_col: str | None = None,
+        min_cens_surv: float = 0.05,
     ):
         if not pro_specs:
             raise ValueError("pro_specs must be a non-empty list of PRO tier dicts")
@@ -91,6 +89,7 @@ class ConcretePROWinRatioEstimator(BaseEstimator):
         self._terminal_status_col = terminal_status_col
         self._covariate_cols = covariate_cols or ["W1", "W2", "W3", "W4"]
         self._crossover_col = crossover_col
+        self._min_cens_surv = min_cens_surv
 
     @property
     def name(self) -> str:
@@ -155,10 +154,11 @@ class ConcretePROWinRatioEstimator(BaseEstimator):
             for s in self._pro_specs
         ])
 
-        r_illness   = ro.StrVector(illness_cols) if illness_cols else ro.rinterface.NULL
-        r_covars    = ro.StrVector(self._covariate_cols)
-        r_crossover = (ro.StrVector([self._crossover_col])
-                       if self._crossover_col else ro.rinterface.NULL)
+        r_illness      = ro.StrVector(illness_cols) if illness_cols else ro.rinterface.NULL
+        r_covars       = ro.StrVector(self._covariate_cols)
+        r_crossover    = (ro.StrVector([self._crossover_col])
+                          if self._crossover_col else ro.rinterface.NULL)
+        r_min_cens_surv = ro.FloatVector([self._min_cens_surv])
 
         try:
             result = run_fn(
@@ -170,6 +170,7 @@ class ConcretePROWinRatioEstimator(BaseEstimator):
                 r_covars,
                 r_pro_specs,
                 r_crossover,
+                r_min_cens_surv,
             )
         except Exception as exc:
             warnings.warn(f"{self.name}: R call failed — {exc}", stacklevel=2)
