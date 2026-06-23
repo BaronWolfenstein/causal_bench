@@ -26,6 +26,14 @@ PR #36 commits (all pending merge):
              All changes transparent to bridge: `CensoringTVLibrary` is on
              `formatArguments()` (not the clinical function signatures), so the improved
              default applies automatically; p-value and guard changes alter no return shapes.
+  544b7ca  — audit round 3 follow-ups: stale `test-getRMST.R` RR p-value expectation
+             updated to log-scale; `CensoringTVLibrary` bound in `ConcreteArgs` block of
+             `makeConcreteArgs()` so it survives save/reformat; zero-denominator guards
+             completed — `getWinRatio()`, `targetWinRatio()`, `multistateWinRatio`,
+             `clinicalPSNB()`, `addWaldInference()`, `getSimultaneousFamily()` now
+             short-circuit to NA se/CI/p (point estimate kept) instead of log-IF Inf/NaN;
+             `.attachFamily()` zeroes non-finite IFs. Transparent to bridge: NA inference
+             only on degenerate data; rpy2 maps `NA_real_` → NaN in Python.
 
 Python-side wiring (crossover_col, min_cens_surv accepted and passed to R) is live.
 R-side calls are scaffolded but inactive — TODO comments at each clinicalWinRatio()/
