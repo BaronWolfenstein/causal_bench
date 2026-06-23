@@ -38,6 +38,7 @@ from __future__ import annotations
 from itertools import product
 from pathlib import Path
 from typing import Optional
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -63,6 +64,7 @@ from causal_bench.estimators.subgroup import (
 )
 
 OUT_DIR = Path("results/exp19_hierarchical_oc")
+GRID_CACHE = OUT_DIR / "oc_grid.pkl"
 N_REPS = 1000
 N_SUBGROUPS = 4  # target subgroups for subgroup-level borrowing
 
@@ -245,6 +247,25 @@ def run_scenario_cell(
     return collected
 
 
+# ─── Grid persistence ─────────────────────────────────────────────────────────
+
+def save_grid(oc_grid: dict, path: Path = GRID_CACHE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        pickle.dump(oc_grid, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"Grid saved → {path}")
+
+
+def load_grid(path: Path = GRID_CACHE) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Grid cache not found: {path}\n"
+            "Run without --plots-only first to generate it."
+        )
+    with open(path, "rb") as fh:
+        return pickle.load(fh)
+
+
 # ─── Plots ────────────────────────────────────────────────────────────────────
 
 _LEVEL_STYLE = {
@@ -356,10 +377,15 @@ def plot_ess_conflict(oc_grid: dict, target: str, save_path: str) -> None:
         ax_mw.plot(conf_vals, mw_vals,  ls, color=color, label=label)
 
     ax_ess.set_xlabel("Prior-data conflict strength")
-    ax_ess.set_ylabel("Mean ESS contributed by prior")
-    ax_ess.set_title(f"ESS collapse under conflict — {target.upper()} (φ=1)")
+    ax_ess.set_ylabel("Prior ESS (patients)")
+    ax_ess.set_title(f"Prior ESS (patients) — {target.upper()} (φ=1)")
     ax_ess.legend(fontsize=8)
     ax_ess.grid(alpha=0.3)
+    ax_ess.annotate(
+        "Prior ESS is conflict-invariant by construction:\nit measures prior precision, not posterior updating.",
+        xy=(0.03, 0.05), xycoords="axes fraction", fontsize=7, color="gray",
+        va="bottom",
+    )
 
     ax_mw.axhline(0.10, color="gray", linestyle=":", linewidth=0.8, label="Robust weight floor")
     ax_mw.set_xlabel("Prior-data conflict strength")
@@ -368,7 +394,7 @@ def plot_ess_conflict(oc_grid: dict, target: str, save_path: str) -> None:
     ax_mw.legend(fontsize=8)
     ax_mw.grid(alpha=0.3)
 
-    fig.suptitle("Exp 19: ESS and MAP weight collapse — robust prior behavior under conflict", fontsize=9)
+    fig.suptitle(f"Exp 19: Prior ESS (patients) and MAP weight — {target.upper()} (φ=1, alternative)", fontsize=9)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
@@ -508,7 +534,14 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> dict:
         print(f"  {conflict:8.1f}  {pop.ess_prior_mean:14.1f}  {pat.ess_prior_mean:14.1f}  "
               f"{pop.map_weight_mean:10.3f}  {pat.map_weight_mean:10.3f}")
 
-    # ── Plots ──
+    save_grid(oc_grid)
+
+    _write_plots(oc_grid)
+    return oc_grid
+
+
+def _write_plots(oc_grid: dict) -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     for target in TARGET_REGISTRIES:
         sfx = target
         plot_type_m_type_s(oc_grid, target, str(OUT_DIR / f"type_m_type_s_{sfx}.png"))
@@ -518,13 +551,17 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> dict:
         plot_power(oc_grid, target,         str(OUT_DIR / f"power_curve_{sfx}.png"))
 
     print(f"\nAll outputs → {OUT_DIR}/")
-    return oc_grid
 
 
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Exp 19: Hierarchical borrowing OC study")
-    p.add_argument("--n-reps", type=int, default=N_REPS)
-    p.add_argument("--seed",   type=int, default=42)
+    p.add_argument("--n-reps",     type=int,  default=N_REPS)
+    p.add_argument("--seed",       type=int,  default=42)
+    p.add_argument("--plots-only", action="store_true",
+                   help=f"Skip Monte Carlo; load grid from {GRID_CACHE} and regenerate plots")
     args = p.parse_args()
-    run(n_reps=args.n_reps, seed=args.seed)
+    if args.plots_only:
+        _write_plots(load_grid())
+    else:
+        run(n_reps=args.n_reps, seed=args.seed)

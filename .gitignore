@@ -11,6 +11,7 @@ results/
 !results/exp19_hierarchical_oc/
 *.png
 !results/exp19_hierarchical_oc/*.png
+!results/exp19_hierarchical_oc/oc_grid.pkl
 *.pdf
 *.csv
 *.parquet
