@@ -34,6 +34,22 @@ def test_dgp_config_independent_censoring():
     assert cfg.censoring.kind == "independent"
 
 
+def test_generate_data_independent_censoring():
+    from causal_bench.dgp.config import IndependentCensoringConfig
+    cfg = DGPConfig(n=300, censoring=IndependentCensoringConfig(), seed=0)
+    df = generate_data(cfg)
+    assert len(df) == 300
+    assert set(df["Delta"].unique()).issubset({0.0, 1.0})
+
+
+def test_generate_data_informative_censoring():
+    from causal_bench.dgp.config import InformativeCensoringConfig
+    cfg = DGPConfig(n=300, censoring=InformativeCensoringConfig(beta_T=-0.4), seed=0)
+    df = generate_data(cfg)
+    assert len(df) == 300
+    assert set(df["Delta"].unique()).issubset({0.0, 1.0})
+
+
 def test_dgp_config_is_pydantic_model():
     cfg = DGPConfig()
     d = cfg.model_dump()

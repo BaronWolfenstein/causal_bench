@@ -1,13 +1,11 @@
-"""Exp 13: Censoring-mechanism sweep — bias, coverage, EIC calibration, IPCW ESS.
+"""Exp 13: Censoring mechanism sweep.
 
-Sweeps DGPConfig.censoring_mechanism x its informativeness/strength parameter:
-  - "independent"          — C independent of W, A, T_true (pure random dropout)
-  - "covariate_dependent"  — C depends on W, A (MAR); censoring_informativeness
-                              also sweeps an MNAR-via-U component
-  - "informative"          — log C* = beta0 + censoring_beta_T * T_true + eps
-                              (MNAR: censoring directly depends on the
-                              unobservable event time — IPCW conditional on
-                              W, A alone cannot correct this)
+Sweeps CensoringConfig variants x their informativeness/strength parameter:
+  - IndependentCensoringConfig        — pure random dropout (MCAR)
+  - CovariateDependentCensoringConfig — C depends on W, A (MAR); informativeness
+                                        controls MNAR-via-U component [0, 1]
+  - InformativeCensoringConfig        — log C* = beta0 + beta_T * T_true + eps
+                                        (MNAR; IPCW cannot correct)
 
 Estimators: tmle_ipcw, tmle_ipcw_boot, aipw, concrete_simult (RD row only,
 extracted at the DGP horizon — concrete_simult's other family members aren't
