@@ -124,16 +124,20 @@ from causal_bench.dgp.scenarios import get_scenario, list_scenarios
 
 
 def test_get_scenario_clean():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = get_scenario("clean")
-    assert cfg.censoring_informativeness == 0.0
+    assert isinstance(cfg.censoring, CovariateDependentCensoringConfig)
+    assert cfg.censoring.informativeness == 0.0
     assert cfg.positivity_severity == 0.0
     assert cfg.true_tau == -0.5
 
 
 def test_get_scenario_edwards_realistic():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = get_scenario("edwards_realistic")
     assert cfg.n == 700
-    assert cfg.censoring_informativeness == 0.6
+    assert isinstance(cfg.censoring, CovariateDependentCensoringConfig)
+    assert cfg.censoring.informativeness == 0.6
     assert cfg.positivity_severity == 1.5
 
 

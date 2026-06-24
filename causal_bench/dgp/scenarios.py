@@ -1,7 +1,9 @@
-from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.config import DGPConfig, CovariateDependentCensoringConfig
+
+_CENS = CovariateDependentCensoringConfig  # local alias
 
 _CLEAN = dict(
-    n=500, censoring_informativeness=0.0, censoring_rate=0.25,
+    n=500, censoring=_CENS(informativeness=0.0), censoring_rate=0.25,
     positivity_severity=0.0, unmeasured_confounding_strength=0.0,
     collider_strength=0.0, crossover_rate=0.0, enrollment_drift=0.0,
     true_tau=-0.5,
@@ -10,9 +12,9 @@ _CLEAN = dict(
 _REGISTRY: dict[str, dict] = {
     "clean": _CLEAN,
     # Censoring gradient
-    "censor_mild":     {**_CLEAN, "censoring_informativeness": 0.3, "censoring_rate": 0.25},
-    "censor_moderate": {**_CLEAN, "censoring_informativeness": 0.6, "censoring_rate": 0.30},
-    "censor_severe":   {**_CLEAN, "censoring_informativeness": 1.0, "censoring_rate": 0.40},
+    "censor_mild":     {**_CLEAN, "censoring": _CENS(informativeness=0.3), "censoring_rate": 0.25},
+    "censor_moderate": {**_CLEAN, "censoring": _CENS(informativeness=0.6), "censoring_rate": 0.30},
+    "censor_severe":   {**_CLEAN, "censoring": _CENS(informativeness=1.0), "censoring_rate": 0.40},
     # Positivity gradient
     "positivity_mild":     {**_CLEAN, "positivity_severity": 1.0},
     "positivity_moderate": {**_CLEAN, "positivity_severity": 2.0},
@@ -24,7 +26,7 @@ _REGISTRY: dict[str, dict] = {
     # Edwards variants
     "edwards_realistic": dict(
         n=700,
-        censoring_informativeness=0.6, censoring_rate=0.25,
+        censoring=_CENS(informativeness=0.6), censoring_rate=0.25,
         positivity_severity=1.5, crossover_rate=0.05,
         unmeasured_confounding_strength=0.2,
         collider_strength=0.4, enrollment_drift=0.15,
@@ -33,14 +35,14 @@ _REGISTRY: dict[str, dict] = {
     ),
     "edwards_optimistic": dict(
         n=700,
-        censoring_informativeness=0.3, censoring_rate=0.15,
+        censoring=_CENS(informativeness=0.3), censoring_rate=0.15,
         positivity_severity=0.5, unmeasured_confounding_strength=0.1,
         collider_strength=0.2, enrollment_drift=0.05,
         true_tau=-0.5,
     ),
     "edwards_pessimistic": dict(
         n=700,
-        censoring_informativeness=0.9, censoring_rate=0.40,
+        censoring=_CENS(informativeness=0.9), censoring_rate=0.40,
         positivity_severity=2.5, crossover_rate=0.10,
         unmeasured_confounding_strength=0.4,
         collider_strength=0.7, enrollment_drift=0.3,
@@ -52,17 +54,19 @@ _REGISTRY: dict[str, dict] = {
     # Strata account for ~20% of outcome variance via their W2/W4 prognostic effects.
     "stratified_base": {
         **_CLEAN,
-        "strata_cols": ("W2", "W4"),   # tuple so DGPConfig asdict round-trips cleanly
+        "strata_cols": ("W2", "W4"),
         "strata_block_size": 4,
-        "censoring_informativeness": 0.0,
+        "censoring": _CENS(informativeness=0.0),
         "censoring_rate": 0.20,
     },
     # Competing risks — for Exp 8 / McCoy experiment
-    # cause1 = primary event (treatment reduces risk), cause2 = competing event
+    # cause-1 (primary event): treatment effect is true_tau, same as single-event case.
+    # cause-2 (competing event): cause2_treatment_effect controls treatment's effect on
+    # the competing cause's hazard.
     "competing_risks_base": {
         **_CLEAN,
         "n": 600, "competing_risks": True,
-        "censoring_informativeness": 0.3, "censoring_rate": 0.20,
+        "censoring": _CENS(informativeness=0.3), "censoring_rate": 0.20,
         "true_tau": -0.3,
     },
     # ENCIRCLE-calibrated — for Exp 16 / calibrated replication
@@ -83,7 +87,7 @@ _REGISTRY: dict[str, dict] = {
         "cause2_treatment_effect": 0.32,    # device also reduces mortality (extends T2)
         "hfh_death_escalation": 0.55,       # HFH-prone patients die sooner (shared frailty)
         "censoring_rate": 0.19,             # ~19% missing at 1-year visit
-        "censoring_informativeness": 0.25,  # mild informative: sicker patients miss more
+        "censoring": _CENS(informativeness=0.25),  # mild informative: sicker patients miss more
         "horizon": 0.77,
         "positivity_severity": 0.5,         # mild enrollment heterogeneity
         "unmeasured_confounding_strength": 0.1,
