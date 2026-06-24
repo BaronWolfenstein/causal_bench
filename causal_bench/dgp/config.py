@@ -1,8 +1,31 @@
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
 _STRATA_ELIGIBLE_COLS = frozenset({"W1", "W2", "W3", "W4"})
+
+
+class IndependentCensoringConfig(BaseModel):
+    model_config = {"frozen": True, "extra": "forbid"}
+    kind: Literal["independent"] = "independent"
+
+
+class CovariateDependentCensoringConfig(BaseModel):
+    model_config = {"frozen": True, "extra": "forbid"}
+    kind: Literal["covariate_dependent"] = "covariate_dependent"
+    informativeness: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class InformativeCensoringConfig(BaseModel):
+    model_config = {"frozen": True, "extra": "forbid"}
+    kind: Literal["informative"] = "informative"
+    beta_T: float = 0.0
+
+
+CensoringConfig = Annotated[
+    Union[IndependentCensoringConfig, CovariateDependentCensoringConfig, InformativeCensoringConfig],
+    Field(discriminator="kind"),
+]
 
 
 class DGPConfig(BaseModel):
@@ -36,9 +59,7 @@ class DGPConfig(BaseModel):
 
     # Censoring
     censoring_rate: float = Field(0.25, ge=0.0, lt=1.0)
-    censoring_informativeness: float = Field(0.0, ge=0.0, le=1.0)
-    censoring_mechanism: Literal["independent", "covariate_dependent", "informative"] = "covariate_dependent"
-    censoring_beta_T: float = 0.0                     # coefficient on T_true for "informative" mechanism
+    censoring: CensoringConfig = Field(default_factory=CovariateDependentCensoringConfig)
 
     # Crossover (unused in MVP, present for scenario compatibility)
     crossover_rate: float = Field(0.0, ge=0.0, le=1.0)
@@ -101,16 +122,6 @@ class DGPConfig(BaseModel):
                     "_col_map lookup would otherwise raise a bare KeyError "
                     "deep inside generate_data() instead of failing here"
                 )
-        # censoring_beta_T only has any effect when censoring_mechanism ==
-        # "informative" (survival.py's other two branches never reference
-        # it) — setting it under another mechanism is a silent no-op that
-        # almost certainly means the wrong mechanism was selected.
-        if self.censoring_beta_T != 0.0 and self.censoring_mechanism != "informative":
-            raise ValueError(
-                f"censoring_beta_T={self.censoring_beta_T} has no effect under "
-                f"censoring_mechanism='{self.censoring_mechanism}' (only the "
-                "'informative' mechanism uses it) — likely a misconfiguration"
-            )
         # cause2_treatment_effect only has any effect when competing_risks=True
         # (survival.py's competing-risks branch is skipped entirely otherwise)
         # — setting a non-zero value without competing_risks=True is a silent no-op.

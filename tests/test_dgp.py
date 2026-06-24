@@ -5,18 +5,49 @@ from causal_bench.dgp.survival import generate_data
 
 
 def test_dgp_config_defaults():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = DGPConfig()
     assert cfg.n == 500
     assert cfg.true_tau == -0.5
-    assert cfg.censoring_informativeness == 0.0
+    assert isinstance(cfg.censoring, CovariateDependentCensoringConfig)
+    assert cfg.censoring.informativeness == 0.0
     assert cfg.seed == 42
 
 
 def test_dgp_config_override():
-    cfg = DGPConfig(n=200, true_tau=-0.3, censoring_informativeness=0.6)
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
+    cfg = DGPConfig(n=200, true_tau=-0.3, censoring=CovariateDependentCensoringConfig(informativeness=0.6))
     assert cfg.n == 200
     assert cfg.true_tau == -0.3
-    assert cfg.censoring_informativeness == 0.6
+    assert cfg.censoring.informativeness == 0.6
+
+
+def test_dgp_config_informative_censoring():
+    from causal_bench.dgp.config import InformativeCensoringConfig
+    cfg = DGPConfig(censoring=InformativeCensoringConfig(beta_T=-0.8))
+    assert cfg.censoring.beta_T == -0.8
+
+
+def test_dgp_config_independent_censoring():
+    from causal_bench.dgp.config import IndependentCensoringConfig
+    cfg = DGPConfig(censoring=IndependentCensoringConfig())
+    assert cfg.censoring.kind == "independent"
+
+
+def test_generate_data_independent_censoring():
+    from causal_bench.dgp.config import IndependentCensoringConfig
+    cfg = DGPConfig(n=300, censoring=IndependentCensoringConfig(), seed=0)
+    df = generate_data(cfg)
+    assert len(df) == 300
+    assert set(df["Delta"].unique()).issubset({0.0, 1.0})
+
+
+def test_generate_data_informative_censoring():
+    from causal_bench.dgp.config import InformativeCensoringConfig
+    cfg = DGPConfig(n=300, censoring=InformativeCensoringConfig(beta_T=-0.4), seed=0)
+    df = generate_data(cfg)
+    assert len(df) == 300
+    assert set(df["Delta"].unique()).issubset({0.0, 1.0})
 
 
 def test_dgp_config_is_pydantic_model():
@@ -62,8 +93,9 @@ def test_generate_data_treatment_prevalence():
 
 
 def test_generate_data_censoring_rate():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = DGPConfig(n=2000, censoring_rate=0.25,
-                   censoring_informativeness=0.0, seed=3)
+                   censoring=CovariateDependentCensoringConfig(informativeness=0.0), seed=3)
     df = generate_data(cfg)
     # Check the pre-horizon dropout rate (what censoring_rate actually calibrates)
     dropout_rate = ((df["Delta"] == 0) & (df["T_obs"] < cfg.horizon - 1e-9)).mean()
@@ -108,16 +140,20 @@ from causal_bench.dgp.scenarios import get_scenario, list_scenarios
 
 
 def test_get_scenario_clean():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = get_scenario("clean")
-    assert cfg.censoring_informativeness == 0.0
+    assert isinstance(cfg.censoring, CovariateDependentCensoringConfig)
+    assert cfg.censoring.informativeness == 0.0
     assert cfg.positivity_severity == 0.0
     assert cfg.true_tau == -0.5
 
 
 def test_get_scenario_edwards_realistic():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = get_scenario("edwards_realistic")
     assert cfg.n == 700
-    assert cfg.censoring_informativeness == 0.6
+    assert isinstance(cfg.censoring, CovariateDependentCensoringConfig)
+    assert cfg.censoring.informativeness == 0.6
     assert cfg.positivity_severity == 1.5
 
 

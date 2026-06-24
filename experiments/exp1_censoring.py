@@ -6,6 +6,7 @@ TMLE+IPCW+Comply is best at high informativeness.
 """
 from pathlib import Path
 
+from causal_bench.dgp.config import CovariateDependentCensoringConfig
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.estimators import MVP_ESTIMATORS
 from causal_bench.runner import run_parameter_sweep
@@ -23,8 +24,8 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
     print(f"Exp 1: censoring gradient | n_sims={n_sims} | estimators={MVP_ESTIMATORS}")
     results = run_parameter_sweep(
         base_config=base,
-        param_name="censoring_informativeness",
-        param_values=PARAM_VALUES,
+        param_name="censoring",
+        param_values=[CovariateDependentCensoringConfig(informativeness=v) for v in PARAM_VALUES],
         estimator_names=MVP_ESTIMATORS,
         n_sim=n_sims,
         n_jobs=n_jobs,

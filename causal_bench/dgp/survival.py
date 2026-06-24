@@ -12,7 +12,13 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.config import (
+    DGPConfig,
+    CensoringConfig,
+    IndependentCensoringConfig,
+    CovariateDependentCensoringConfig,
+    InformativeCensoringConfig,
+)
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -23,9 +29,7 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 def _calibrate_censoring_scale(
     censoring_rate: float,
     horizon: float,
-    censoring_informativeness: float = 0.0,
-    censoring_mechanism: str = "covariate_dependent",
-    censoring_beta_T: float = 0.0,
+    censoring: CensoringConfig,
 ) -> float:
     """Scale factor so achieved censoring_rate matches target under given mechanism."""
     if censoring_rate <= 0:
@@ -40,20 +44,19 @@ def _calibrate_censoring_scale(
     T_true = np.exp(log_T)
     gumbel_c = rng.gumbel(0, 1, n)
 
-    if censoring_mechanism == "independent":
+    if isinstance(censoring, IndependentCensoringConfig):
         log_C_base = 1.5 + gumbel_c
-    elif censoring_mechanism == "informative":
-        log_C_base = 1.5 + censoring_beta_T * T_true + gumbel_c
-    else:
-        # "covariate_dependent" — MAR conditional on W, A; optional MNAR via censoring_informativeness
+    elif isinstance(censoring, InformativeCensoringConfig):
+        log_C_base = 1.5 + censoring.beta_T * T_true + gumbel_c
+    else:  # CovariateDependentCensoringConfig
         log_C_base = (1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A
-                      + 0.4 * U * censoring_informativeness
+                      + 0.4 * U * censoring.informativeness
                       + gumbel_c)
-        mnar_weight = max(0.0, censoring_informativeness - 0.5) * 2.0
+        mnar_weight = max(0.0, censoring.informativeness - 0.5) * 2.0
         if mnar_weight > 0:
             log_C_base -= mnar_weight * (T_true < np.median(T_true)).astype(float)
 
-    C_base = np.exp(np.clip(log_C_base, -700, 700))  # avoid 0/inf overflow at extreme censoring_beta_T * T_true
+    C_base = np.exp(np.clip(log_C_base, -700, 700))  # avoid 0/inf overflow at extreme beta_T * T_true
     lo, hi = 0.01, 100.0
     for _ in range(40):
         mid = (lo + hi) / 2
@@ -204,37 +207,34 @@ def generate_data(
 
     # --- Censoring ---
     scale_factor = _calibrate_censoring_scale(
-        config.censoring_rate, config.horizon,
-        config.censoring_informativeness,
-        config.censoring_mechanism,
-        config.censoring_beta_T,
+        config.censoring_rate, config.horizon, config.censoring
     )
 
     gumbel_c = rng.gumbel(0, 1, n)
-    if config.censoring_mechanism == "independent":
+    if isinstance(config.censoring, IndependentCensoringConfig):
         # Pure random dropout: C doesn't depend on covariates, treatment, or T_true.
         log_C_base = 1.5 + gumbel_c
-    elif config.censoring_mechanism == "informative":
+    elif isinstance(config.censoring, InformativeCensoringConfig):
         # MNAR: censoring time directly depends on the (unobservable) event time.
         # IPCW conditional only on W, A cannot correct this — it requires T_true.
-        log_C_base = 1.5 + config.censoring_beta_T * T_true + gumbel_c
+        log_C_base = 1.5 + config.censoring.beta_T * T_true + gumbel_c
     else:
-        # "covariate_dependent" — MAR conditional on W, A; optional MNAR-via-U component
+        # CovariateDependentCensoringConfig — MAR conditional on W, A; optional MNAR-via-U component
         log_C_base = (
             1.5
             - 0.2 * W1
             + 0.1 * W3
             - 0.1 * A
-            + 0.4 * U * config.censoring_informativeness
+            + 0.4 * U * config.censoring.informativeness
             + gumbel_c
         )
         # MNAR component: early events are more likely to be censored
-        mnar_weight = max(0.0, config.censoring_informativeness - 0.5) * 2
+        mnar_weight = max(0.0, config.censoring.informativeness - 0.5) * 2
         if mnar_weight > 0:
             median_T = np.median(T_true)
             log_C_base -= mnar_weight * (T_true < median_T).astype(float)
 
-    C = np.exp(np.clip(log_C_base, -700, 700)) * scale_factor  # avoid 0/inf overflow at extreme censoring_beta_T * T_true
+    C = np.exp(np.clip(log_C_base, -700, 700)) * scale_factor  # avoid 0/inf overflow at extreme beta_T * T_true
 
     # --- L1: post-treatment time-varying confounder ---
     # Observed only if the patient is still in the study at t_L1: alive (T_true > t_L1)

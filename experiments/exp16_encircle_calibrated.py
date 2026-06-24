@@ -75,7 +75,7 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42) -> dict:
 
     print(f"Exp 16: ENCIRCLE-calibrated replication | n={cfg.n} | n_sims={n_sims}")
     print(f"  horizon={cfg.horizon} | censoring_rate={cfg.censoring_rate} "
-          f"| censoring_informativeness={cfg.censoring_informativeness}")
+          f"| censoring_informativeness={cfg.censoring.informativeness}")
     print(f"  true ATE (DGP): {true_ate:.3f}  "
           f"(published device−control: {_PUBLISHED_DEVICE_COMPOSITE - _PUBLISHED_CONTROL_COMPOSITE:.3f})")
 

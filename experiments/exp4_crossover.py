@@ -15,7 +15,7 @@ Demonstrates the IPCW advantage when treatment switching is informative.
 """
 from pathlib import Path
 
-from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.config import DGPConfig, CovariateDependentCensoringConfig
 from causal_bench.runner import run_parameter_sweep
 from causal_bench.viz import plot_panel, generate_summary_table
 
@@ -28,7 +28,7 @@ N_SIMS = 200  # increase to 500 for publication
 def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     # Informative crossover: sicker patients (higher hazard) cross over
-    base = DGPConfig(n=500, censoring_informativeness=0.3, censoring_rate=0.25,
+    base = DGPConfig(n=500, censoring=CovariateDependentCensoringConfig(informativeness=0.3), censoring_rate=0.25,
                      crossover_rate=0.0, crossover_informativeness=0.5, true_tau=-0.5)
 
     print(f"Exp 4: crossover gradient | n_sims={n_sims} | estimators={ESTIMATORS}")

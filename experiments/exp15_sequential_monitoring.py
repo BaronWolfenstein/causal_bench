@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.config import DGPConfig, CovariateDependentCensoringConfig
 from causal_bench.dgp.survival import generate_data, compute_true_effects
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
@@ -42,7 +42,7 @@ OUT_DIR = Path("results/exp15_sequential_monitoring")
 N_SIMS = 200  # increase to 500 for publication
 
 _EDWARDS_BASE = dict(
-    censoring_informativeness=0.6, censoring_rate=0.25,
+    censoring=CovariateDependentCensoringConfig(informativeness=0.6), censoring_rate=0.25,
     positivity_severity=1.5, crossover_rate=0.05,
     unmeasured_confounding_strength=0.2,
     collider_strength=0.4, enrollment_drift=0.15,

@@ -24,7 +24,7 @@ N_SIMS = 200  # increase to 500 for publication
 
 def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    base = DGPConfig(n=500, censoring_informativeness=0.0,
+    base = DGPConfig(n=500,
                      unmeasured_confounding_strength=0.0, true_tau=-0.5)
 
     print(f"Exp 3: unmeasured confounding gradient | n_sims={n_sims} | estimators={ESTIMATORS}")
