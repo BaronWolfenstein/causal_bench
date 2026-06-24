@@ -77,8 +77,9 @@ def test_generate_data_treatment_prevalence():
 
 
 def test_generate_data_censoring_rate():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = DGPConfig(n=2000, censoring_rate=0.25,
-                   censoring_informativeness=0.0, seed=3)
+                   censoring=CovariateDependentCensoringConfig(informativeness=0.0), seed=3)
     df = generate_data(cfg)
     # Check the pre-horizon dropout rate (what censoring_rate actually calibrates)
     dropout_rate = ((df["Delta"] == 0) & (df["T_obs"] < cfg.horizon - 1e-9)).mean()
