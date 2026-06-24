@@ -1,4 +1,4 @@
-from causal_bench.dgp.config import DGPConfig, CovariateDependentCensoringConfig
+from causal_bench.dgp.config import DGPConfig, CovariateDependentCensoringConfig, LatentConfounderCensoringConfig
 
 _CENS = CovariateDependentCensoringConfig  # local alias
 
@@ -87,7 +87,7 @@ _REGISTRY: dict[str, dict] = {
         "cause2_treatment_effect": 0.32,    # device also reduces mortality (extends T2)
         "hfh_death_escalation": 0.55,       # HFH-prone patients die sooner (shared frailty)
         "censoring_rate": 0.19,             # ~19% missing at 1-year visit
-        "censoring": _CENS(informativeness=0.25),  # mild informative: sicker patients miss more
+        "censoring": LatentConfounderCensoringConfig(informativeness=0.25),  # MNAR-via-U: sicker patients miss more; preserves Lancet calibration
         "horizon": 0.77,
         "positivity_severity": 0.5,         # mild enrollment heterogeneity
         "unmeasured_confounding_strength": 0.1,

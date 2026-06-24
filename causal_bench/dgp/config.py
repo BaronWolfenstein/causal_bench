@@ -22,8 +22,30 @@ class InformativeCensoringConfig(BaseModel):
     beta_T: float = 0.0
 
 
+class LatentConfounderCensoringConfig(BaseModel):
+    """MNAR via U (the latent unmeasured confounder).
+
+    Censoring hazard depends on U through the informativeness weight, making
+    dropout informative even after conditioning on all observed covariates.
+    Use for scenarios (like ENCIRCLE) calibrated to published marginals under
+    this mechanism — switching to CovariateDependentCensoringConfig would
+    break those calibrations.
+
+    Distinct from InformativeCensoringConfig (which conditions on T_true) and
+    CovariateDependentCensoringConfig (which is pure MAR given W, A).
+    """
+    model_config = {"frozen": True, "extra": "forbid"}
+    kind: Literal["latent_confounder"] = "latent_confounder"
+    informativeness: float = Field(0.25, ge=0.0, le=1.0)
+
+
 CensoringConfig = Annotated[
-    Union[IndependentCensoringConfig, CovariateDependentCensoringConfig, InformativeCensoringConfig],
+    Union[
+        IndependentCensoringConfig,
+        CovariateDependentCensoringConfig,
+        InformativeCensoringConfig,
+        LatentConfounderCensoringConfig,
+    ],
     Field(discriminator="kind"),
 ]
 

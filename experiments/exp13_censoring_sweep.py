@@ -1,11 +1,13 @@
 """Exp 13: Censoring mechanism sweep.
 
 Sweeps CensoringConfig variants x their informativeness/strength parameter:
-  - IndependentCensoringConfig        — pure random dropout (MCAR)
-  - CovariateDependentCensoringConfig — C depends on W, A (MAR); informativeness
-                                        controls MNAR-via-U component [0, 1]
-  - InformativeCensoringConfig        — log C* = beta0 + beta_T * T_true + eps
-                                        (MNAR; IPCW cannot correct)
+  - IndependentCensoringConfig        — MCAR: pure random dropout
+  - CovariateDependentCensoringConfig — pure MAR: C depends only on observed W, A;
+                                        informativeness scales covariate effects [0, 1]
+  - InformativeCensoringConfig        — MNAR via T_true: log C* = beta0 + beta_T*T_true + eps
+                                        (IPCW cannot correct without T_true)
+  - LatentConfounderCensoringConfig   — MNAR via U: sicker patients (low U) drop out more;
+                                        informativeness scales the U contribution
 
 Estimators: tmle_ipcw, tmle_ipcw_boot, aipw, concrete_simult (RD row only,
 extracted at the DGP horizon — concrete_simult's other family members aren't
@@ -39,6 +41,7 @@ from causal_bench.dgp.config import (
     IndependentCensoringConfig,
     CovariateDependentCensoringConfig,
     InformativeCensoringConfig,
+    LatentConfounderCensoringConfig,
 )
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.dgp.survival import compute_true_effects, generate_data
@@ -60,15 +63,21 @@ ESTIMATORS = ["tmle_ipcw", "tmle_ipcw_boot", "aipw", "concrete_simult"]
 BOOT_N_BOOTSTRAP = 30
 
 GRID = [
-    {"label": "independent",           "censoring": IndependentCensoringConfig()},
-    {"label": "covdep_info0.0",        "censoring": CovariateDependentCensoringConfig(informativeness=0.0)},
-    {"label": "covdep_info0.3",        "censoring": CovariateDependentCensoringConfig(informativeness=0.3)},
-    {"label": "covdep_info0.6",        "censoring": CovariateDependentCensoringConfig(informativeness=0.6)},
-    {"label": "covdep_info0.9",        "censoring": CovariateDependentCensoringConfig(informativeness=0.9)},
-    {"label": "informative_betaT-0.8", "censoring": InformativeCensoringConfig(beta_T=-0.8)},
-    {"label": "informative_betaT-0.4", "censoring": InformativeCensoringConfig(beta_T=-0.4)},
-    {"label": "informative_betaT+0.4", "censoring": InformativeCensoringConfig(beta_T=0.4)},
-    {"label": "informative_betaT+0.8", "censoring": InformativeCensoringConfig(beta_T=0.8)},
+    # MCAR
+    {"label": "independent",               "censoring": IndependentCensoringConfig()},
+    # Pure MAR (observed W, A only — no U, no T_true)
+    {"label": "covdep_info0.0",            "censoring": CovariateDependentCensoringConfig(informativeness=0.0)},
+    {"label": "covdep_info0.3",            "censoring": CovariateDependentCensoringConfig(informativeness=0.3)},
+    {"label": "covdep_info0.6",            "censoring": CovariateDependentCensoringConfig(informativeness=0.6)},
+    {"label": "covdep_info0.9",            "censoring": CovariateDependentCensoringConfig(informativeness=0.9)},
+    # MNAR via T_true (IPCW cannot correct without T_true)
+    {"label": "informative_betaT-0.8",     "censoring": InformativeCensoringConfig(beta_T=-0.8)},
+    {"label": "informative_betaT-0.4",     "censoring": InformativeCensoringConfig(beta_T=-0.4)},
+    {"label": "informative_betaT+0.4",     "censoring": InformativeCensoringConfig(beta_T=0.4)},
+    {"label": "informative_betaT+0.8",     "censoring": InformativeCensoringConfig(beta_T=0.8)},
+    # MNAR via U (latent confounder — mirrors ENCIRCLE; IPCW correctable via L1 proxy)
+    {"label": "latent_conf_info0.25",      "censoring": LatentConfounderCensoringConfig(informativeness=0.25)},
+    {"label": "latent_conf_info0.6",       "censoring": LatentConfounderCensoringConfig(informativeness=0.6)},
 ]
 
 

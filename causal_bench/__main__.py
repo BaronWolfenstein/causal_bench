@@ -2,7 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from causal_bench.dgp.config import CovariateDependentCensoringConfig
+from causal_bench.dgp.config import CovariateDependentCensoringConfig, InformativeCensoringConfig, LatentConfounderCensoringConfig
 from causal_bench.dgp.scenarios import get_scenario, list_scenarios
 from causal_bench.dgp.survival import generate_data
 from causal_bench.estimators import MVP_ESTIMATORS
@@ -135,8 +135,13 @@ def main():
 
     if args.mnar_tipping_point:
         from causal_bench.diagnostics import tipping_point_mnar, plot_tipping_point_mnar
-        if not (isinstance(config.censoring, CovariateDependentCensoringConfig) and config.censoring.informativeness > 0):
-            print("\n── MNAR tipping-point: skipped (censoring_informativeness=0, all censoring is MCAR) ──")
+        _has_mnar = (
+            isinstance(config.censoring, InformativeCensoringConfig)
+            or isinstance(config.censoring, LatentConfounderCensoringConfig)
+            or (isinstance(config.censoring, CovariateDependentCensoringConfig) and config.censoring.informativeness > 0)
+        )
+        if not _has_mnar:
+            print("\n── MNAR tipping-point: skipped (pure MCAR/MAR censoring) ──")
         else:
             sample_df = generate_data(config)
             n_ct = int(((sample_df["A"] == 1) & (sample_df["Delta"] == 0) & (sample_df["T_obs"] < config.horizon - 1e-9)).sum())

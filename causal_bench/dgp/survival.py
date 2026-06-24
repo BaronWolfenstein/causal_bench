@@ -18,6 +18,7 @@ from causal_bench.dgp.config import (
     IndependentCensoringConfig,
     CovariateDependentCensoringConfig,
     InformativeCensoringConfig,
+    LatentConfounderCensoringConfig,
 )
 
 
@@ -48,13 +49,16 @@ def _calibrate_censoring_scale(
         log_C_base = 1.5 + gumbel_c
     elif isinstance(censoring, InformativeCensoringConfig):
         log_C_base = 1.5 + censoring.beta_T * T_true + gumbel_c
-    else:  # CovariateDependentCensoringConfig
+    elif isinstance(censoring, LatentConfounderCensoringConfig):
+        # MNAR via U: sicker patients (low U → early T_true) also drop out more.
+        # Preserves ENCIRCLE Lancet calibration — do not merge with CovariateDependentCensoringConfig.
         log_C_base = (1.5 - 0.2 * W1 + 0.1 * W3 - 0.1 * A
                       + 0.4 * U * censoring.informativeness
                       + gumbel_c)
-        mnar_weight = max(0.0, censoring.informativeness - 0.5) * 2.0
-        if mnar_weight > 0:
-            log_C_base -= mnar_weight * (T_true < np.median(T_true)).astype(float)
+    else:  # CovariateDependentCensoringConfig — pure MAR given observed W, A
+        log_C_base = (1.5
+                      + censoring.informativeness * (-0.2 * W1 + 0.1 * W3 - 0.1 * A)
+                      + gumbel_c)
 
     C_base = np.exp(np.clip(log_C_base, -700, 700))  # avoid 0/inf overflow at extreme beta_T * T_true
     lo, hi = 0.01, 100.0
@@ -212,14 +216,15 @@ def generate_data(
 
     gumbel_c = rng.gumbel(0, 1, n)
     if isinstance(config.censoring, IndependentCensoringConfig):
-        # Pure random dropout: C doesn't depend on covariates, treatment, or T_true.
+        # MCAR: pure random dropout, C independent of everything.
         log_C_base = 1.5 + gumbel_c
     elif isinstance(config.censoring, InformativeCensoringConfig):
-        # MNAR: censoring time directly depends on the (unobservable) event time.
+        # MNAR via T_true: censoring time directly depends on the (unobservable) event time.
         # IPCW conditional only on W, A cannot correct this — it requires T_true.
         log_C_base = 1.5 + config.censoring.beta_T * T_true + gumbel_c
-    else:
-        # CovariateDependentCensoringConfig — MAR conditional on W, A; optional MNAR-via-U component
+    elif isinstance(config.censoring, LatentConfounderCensoringConfig):
+        # MNAR via U: sicker patients (low U → early T_true) also drop out more.
+        # Preserves ENCIRCLE Lancet calibration — do not merge with CovariateDependentCensoringConfig.
         log_C_base = (
             1.5
             - 0.2 * W1
@@ -228,11 +233,14 @@ def generate_data(
             + 0.4 * U * config.censoring.informativeness
             + gumbel_c
         )
-        # MNAR component: early events are more likely to be censored
-        mnar_weight = max(0.0, config.censoring.informativeness - 0.5) * 2
-        if mnar_weight > 0:
-            median_T = np.median(T_true)
-            log_C_base -= mnar_weight * (T_true < median_T).astype(float)
+    else:
+        # CovariateDependentCensoringConfig — pure MAR: C depends only on observed W, A.
+        # informativeness scales the covariate effects (0 = MCAR, 1 = full covariate influence).
+        log_C_base = (
+            1.5
+            + config.censoring.informativeness * (-0.2 * W1 + 0.1 * W3 - 0.1 * A)
+            + gumbel_c
+        )
 
     C = np.exp(np.clip(log_C_base, -700, 700)) * scale_factor  # avoid 0/inf overflow at extreme beta_T * T_true
 
