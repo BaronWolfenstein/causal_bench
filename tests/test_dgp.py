@@ -5,18 +5,33 @@ from causal_bench.dgp.survival import generate_data
 
 
 def test_dgp_config_defaults():
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
     cfg = DGPConfig()
     assert cfg.n == 500
     assert cfg.true_tau == -0.5
-    assert cfg.censoring_informativeness == 0.0
+    assert isinstance(cfg.censoring, CovariateDependentCensoringConfig)
+    assert cfg.censoring.informativeness == 0.0
     assert cfg.seed == 42
 
 
 def test_dgp_config_override():
-    cfg = DGPConfig(n=200, true_tau=-0.3, censoring_informativeness=0.6)
+    from causal_bench.dgp.config import CovariateDependentCensoringConfig
+    cfg = DGPConfig(n=200, true_tau=-0.3, censoring=CovariateDependentCensoringConfig(informativeness=0.6))
     assert cfg.n == 200
     assert cfg.true_tau == -0.3
-    assert cfg.censoring_informativeness == 0.6
+    assert cfg.censoring.informativeness == 0.6
+
+
+def test_dgp_config_informative_censoring():
+    from causal_bench.dgp.config import InformativeCensoringConfig
+    cfg = DGPConfig(censoring=InformativeCensoringConfig(beta_T=-0.8))
+    assert cfg.censoring.beta_T == -0.8
+
+
+def test_dgp_config_independent_censoring():
+    from causal_bench.dgp.config import IndependentCensoringConfig
+    cfg = DGPConfig(censoring=IndependentCensoringConfig())
+    assert cfg.censoring.kind == "independent"
 
 
 def test_dgp_config_is_pydantic_model():
