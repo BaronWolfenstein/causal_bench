@@ -56,7 +56,7 @@ def _calibrate_censoring_scale(
         if mnar_weight > 0:
             log_C_base -= mnar_weight * (T_true < np.median(T_true)).astype(float)
 
-    C_base = np.exp(np.clip(log_C_base, -700, 700))
+    C_base = np.exp(np.clip(log_C_base, -700, 700))  # avoid 0/inf overflow at extreme beta_T * T_true
     lo, hi = 0.01, 100.0
     for _ in range(40):
         mid = (lo + hi) / 2
