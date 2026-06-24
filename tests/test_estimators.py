@@ -82,7 +82,7 @@ from causal_bench.estimators.cox import CoxEstimator
 
 
 def _clean_df(n=500, seed=0):
-    return generate_data(DGPConfig(n=n, censoring_informativeness=0.0,
+    return generate_data(DGPConfig(n=n,
                                    unmeasured_confounding_strength=0.0,
                                    positivity_severity=0.0, seed=seed))
 
@@ -174,7 +174,7 @@ from causal_bench.dgp.config import DGPConfig as _DGPConfig
 
 
 def test_run_simulation_smoke():
-    cfg = _DGPConfig(n=150, seed=0, censoring_informativeness=0.0)
+    cfg = _DGPConfig(n=150, seed=0)
     results = run_simulation(cfg, estimator_names=["naive", "km"],
                              n_sim=4, n_jobs=1, seed=0)
     assert "naive" in results
@@ -331,7 +331,7 @@ def test_pointwise_rmst_not_in_mvp():
 def test_rmst_k20_closer_than_k2():
     """K=20 should be closer to K=2's true RMST on clean data (more integration points)."""
     from causal_bench.estimators.pointwise_rmst import PointwiseRMSTEstimator
-    cfg = DGPConfig(n=500, censoring_informativeness=0.0, seed=1)
+    cfg = DGPConfig(n=500, seed=1)
     df = generate_data(cfg)
     r2  = PointwiseRMSTEstimator(n_grid=2,  n_folds=3).estimate(df)[0].point_estimate
     r20 = PointwiseRMSTEstimator(n_grid=20, n_folds=3).estimate(df)[0].point_estimate
