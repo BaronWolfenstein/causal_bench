@@ -53,6 +53,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from causal_bench.estimators.hierarchical import (
     BorrowingResult,
     RegistrySummary,
+    _conjugacy_diagnostic,
     compute_ess,
     robust_map_posterior,
     summarise_registry,
@@ -587,6 +588,8 @@ def subgroup_level_borrow(
                     <= (ate_hat + z * se_hat)
                 ),
                 true_ate=target_true_ate,
+                conjugacy_regime="local_approximation",  # degenerate: no MAP prior
+                approximation_deviation=float("nan"),
             )
         else:
             main_sum   = summarise_registry(main_g,   target_true_ate, "main")
@@ -610,6 +613,14 @@ def subgroup_level_borrow(
                 target_n=target_sum.n,
             )
 
+            regime, deviation = _conjugacy_diagnostic(
+                post_mean=post_mean,
+                map_weight=map_w,
+                target_ate=target_sum.ate_hat,
+                target_se=target_sum.se_hat,
+                vague_sd=vague_sd,
+            )
+
             borrowing = BorrowingResult(
                 level="subgroup",
                 target_registry=target_registry,
@@ -624,6 +635,8 @@ def subgroup_level_borrow(
                 rejects_null=bool(abs(post_mean / max(post_sd, 1e-12)) > z),
                 covers_truth=bool(ci_lo <= target_true_ate <= ci_hi),
                 true_ate=target_true_ate,
+                conjugacy_regime=regime,
+                approximation_deviation=deviation,
             )
 
         results.append(SubgroupBorrowingResult(

@@ -46,6 +46,9 @@ class RegistrySummary:
     true_ate: float      # ground truth (DGP-known, for OC evaluation)
 
 
+_MAP_EXACT_THRESHOLD = 0.95  # map_weight above this → conjugate_exact regime
+
+
 @dataclass
 class BorrowingResult:
     """Output from one borrowing analysis (any level)."""
@@ -62,6 +65,9 @@ class BorrowingResult:
     rejects_null: bool                 # |ate_posterior / se_posterior| > 1.96
     covers_truth: bool                 # ci_lower ≤ true_ate ≤ ci_upper
     true_ate: float
+    # Hansen & Tong (2026) conjugacy diagnostic
+    conjugacy_regime: str = "local_approximation"  # "conjugate_exact" | "local_approximation"
+    approximation_deviation: float = float("nan")  # |mixture_mean - MAP_mean| / se; 0 if exact
 
 
 # ─── Registry summaries ───────────────────────────────────────────────────────
@@ -228,6 +234,44 @@ def compute_ess(
     return ess_prior, ess_data, ess_total
 
 
+# ─── Conjugacy diagnostic ─────────────────────────────────────────────────────
+
+def _conjugacy_diagnostic(
+    post_mean: float,
+    map_weight: float,
+    target_ate: float,
+    target_se: float,
+    vague_sd: float,
+) -> tuple[str, float]:
+    """Classify update regime and compute deviation from MAP-only conjugate update.
+
+    Returns (regime, relative_deviation).
+
+    The mixture posterior mean is map_w * pm_MAP + (1-map_w) * pm_vague.
+    When map_w ≥ threshold the mixture collapses to the single-component conjugate
+    update (exact Bayesian filter for a normal-normal model).  When map_w is lower
+    (conflict or patient-level weighting), the vague component shifts the posterior
+    away from the MAP answer; that gap is the approximation deviation.
+
+    Deviation is |mixture_mean − MAP_component_mean| / target_se — dimensionless
+    relative to the likelihood precision, comparable across cells.
+    """
+    if map_weight >= _MAP_EXACT_THRESHOLD:
+        return "conjugate_exact", 0.0
+
+    # Recover MAP-component posterior mean from the mixture decomposition:
+    #   post_mean = map_w * pm_map + (1-map_w) * pm_vague
+    #   pm_vague  = _normal_normal_posterior(0, vague_sd², y, se²)[0]
+    se_y2 = target_se ** 2
+    pm_vague, _ = _normal_normal_posterior(0.0, vague_sd ** 2, target_ate, se_y2)
+    if map_weight > 1e-10:
+        pm_map = (post_mean - (1.0 - map_weight) * pm_vague) / map_weight
+    else:
+        pm_map = pm_vague
+    deviation = abs(post_mean - pm_map) / max(target_se, 1e-12)
+    return "local_approximation", float(deviation)
+
+
 # ─── Population-level borrowing ───────────────────────────────────────────────
 
 def population_level_borrow(
@@ -261,6 +305,14 @@ def population_level_borrow(
         target_n=target_summary.n,
     )
 
+    regime, deviation = _conjugacy_diagnostic(
+        post_mean=post_mean,
+        map_weight=map_w,
+        target_ate=target_summary.ate_hat,
+        target_se=target_summary.se_hat,
+        vague_sd=vague_sd,
+    )
+
     return BorrowingResult(
         level="population",
         target_registry=target_summary.name,
@@ -275,6 +327,8 @@ def population_level_borrow(
         rejects_null=bool(abs(post_mean / max(post_sd, 1e-12)) > z),
         covers_truth=bool(ci_lo <= target_summary.true_ate <= ci_hi),
         true_ate=target_summary.true_ate,
+        conjugacy_regime=regime,
+        approximation_deviation=deviation,
     )
 
 
@@ -381,6 +435,8 @@ def patient_level_borrow(
         rejects_null=bool(abs(aug_ate / max(post_sd, 1e-12)) > z),
         covers_truth=bool((aug_ate - z * post_sd) <= target_true_ate <= (aug_ate + z * post_sd)),
         true_ate=target_true_ate,
+        conjugacy_regime="local_approximation",  # per-unit weighting ⟹ non-conjugate by construction
+        approximation_deviation=float("nan"),
     )
 
 
@@ -419,6 +475,11 @@ class OCMetrics:
     # MAP weight summary (collapses toward robust_weight under conflict)
     map_weight_mean: float = float("nan")
     map_weight_sd: float = float("nan")
+
+    # Conjugacy regime diagnostic (Hansen & Tong 2026)
+    exact_fraction: float = float("nan")       # fraction of reps in conjugate_exact regime
+    approx_deviation_mean: float = float("nan")  # mean relative deviation (approximate reps only)
+    approx_deviation_max: float = float("nan")   # max relative deviation (approximate reps only)
 
 
 def compute_oc_metrics(
@@ -465,6 +526,15 @@ def compute_oc_metrics(
     mean_se = float(np.mean([r.se_posterior for r in results]))
     mde = float((z_alpha + z_power) * mean_se) if mean_se > 0 else float("nan")
 
+    # Conjugacy diagnostic aggregation
+    exact_frac = float(sum(r.conjugacy_regime == "conjugate_exact" for r in results) / n)
+    approx_devs = [
+        r.approximation_deviation for r in results
+        if r.conjugacy_regime == "local_approximation" and np.isfinite(r.approximation_deviation)
+    ]
+    dev_mean = float(np.mean(approx_devs)) if approx_devs else float("nan")
+    dev_max  = float(np.max(approx_devs))  if approx_devs else float("nan")
+
     return OCMetrics(
         level=level,
         target_registry=target,
@@ -480,4 +550,7 @@ def compute_oc_metrics(
         ess_total_mean=float(ess_totals.mean()),
         map_weight_mean=float(map_ws.mean()),
         map_weight_sd=float(map_ws.std()),
+        exact_fraction=exact_frac,
+        approx_deviation_mean=dev_mean,
+        approx_deviation_max=dev_max,
     )

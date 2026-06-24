@@ -200,6 +200,15 @@ def _aggregate_subgroup_results(
     ess_data  = sum(r.borrowing.ess_data  for r in sub_results)
     map_w_avg = float(np.mean([r.borrowing.map_weight for r in sub_results]))
 
+    # Aggregate regime: exact only if every subgroup is exact
+    all_exact = all(r.borrowing.conjugacy_regime == "conjugate_exact" for r in sub_results)
+    agg_regime = "conjugate_exact" if all_exact else "local_approximation"
+    finite_devs = [
+        r.borrowing.approximation_deviation for r in sub_results
+        if np.isfinite(r.borrowing.approximation_deviation)
+    ]
+    agg_deviation = float(np.mean(finite_devs)) if finite_devs else float("nan")
+
     return BorrowingResult(
         level="subgroup",
         target_registry=target_registry,
@@ -214,6 +223,8 @@ def _aggregate_subgroup_results(
         rejects_null=bool(abs(ate_pooled / max(se_pooled, 1e-12)) > z),
         covers_truth=bool(ci_lo <= true_ate <= ci_hi),
         true_ate=true_ate,
+        conjugacy_regime=agg_regime,
+        approximation_deviation=agg_deviation,
     )
 
 
@@ -359,12 +370,18 @@ def plot_mde(oc_grid: dict, target: str, save_path: str) -> None:
 
 
 def plot_ess_conflict(oc_grid: dict, target: str, save_path: str) -> None:
-    """ESS prior mean and MAP weight as conflict increases (φ=1.0, alternative)."""
+    """ESS prior mean, MAP weight, and conjugacy regime as conflict increases (φ=1.0, alternative).
+
+    Cells where the majority of reps are in the local-approximation regime are marked
+    with open (unfilled) circles on the MAP weight panel; a right-axis dotted line shows
+    mean approximation deviation for the population level.
+    """
     fig, (ax_ess, ax_mw) = plt.subplots(1, 2, figsize=(11, 4))
     phi = 1.0
 
     for level, (color, ls, label) in _LEVEL_STYLE.items():
         conf_vals, ess_vals, mw_vals = [], [], []
+        exact_fracs: list[float] = []
         for conflict in CONFLICT_VALUES:
             key = (phi, conflict, "alternative")
             if key not in oc_grid:
@@ -373,8 +390,33 @@ def plot_ess_conflict(oc_grid: dict, target: str, save_path: str) -> None:
             conf_vals.append(conflict)
             ess_vals.append(m.ess_prior_mean)
             mw_vals.append(m.map_weight_mean)
+            exact_fracs.append(m.exact_fraction if np.isfinite(m.exact_fraction) else 1.0)
         ax_ess.plot(conf_vals, ess_vals, ls, color=color, label=label)
-        ax_mw.plot(conf_vals, mw_vals,  ls, color=color, label=label)
+        # MAP weight: filled marker = mostly-exact, open = mostly-approximate
+        marker = ls[-1] if len(ls) > 1 else "o"
+        for xv, yv, ef in zip(conf_vals, mw_vals, exact_fracs):
+            fc = color if ef >= 0.5 else "white"
+            ax_mw.plot(xv, yv, marker=marker, color=color, markerfacecolor=fc, markersize=7)
+        ax_mw.plot(conf_vals, mw_vals, ls[:-1] if len(ls) > 1 else "-",
+                   color=color, label=label, zorder=1)
+
+    # Approximation deviation right-axis (population level only)
+    ax_dev = ax_mw.twinx()
+    conf_vals_pop, dev_vals_pop = [], []
+    for conflict in CONFLICT_VALUES:
+        key = (phi, conflict, "alternative")
+        if key not in oc_grid:
+            continue
+        m = oc_grid[key]["population"][target]
+        if np.isfinite(m.approx_deviation_mean):
+            conf_vals_pop.append(conflict)
+            dev_vals_pop.append(m.approx_deviation_mean)
+    if dev_vals_pop:
+        ax_dev.plot(conf_vals_pop, dev_vals_pop, "k:", linewidth=1.2,
+                    label="Approx deviation (pop)", zorder=0)
+        ax_dev.set_ylabel("Mean approx. deviation (pop)", fontsize=7, color="gray")
+        ax_dev.tick_params(axis="y", labelcolor="gray", labelsize=7)
+        ax_dev.legend(fontsize=6, loc="upper right")
 
     ax_ess.set_xlabel("Prior-data conflict strength")
     ax_ess.set_ylabel("Prior ESS (patients)")
@@ -390,11 +432,13 @@ def plot_ess_conflict(oc_grid: dict, target: str, save_path: str) -> None:
     ax_mw.axhline(0.10, color="gray", linestyle=":", linewidth=0.8, label="Robust weight floor")
     ax_mw.set_xlabel("Prior-data conflict strength")
     ax_mw.set_ylabel("MAP component weight (posterior)")
-    ax_mw.set_title("Robust MAP auto-discount under conflict")
+    ax_mw.set_title("Robust MAP auto-discount — open=approx regime")
     ax_mw.legend(fontsize=8)
     ax_mw.grid(alpha=0.3)
 
-    fig.suptitle(f"Exp 19: Prior ESS (patients) and MAP weight — {target.upper()} (φ=1, alternative)", fontsize=9)
+    fig.suptitle(f"Exp 19: Prior ESS and MAP weight — {target.upper()} (φ=1, alternative)\n"
+                 "Open markers: majority of reps in local-approximation regime (Hansen & Tong 2026)",
+                 fontsize=8)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
@@ -512,27 +556,33 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> dict:
 
     # ── Print summary tables ──
     print("\n── Type M summary (alternative, TEER, no conflict) ──")
-    print(f"  {'φ':>5}  {'pop_TypeM':>10}  {'pat_TypeM':>10}  {'pop_MDE':>10}  {'pat_MDE':>10}")
+    print(f"  {'φ':>5}  {'pop_TypeM':>10}  {'pat_TypeM':>10}  {'pop_MDE':>10}  {'pat_MDE':>10}"
+          f"  {'pop_exact%':>10}  {'pop_dev_mean':>12}")
     for phi in PHI_VALUES:
         key = (phi, 0.0, "alternative")
         if key not in oc_grid:
             continue
         pop = oc_grid[key]["population"]["teer"]
         pat = oc_grid[key]["patient"]["teer"]
+        exact_pct = f"{100*pop.exact_fraction:.0f}%" if np.isfinite(pop.exact_fraction) else "  n/a"
+        dev_str   = f"{pop.approx_deviation_mean:.3f}" if np.isfinite(pop.approx_deviation_mean) else "   n/a"
         print(f"  {phi:5.2f}  {pop.type_m:10.3f}  {pat.type_m:10.3f}  "
-              f"{pop.mde:10.3f}  {pat.mde:10.3f}")
+              f"{pop.mde:10.3f}  {pat.mde:10.3f}  {exact_pct:>10}  {dev_str:>12}")
 
     print("\n── ESS collapse under conflict (φ=1.0, TEER, alternative) ──")
     print(f"  {'conflict':>8}  {'pop_ESS_prior':>14}  {'pat_ESS_prior':>14}  "
-          f"{'pop_MAP_w':>10}  {'pat_MAP_w':>10}")
+          f"{'pop_MAP_w':>10}  {'pat_MAP_w':>10}  {'pop_exact%':>10}  {'pop_dev':>8}")
     for conflict in CONFLICT_VALUES:
         key = (1.0, conflict, "alternative")
         if key not in oc_grid:
             continue
         pop = oc_grid[key]["population"]["teer"]
         pat = oc_grid[key]["patient"]["teer"]
+        exact_pct = f"{100*pop.exact_fraction:.0f}%" if np.isfinite(pop.exact_fraction) else "n/a"
+        dev_str   = f"{pop.approx_deviation_mean:.3f}" if np.isfinite(pop.approx_deviation_mean) else "  n/a"
         print(f"  {conflict:8.1f}  {pop.ess_prior_mean:14.1f}  {pat.ess_prior_mean:14.1f}  "
-              f"{pop.map_weight_mean:10.3f}  {pat.map_weight_mean:10.3f}")
+              f"{pop.map_weight_mean:10.3f}  {pat.map_weight_mean:10.3f}  "
+              f"{exact_pct:>10}  {dev_str:>8}")
 
     save_grid(oc_grid)
 

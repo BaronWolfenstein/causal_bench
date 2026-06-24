@@ -10,6 +10,7 @@ from causal_bench.estimators.hierarchical import (
     BorrowingResult,
     OCMetrics,
     RegistrySummary,
+    _MAP_EXACT_THRESHOLD,
     compute_ess,
     compute_oc_metrics,
     patient_level_borrow,
@@ -421,6 +422,8 @@ def _make_result(
     se: float = 0.05,
     ess_prior: float = 10.0,
     map_w: float = 0.9,
+    conjugacy_regime: str = "local_approximation",
+    approximation_deviation: float = float("nan"),
 ) -> BorrowingResult:
     z = 1.96
     return BorrowingResult(
@@ -437,6 +440,8 @@ def _make_result(
         rejects_null=rejects,
         covers_truth=covers,
         true_ate=true_ate,
+        conjugacy_regime=conjugacy_regime,
+        approximation_deviation=approximation_deviation,
     )
 
 
@@ -580,3 +585,86 @@ class TestFullPipeline:
         oc = compute_oc_metrics(results, null_scenario=True)
         # Type I should be below 0.30 (loose bound: small-N, 50 reps)
         assert oc.type1_error < 0.30, f"type I too high: {oc.type1_error:.3f}"
+
+
+# ── conjugacy diagnostic ──────────────────────────────────────────────────────
+
+class TestConjugacyDiagnostic:
+    def _make_summary(self, ate, se, n=100, name="donor") -> RegistrySummary:
+        return RegistrySummary(name=name, n=n, n_treated=n // 2, n_control=n // 2,
+                               ate_hat=ate, se_hat=se, true_ate=ate)
+
+    def test_population_result_has_regime_field(self):
+        cfg = _cfg()
+        main_df, teer_df, _, _ = _data(cfg)
+        main_sum = summarise_registry(main_df, cfg.true_ate_main, "main")
+        teer_sum = summarise_registry(teer_df, cfg.true_ate_teer, "teer")
+        r = population_level_borrow(main_sum, teer_sum,
+                                    tau_prior_sd=cfg.tau_prior_sd,
+                                    robust_weight=cfg.robust_weight,
+                                    vague_sd=cfg.vague_sd)
+        assert r.conjugacy_regime in ("conjugate_exact", "local_approximation")
+        assert np.isfinite(r.approximation_deviation)
+
+    def test_no_conflict_high_map_weight_is_exact(self):
+        """When prior and data agree tightly, MAP weight should exceed threshold → exact."""
+        donor  = self._make_summary(-0.10, 0.005)
+        target = self._make_summary(-0.10, 0.005, name="t")
+        _, _, w, _ = robust_map_posterior([donor], target, robust_weight=0.05)
+        assert w >= _MAP_EXACT_THRESHOLD, f"expected exact regime, map_weight={w:.3f}"
+
+    def test_high_conflict_gives_local_approximation(self):
+        """Under strong conflict, MAP weight collapses → local_approximation regime."""
+        donor  = self._make_summary(-0.20, 0.005)
+        target = self._make_summary(+0.20, 0.005, name="t")
+        cfg = _cfg(conflict_strength=1.0)
+        main_df, teer_df, _, _ = _data(cfg)
+        main_sum = summarise_registry(main_df, cfg.true_ate_main, "main")
+        teer_sum = summarise_registry(teer_df, cfg.true_ate_teer, "teer")
+        r = population_level_borrow(main_sum, teer_sum,
+                                    tau_prior_sd=cfg.tau_prior_sd,
+                                    robust_weight=cfg.robust_weight,
+                                    vague_sd=cfg.vague_sd)
+        # Under conflict, MAP weight drops toward robust_weight (0.10) → approximate
+        if r.map_weight < _MAP_EXACT_THRESHOLD:
+            assert r.conjugacy_regime == "local_approximation"
+            assert np.isfinite(r.approximation_deviation)
+
+    def test_exact_regime_has_zero_deviation(self):
+        """Exact regime always reports deviation = 0.0."""
+        r = _make_result(False, True, -0.12, -0.12, map_w=0.98,
+                         conjugacy_regime="conjugate_exact", approximation_deviation=0.0)
+        assert r.approximation_deviation == pytest.approx(0.0)
+
+    def test_patient_level_always_local_approximation(self):
+        cfg = _cfg(embedding_fidelity=1.0, seed=7)
+        main_df, teer_df, _, emb = _data(cfg)
+        r = patient_level_borrow(main_df, teer_df,
+                                 emb["main"], emb["teer"],
+                                 cfg.true_ate_teer, cfg)
+        assert r.conjugacy_regime == "local_approximation"
+
+    def test_oc_metrics_exact_fraction_field(self):
+        exact   = _make_result(False, True, -0.12, -0.12,
+                               conjugacy_regime="conjugate_exact", approximation_deviation=0.0)
+        approx  = _make_result(False, True, -0.12, -0.12,
+                               conjugacy_regime="local_approximation", approximation_deviation=0.05)
+        oc = compute_oc_metrics([exact, exact, approx], null_scenario=False)
+        assert oc.exact_fraction == pytest.approx(2 / 3)
+
+    def test_oc_metrics_deviation_aggregation(self):
+        r1 = _make_result(False, True, -0.12, -0.12,
+                          conjugacy_regime="local_approximation", approximation_deviation=0.04)
+        r2 = _make_result(False, True, -0.12, -0.12,
+                          conjugacy_regime="local_approximation", approximation_deviation=0.08)
+        oc = compute_oc_metrics([r1, r2], null_scenario=False)
+        assert oc.approx_deviation_mean == pytest.approx(0.06)
+        assert oc.approx_deviation_max  == pytest.approx(0.08)
+
+    def test_oc_metrics_all_exact_gives_nan_deviation(self):
+        results = [_make_result(False, True, -0.12, -0.12,
+                                conjugacy_regime="conjugate_exact", approximation_deviation=0.0)] * 5
+        oc = compute_oc_metrics(results, null_scenario=False)
+        assert oc.exact_fraction == pytest.approx(1.0)
+        assert np.isnan(oc.approx_deviation_mean)
+        assert np.isnan(oc.approx_deviation_max)
