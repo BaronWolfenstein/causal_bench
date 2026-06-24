@@ -6,7 +6,7 @@ Sweeps collider_strength 0→1. Key story:
 - TMLE+IPCW shows partial bias from L1 omission
 """
 from pathlib import Path
-from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.config import DGPConfig, CovariateDependentCensoringConfig
 from causal_bench.runner import run_parameter_sweep
 from causal_bench.viz import plot_panel, plot_collider_panel, generate_summary_table
 
@@ -18,7 +18,7 @@ N_SIMS = 200
 
 def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    base = DGPConfig(n=500, censoring_informativeness=0.3, true_tau=-0.5,
+    base = DGPConfig(n=500, censoring=CovariateDependentCensoringConfig(informativeness=0.3), true_tau=-0.5,
                      collider_strength=0.0)  # collider_strength swept below
 
     print(f"Exp 5: collider trap | n_sims={n_sims} | estimators={ESTIMATORS}")

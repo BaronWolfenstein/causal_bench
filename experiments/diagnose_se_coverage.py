@@ -181,7 +181,7 @@ def ess_check() -> None:
     from causal_bench.dgp.survival import generate_data
 
     checks = [
-        ("exp6 drift=0.5",  DGPConfig(n=500, censoring_informativeness=0.0,
+        ("exp6 drift=0.5",  DGPConfig(n=500,
                                       enrollment_drift=0.5, true_tau=-0.5)),
         ("exp9 n=2000",     _with_n(get_scenario("edwards_realistic"), 2000)),
     ]
@@ -214,7 +214,7 @@ def ic_bootstrap_test() -> None:
     from causal_bench.estimators import ESTIMATOR_REGISTRY
 
     checks = [
-        ("exp6 drift=0.5",  DGPConfig(n=500, censoring_informativeness=0.0,
+        ("exp6 drift=0.5",  DGPConfig(n=500,
                                       enrollment_drift=0.5, true_tau=-0.5)),
         ("exp9 n=2000",     _with_n(get_scenario("edwards_realistic"), 2000)),
     ]
