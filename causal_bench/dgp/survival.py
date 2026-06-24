@@ -56,9 +56,20 @@ def _calibrate_censoring_scale(
                       + 0.4 * U * censoring.informativeness
                       + gumbel_c)
     else:  # CovariateDependentCensoringConfig — pure MAR given observed W, A
-        log_C_base = (1.5
-                      + censoring.informativeness * (-0.2 * W1 + 0.1 * W3 - 0.1 * A)
-                      + gumbel_c)
+        # Interaction terms (W1×W3, W1×A) make the surface non-linear so linear IPCW shows
+        # bias; SuperLearner (RKS/Trees) is required. Coefficients are dampened so that the
+        # log-hazard variance stays bounded and IPCW weights don't exceed ~50× in the tails.
+        log_C_base = (
+            1.5
+            + censoring.informativeness * (
+                - 0.20 * W1
+                + 0.15 * W3
+                - 0.10 * A
+                + 0.20 * W1 * W3   # non-linear interaction: linear IPCW misses dropout pockets
+                - 0.15 * W1 * A    # treatment-specific dropout heterogeneity
+            )
+            + gumbel_c
+        )
 
     C_base = np.exp(np.clip(log_C_base, -700, 700))  # avoid 0/inf overflow at extreme beta_T * T_true
     lo, hi = 0.01, 100.0
@@ -235,10 +246,18 @@ def generate_data(
         )
     else:
         # CovariateDependentCensoringConfig — pure MAR: C depends only on observed W, A.
-        # informativeness scales the covariate effects (0 = MCAR, 1 = full covariate influence).
+        # Interaction terms (W1×W3, W1×A) make the surface non-linear so linear IPCW shows
+        # bias; SuperLearner (RKS/Trees) is required. Coefficients are dampened so that the
+        # log-hazard variance stays bounded and IPCW weights don't exceed ~50× in the tails.
         log_C_base = (
             1.5
-            + config.censoring.informativeness * (-0.2 * W1 + 0.1 * W3 - 0.1 * A)
+            + config.censoring.informativeness * (
+                - 0.20 * W1
+                + 0.15 * W3
+                - 0.10 * A
+                + 0.20 * W1 * W3   # non-linear interaction: linear IPCW misses dropout pockets
+                - 0.15 * W1 * A    # treatment-specific dropout heterogeneity
+            )
             + gumbel_c
         )
 
