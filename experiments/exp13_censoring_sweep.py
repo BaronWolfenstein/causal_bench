@@ -36,7 +36,12 @@ from joblib import Parallel, delayed
 from numpy.random import SeedSequence
 from tqdm import tqdm
 
-from causal_bench.dgp.config import DGPConfig
+from causal_bench.dgp.config import (
+    DGPConfig,
+    IndependentCensoringConfig,
+    CovariateDependentCensoringConfig,
+    InformativeCensoringConfig,
+)
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.dgp.survival import compute_true_effects, generate_data
 from causal_bench.estimators import ESTIMATOR_REGISTRY, get_estimator
@@ -57,15 +62,15 @@ ESTIMATORS = ["tmle_ipcw", "tmle_ipcw_boot", "aipw", "concrete_simult"]
 BOOT_N_BOOTSTRAP = 30
 
 GRID = [
-    {"label": "independent",        "censoring_mechanism": "independent"},
-    {"label": "covdep_info0.0",      "censoring_mechanism": "covariate_dependent", "censoring_informativeness": 0.0},
-    {"label": "covdep_info0.3",      "censoring_mechanism": "covariate_dependent", "censoring_informativeness": 0.3},
-    {"label": "covdep_info0.6",      "censoring_mechanism": "covariate_dependent", "censoring_informativeness": 0.6},
-    {"label": "covdep_info0.9",      "censoring_mechanism": "covariate_dependent", "censoring_informativeness": 0.9},
-    {"label": "informative_betaT-0.8", "censoring_mechanism": "informative", "censoring_beta_T": -0.8},
-    {"label": "informative_betaT-0.4", "censoring_mechanism": "informative", "censoring_beta_T": -0.4},
-    {"label": "informative_betaT+0.4", "censoring_mechanism": "informative", "censoring_beta_T": 0.4},
-    {"label": "informative_betaT+0.8", "censoring_mechanism": "informative", "censoring_beta_T": 0.8},
+    {"label": "independent",           "censoring": IndependentCensoringConfig()},
+    {"label": "covdep_info0.0",        "censoring": CovariateDependentCensoringConfig(informativeness=0.0)},
+    {"label": "covdep_info0.3",        "censoring": CovariateDependentCensoringConfig(informativeness=0.3)},
+    {"label": "covdep_info0.6",        "censoring": CovariateDependentCensoringConfig(informativeness=0.6)},
+    {"label": "covdep_info0.9",        "censoring": CovariateDependentCensoringConfig(informativeness=0.9)},
+    {"label": "informative_betaT-0.8", "censoring": InformativeCensoringConfig(beta_T=-0.8)},
+    {"label": "informative_betaT-0.4", "censoring": InformativeCensoringConfig(beta_T=-0.4)},
+    {"label": "informative_betaT+0.4", "censoring": InformativeCensoringConfig(beta_T=0.4)},
+    {"label": "informative_betaT+0.8", "censoring": InformativeCensoringConfig(beta_T=0.8)},
 ]
 
 
@@ -176,7 +181,7 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42, horizon: float =
             continue
         config_dict = cfg.__dict__.copy()
 
-        print(f"\nExp 13: cell={label} | mechanism={cfg.censoring_mechanism} | n_sims={n_sims}", flush=True)
+        print(f"\nExp 13: cell={label} | mechanism={cfg.censoring.kind} | n_sims={n_sims}", flush=True)
         child_entropies = [int(e) for e in SeedSequence(seed ^ hash(label) % (2**31)).generate_state(n_sims)]
         replicate_configs = build_validated_replicate_configs(config_dict, child_entropies)
 
@@ -220,7 +225,7 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42, horizon: float =
             )
             row = sr.summary()
             row["cell"] = label
-            row["mechanism"] = cfg.censoring_mechanism
+            row["mechanism"] = cfg.censoring.kind
             row["ipcw_ess"] = round(mean_ess, 1)
             row["ipcw_ess_pct"] = round(mean_ess / cfg.n * 100, 1) if np.isfinite(mean_ess) else float("nan")
             row["n_converged"] = len(pts)
