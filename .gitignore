@@ -24,3 +24,4 @@ _freeze/
 .jupyter_cache/
 index_cache/
 .Renviron
+.worktrees/
