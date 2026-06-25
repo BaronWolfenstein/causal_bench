@@ -126,9 +126,13 @@ run_bcf_bart_bridge <- function(df,
       contrast      = NA_real_, contrast_se  = NA_real_,
       n_leaves      = 1L,
       rule_high     = "no_split", rule_low = "no_split",
+      top_split_var = "no_split",
       converged     = FALSE
     ))
   }
+
+  # Variable used at the root split — the primary subgroup boundary.
+  top_split_var <- as.character(tree$frame$var[1])
 
   leaf_means <- tapply(tau_hat, tree$where, mean)
   high_id    <- as.integer(names(which.max(leaf_means)))
@@ -152,6 +156,7 @@ run_bcf_bart_bridge <- function(df,
     n_leaves      = length(leaf_ids),
     rule_high     = as.character(rownames(tree$frame)[high_id]),
     rule_low      = as.character(rownames(tree$frame)[low_id]),
+    top_split_var = top_split_var,
     converged     = TRUE
   )
 }

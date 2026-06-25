@@ -136,18 +136,23 @@ class BCFBARTEstimator(BaseEstimator):
                 )
                 return []
 
-            high_ate = float(np.array(result.rx2("high_leaf_ate"))[0])
-            high_se  = float(np.array(result.rx2("high_leaf_se"))[0])
-            low_ate  = float(np.array(result.rx2("low_leaf_ate"))[0])
-            low_se   = float(np.array(result.rx2("low_leaf_se"))[0])
-            contrast = float(np.array(result.rx2("contrast"))[0])
-            cont_se  = float(np.array(result.rx2("contrast_se"))[0])
+            high_ate      = float(np.array(result.rx2("high_leaf_ate"))[0])
+            high_se       = float(np.array(result.rx2("high_leaf_se"))[0])
+            low_ate       = float(np.array(result.rx2("low_leaf_ate"))[0])
+            low_se        = float(np.array(result.rx2("low_leaf_se"))[0])
+            contrast      = float(np.array(result.rx2("contrast"))[0])
+            cont_se       = float(np.array(result.rx2("contrast_se"))[0])
+            top_split_var = str(np.array(result.rx2("top_split_var"))[0])
 
         except Exception as exc:
             warnings.warn(f"BCFBARTEstimator bridge failed: {exc}", stacklevel=2)
             return []
 
-        def _result(name: str, point: float, se: float, label: str) -> EstimatorResult | None:
+        conv = {"top_split_var": top_split_var}
+
+        def _result(
+            name: str, point: float, se: float, label: str
+        ) -> EstimatorResult | None:
             if not (np.isfinite(point) and np.isfinite(se) and se > 0):
                 return None
             return EstimatorResult(
@@ -157,6 +162,7 @@ class BCFBARTEstimator(BaseEstimator):
                 standard_error=se,
                 ci_lower=point - 1.96 * se,
                 ci_upper=point + 1.96 * se,
+                convergence_info=conv,
             )
 
         return [
