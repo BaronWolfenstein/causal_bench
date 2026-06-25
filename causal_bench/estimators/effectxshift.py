@@ -121,12 +121,17 @@ class EffectXShiftEstimator(BaseEstimator):
             v_se     = float(np.array(result.rx2("v_se"))[0])
             vc_se    = float(np.array(result.rx2("vc_se"))[0])
             cont_se  = float(np.array(result.rx2("contrast_se"))[0])
+            rule     = str(np.array(result.rx2("rule"))[0])
 
         except Exception as exc:
             warnings.warn(f"EffectXShiftEstimator bridge failed: {exc}", stacklevel=2)
             return []
 
-        def _result(name: str, point: float, se: float, label: str) -> EstimatorResult | None:
+        conv = {"rule": rule}
+
+        def _result(
+            name: str, point: float, se: float, label: str
+        ) -> EstimatorResult | None:
             if not (np.isfinite(point) and np.isfinite(se) and se > 0):
                 return None
             return EstimatorResult(
@@ -136,6 +141,7 @@ class EffectXShiftEstimator(BaseEstimator):
                 standard_error=se,
                 ci_lower=point - 1.96 * se,
                 ci_upper=point + 1.96 * se,
+                convergence_info=conv,
             )
 
         return [

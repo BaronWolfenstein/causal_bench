@@ -197,6 +197,15 @@ def generate_data(
         )
         A = rng.binomial(1, _sigmoid(logit_A)).astype(float)
 
+    # --- Individual CATE (per-patient treatment effect on log-T scale) ---
+    if config.subgroup_col is not None:
+        W_sub = _col_map[config.subgroup_col]
+        subgroup_label = (W_sub > np.median(W_sub)).astype(int)
+        individual_cate = np.where(subgroup_label, config.cate_high, config.cate_low)
+    else:
+        subgroup_label = None
+        individual_cate = config.true_tau + config.effect_heterogeneity * W1
+
     # --- Survival time (AFT model with Gumbel noise) ---
     gumbel_noise = rng.gumbel(0, 1, n)
     # Intercept 0.0 (not 1.0) so that median T ≈ 1.0 and ~25-40% events occur within horizon=1.0
@@ -207,10 +216,9 @@ def generate_data(
         + 0.2 * W3
         - 0.2 * W4
         + 0.3 * U
-        + config.true_tau * A
+        + individual_cate * A
         + config.enrollment_drift * enrollment_time
         + config.outcome_nonlinearity * (W1 ** 2 - 1)
-        + config.effect_heterogeneity * A * W1
         + gumbel_noise
     )
     T_true = np.exp(log_T)
@@ -340,6 +348,16 @@ def generate_data(
         "L1": L1_obs,
         "t_crossover": t_crossover_col,
     })
+    if subgroup_label is not None:
+        df["subgroup_label"] = subgroup_label
+        # Scalar continuous outcome for HTE estimators (EffectXShift, BCF/BART)
+        # that require a fully observed endpoint rather than time-to-event data.
+        df["Y"] = (
+            0.4 * W1
+            - 0.3 * W2
+            + individual_cate * A
+            + rng.normal(0, 0.5, n)
+        )
     # Propagate strata info so concrete bridge can pass Strata argument
     if config.strata_cols:
         df.attrs["strata_cols"] = list(config.strata_cols)

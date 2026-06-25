@@ -121,6 +121,15 @@ class DGPConfig(BaseModel):
     strata_cols: Optional[tuple[str, ...]] = None
     strata_block_size: int = Field(4, ge=2)       # must be even — enforced below
 
+    # Explicit binary subgroup structure for HTE benchmarking (issue #20).
+    # When set, survival.py replaces `true_tau + effect_heterogeneity*W1` with a
+    # step function: cate_high for subgroup_col > median, cate_low otherwise.
+    # A scalar "Y" column and a "subgroup_label" column are added to the DataFrame.
+    # All three fields must be set together; effect_heterogeneity must be 0.0.
+    subgroup_col: Optional[str] = None
+    cate_high: Optional[float] = None
+    cate_low: Optional[float] = None
+
     seed: int = 42
 
     @model_validator(mode="after")
@@ -157,6 +166,31 @@ class DGPConfig(BaseModel):
                 f"hfh_death_escalation={self.hfh_death_escalation} has no effect "
                 "when competing_risks=False — likely a misconfiguration"
             )
+        # subgroup_col / cate_high / cate_low must be set together (all or none).
+        # effect_heterogeneity must be 0 when subgroup_col is active — both define
+        # individual-level CATEs and combining them silently produces a hybrid that
+        # satisfies neither design.
+        subgroup_fields = [self.subgroup_col, self.cate_high, self.cate_low]
+        n_set = sum(x is not None for x in subgroup_fields)
+        if 0 < n_set < 3:
+            raise ValueError(
+                "subgroup_col, cate_high, and cate_low must all be set together "
+                f"(got subgroup_col={self.subgroup_col!r}, "
+                f"cate_high={self.cate_high!r}, cate_low={self.cate_low!r})"
+            )
+        if self.subgroup_col is not None:
+            if self.subgroup_col not in _STRATA_ELIGIBLE_COLS:
+                raise ValueError(
+                    f"subgroup_col={self.subgroup_col!r} not in "
+                    f"{sorted(_STRATA_ELIGIBLE_COLS)}"
+                )
+            if self.effect_heterogeneity != 0.0:
+                raise ValueError(
+                    "effect_heterogeneity must be 0.0 when subgroup_col is set — "
+                    "the step CATE (cate_high / cate_low) already defines individual "
+                    "treatment effects; mixing in a linear effect_heterogeneity term "
+                    "produces an unintended hybrid DGP"
+                )
         return self
 
     def with_overrides(self, **overrides) -> "DGPConfig":
