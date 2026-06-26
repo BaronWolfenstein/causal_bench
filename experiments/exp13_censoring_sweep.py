@@ -24,10 +24,25 @@ demonstrates how informative censoring inflates weight variance even before
 considering bias.
 
 If concrete is unavailable, "concrete_simult" rows are silently dropped.
+
+ENCIRCLE connection — this experiment mirrors ENCIRCLE's pre-specified
+sensitivity analysis (Guerrero et al., Lancet 2025 SAP Section C):
+  ENCIRCLE pre-specified: multiple imputation + censoring tipping point.
+  The tipping point takes the form of Figure S4 in the Lancet supplement:
+  assume j of k censored subjects had the event (worst-case, event-free →
+  event), recompute the 1-year KM composite rate vs the 45% performance-goal
+  Wald/Greenwood test (one-sided α=0.025), and find j*/k where p crosses the
+  critical value. This nonparametric worst-case bound is complementary to the
+  IPCW-under-known-mechanism sweep above: exp13's mechanism sweep asks "how
+  biased are estimators if censoring is MNAR?"; the tipping point asks "how
+  many censored subjects would need to have had an event to overturn the
+  conclusion?" Use encircle_censoring_tipping_point() below to run the
+  ENCIRCLE-specific sub-case on any dataset from this experiment's DGP.
 """
 from __future__ import annotations
 
 import json
+from typing import Optional
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +76,95 @@ ESTIMATORS = ["tmle_ipcw", "tmle_ipcw_boot", "aipw", "concrete_simult"]
 # see whether the bootstrap SE tracks coverage differently from the EIC SE
 # under informative censoring.
 BOOT_N_BOOTSTRAP = 30
+
+def encircle_censoring_tipping_point(
+    df: pd.DataFrame,
+    horizon: float = 1.0,
+    pg: float = 0.45,
+    alpha: float = 0.025,
+    arm: int = 1,
+) -> dict:
+    """ENCIRCLE Figure S4 worst-case censoring tipping point (SAP Section C).
+
+    Sweeps j = 0…k censored subjects in the device arm (A=arm) converted from
+    event-free to event in worst-case order (earliest censored first — most
+    pessimistic for the device), recomputes the 1-year KM composite rate vs the
+    45% performance-goal Wald/Greenwood test (one-sided α=0.025) at each j, and
+    reports j*/k where p crosses the critical value.
+
+    This is the ENCIRCLE-specific special case of exp13's general censoring
+    sensitivity sweep: nonparametric worst-case bound vs IPCW-under-known-
+    mechanism. The two are complementary, not alternatives.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataset from generate_data() with columns T_obs, Delta, A.
+    horizon : float
+        Analysis horizon in years (ENCIRCLE: 1.0).
+    pg : float
+        Performance goal event rate (ENCIRCLE SAP: 0.45).
+    alpha : float
+        One-sided significance level (ENCIRCLE SAP: 0.025).
+    arm : int
+        Treatment arm to analyse (1 = device, 0 = control).
+
+    Returns
+    -------
+    dict with keys:
+      k          — total censored subjects before horizon in the arm
+      j_star     — smallest j at which H0 is no longer rejected (None if never)
+      j_star_over_k — j*/k (robustness fraction; None if never flips)
+      sweep      — pd.DataFrame with columns j, km_rate, greenwood_se, z, p, rejects_h0
+    """
+    from scipy.stats import norm as _norm
+
+    sub = df[df["A"] == arm].copy()
+    censored_mask = (sub["Delta"] == 0) & (sub["T_obs"] < horizon - 1e-9)
+    censored_idx = sub[censored_mask].sort_values("T_obs").index  # earliest first
+    k = len(censored_idx)
+
+    def _km_and_se(t_obs: np.ndarray, delta: np.ndarray) -> tuple[float, float]:
+        order = np.argsort(t_obs)
+        t = t_obs[order]
+        d = delta[order].astype(float)
+        S, gw, at_risk, i = 1.0, 0.0, len(t), 0
+        while i < len(t) and t[i] <= horizon:
+            t_i, j2, events = t[i], i, 0
+            while j2 < len(t) and t[j2] == t_i:
+                events += d[j2]
+                j2 += 1
+            if events > 0 and at_risk > events:
+                S *= (at_risk - events) / at_risk
+                gw += events / (at_risk * (at_risk - events))
+            at_risk -= (j2 - i)
+            i = j2
+        return float(1.0 - S), float(S * np.sqrt(gw))
+
+    z_crit = _norm.ppf(alpha)
+    rows = []
+    for j in range(k + 1):
+        modified = sub.copy()
+        if j > 0:
+            modified.loc[censored_idx[:j], "Delta"] = 1
+        km_rate, gw_se = _km_and_se(modified["T_obs"].values, modified["Delta"].values)
+        z = (km_rate - pg) / max(gw_se, 1e-9)
+        p = float(_norm.cdf(z))
+        rows.append({
+            "j": j, "km_rate": km_rate, "greenwood_se": gw_se,
+            "z": z, "p": p, "rejects_h0": p < alpha,
+        })
+
+    sweep = pd.DataFrame(rows)
+    flip_rows = sweep[~sweep["rejects_h0"]]
+    j_star = int(flip_rows["j"].iloc[0]) if len(flip_rows) else None
+    return {
+        "k": k,
+        "j_star": j_star,
+        "j_star_over_k": j_star / k if (j_star is not None and k > 0) else None,
+        "sweep": sweep,
+    }
+
 
 GRID = [
     # MCAR

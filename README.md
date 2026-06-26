@@ -8,6 +8,8 @@ The core finding: the "right" estimator depends entirely on what's wrong with yo
 
 Designed for biostatisticians working on device trials (ENCIRCLE-scale, n≈700) who need to decide between TMLE, IPCW, LTMLE, and McCoy's `concrete` package. Estimand coverage includes risk difference, RMST difference, and win ratio.
 
+ENCIRCLE's pre-specified primary estimand (Guerrero et al., *Lancet* 2025, SAP Section C) is a **non-hierarchical** KM composite event rate at 1 year tested against a 45% performance goal (one-sided Wald/Greenwood, α = 0.025) — not a hierarchical composite or hazard model. The synthetic control arm (SCA) augments this with an external TVT Registry comparator; the two estimands are reported side by side in `exp16_encircle_calibrated.py`.
+
 ---
 
 ## Quick start
