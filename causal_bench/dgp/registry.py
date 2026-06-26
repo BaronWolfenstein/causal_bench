@@ -66,6 +66,11 @@ class RegistryConfig(BaseModel):
     cate_sd_teer: float = Field(0.08, ge=0.0)
     cate_sd_mac:  float = Field(0.08, ge=0.0)
 
+    # Site clustering (TVT Registry is site-clustered; TEER SAP uses GEE)
+    # n_sites: number of sites in the registry; icc=0 → no clustering (current behaviour)
+    n_sites: int = Field(20, ge=2, le=500)
+    icc: float = Field(0.0, ge=0.0, le=1.0)   # intraclass correlation coefficient (logistic scale)
+
     # Embedding fidelity φ ∈ [0, 1]
     # Controls Spearman ρ between synthetic embedding similarity and true CATE similarity.
     # At φ=1: pairwise embedding distance perfectly ranks pairwise |CATE_i − CATE_j|.
@@ -114,13 +119,21 @@ def _generate_registry_arm(
     cate_sd: float,
     registry: str,
     rng: np.random.Generator,
+    n_sites: int = 1,
+    icc: float = 0.0,
 ) -> pd.DataFrame:
     """Generate one registry's patient-level data.
 
     Binary outcome Y ~ Bernoulli(p(A, W)):
-        p(A=0, W) = expit(logit(baseline_rate) + 0.3*W1 − 0.2*W2)
-        p(A=1, W) = expit(logit(baseline_rate) + 0.3*W1 − 0.2*W2 + cate_i)
+        p(A=0, W) = expit(logit(baseline_rate) + 0.3*W1 − 0.2*W2 [+ site_effect])
+        p(A=1, W) = expit(logit(baseline_rate) + 0.3*W1 − 0.2*W2 + cate_i [+ site_effect])
     where cate_i = true_ate + N(0, cate_sd²) is the per-patient effect.
+
+    Site clustering (icc > 0):
+        site_effect ~ N(0, sd_site²), sd_site = sqrt(icc * π²/3 / (1 − icc))
+        using the logistic-scale ICC decomposition:
+            icc = sd_site² / (sd_site² + π²/3)
+    When icc = 0 (default), behaviour is identical to unclustered generation.
     """
     W1 = rng.standard_normal(n)
     W2 = rng.binomial(1, 0.5, n).astype(float)
@@ -136,6 +149,18 @@ def _generate_registry_arm(
 
     # Binary outcome
     log_odds_base = np.log(baseline_rate / (1 - baseline_rate)) + 0.3 * W1 - 0.2 * W2
+
+    # Site clustering: assign patients to sites and apply site-level random effect
+    if icc > 0.0 and n_sites > 1:
+        # Logistic-scale ICC: icc = sd_site² / (sd_site² + π²/3)
+        # ⟹ sd_site = sqrt(icc * π²/3 / (1 − icc))
+        sd_site = np.sqrt(icc * (np.pi ** 2 / 3.0) / (1.0 - icc))
+        site_effects = rng.normal(0.0, sd_site, n_sites)
+        site_id = rng.integers(0, n_sites, n)
+        log_odds_base = log_odds_base + site_effects[site_id]
+    else:
+        site_id = np.zeros(n, dtype=np.intp)
+
     p0 = _sigmoid(log_odds_base)             # P(Y=1 | A=0, W)
     p1 = _sigmoid(log_odds_base + cate)      # P(Y=1 | A=1, W)
     p_obs = np.where(A == 1, p1, p0)
@@ -151,6 +176,7 @@ def _generate_registry_arm(
         "registry": registry,
         "p0": p0,
         "p1": p1,
+        "site_id": site_id,
     })
 
 
@@ -196,14 +222,17 @@ def generate_registry_data(
     main_df = _generate_registry_arm(
         config.n_main, config.true_ate_main, config.baseline_rate_main,
         config.treat_prev_main, config.cate_sd_main, "main", rng,
+        n_sites=config.n_sites, icc=config.icc,
     )
     teer_df = _generate_registry_arm(
         config.n_teer, config.true_ate_teer, config.baseline_rate_teer,
         config.treat_prev_teer, config.cate_sd_teer, "teer", rng,
+        n_sites=config.n_sites, icc=config.icc,
     )
     mac_df = _generate_registry_arm(
         config.n_mac, config.true_ate_mac, config.baseline_rate_mac,
         config.treat_prev_mac, config.cate_sd_mac, "mac", rng,
+        n_sites=config.n_sites, icc=config.icc,
     )
 
     phi = config.embedding_fidelity
