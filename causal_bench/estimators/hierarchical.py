@@ -72,8 +72,80 @@ class BorrowingResult:
 
 # ─── Registry summaries ───────────────────────────────────────────────────────
 
-def summarise_registry(df, true_ate: float, name: str) -> RegistrySummary:
-    """Compute sufficient statistics from a registry DataFrame."""
+def _cluster_bootstrap_se(
+    df,
+    B: int = 200,
+    rng: "np.random.Generator | None" = None,
+) -> float:
+    """Cluster bootstrap SE for ATE = mean(Y|A=1) − mean(Y|A=0).
+
+    Resamples whole sites (with replacement) using the site_id column, pools
+    patients from the resampled sites, and recomputes the difference-in-means
+    ATE.  Returns the standard deviation of the bootstrap distribution.
+
+    Falls back to independence SE if site_id is absent or all patients share
+    the same site (degenerate case).
+    """
+    if "site_id" not in df.columns:
+        return float("nan")  # caller should use independence SE
+
+    sites = df["site_id"].unique()
+    if len(sites) <= 1:
+        return float("nan")
+
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    boot_ates = np.empty(B)
+    for b in range(B):
+        sampled_sites = rng.choice(sites, size=len(sites), replace=True)
+        # Pool patients from sampled sites (each site may appear multiple times)
+        pieces = [df[df["site_id"] == s] for s in sampled_sites]
+        boot_df = _concat_frames(pieces)
+        t = boot_df[boot_df["A"] == 1]["Y"].values
+        c = boot_df[boot_df["A"] == 0]["Y"].values
+        if len(t) > 0 and len(c) > 0:
+            boot_ates[b] = t.mean() - c.mean()
+        else:
+            boot_ates[b] = float("nan")
+
+    finite = boot_ates[np.isfinite(boot_ates)]
+    return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
+
+
+def _concat_frames(frames):
+    """Concatenate a list of DataFrames; avoids pandas deprecation warning."""
+    import pandas as pd
+    return pd.concat(frames, ignore_index=True)
+
+
+def summarise_registry(
+    df,
+    true_ate: float,
+    name: str,
+    cluster_robust: bool = False,
+    bootstrap_B: int = 200,
+    bootstrap_rng: "np.random.Generator | None" = None,
+) -> RegistrySummary:
+    """Compute sufficient statistics from a registry DataFrame.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Patient-level registry data. Must contain Y, A columns.
+        If cluster_robust=True, must also contain site_id.
+    true_ate : float
+        Ground-truth ATE (DGP-known, for OC evaluation).
+    name : str
+        Registry name label.
+    cluster_robust : bool
+        When True and site_id column is present, replace the independence SE
+        with a cluster bootstrap SE (B=bootstrap_B resamples of whole sites).
+    bootstrap_B : int
+        Number of bootstrap resamples for cluster-robust SE.
+    bootstrap_rng : np.random.Generator or None
+        RNG for bootstrap resampling; seeded at 0 if None.
+    """
     treated = df[df["A"] == 1]["Y"].values
     control = df[df["A"] == 0]["Y"].values
     n_t, n_c = len(treated), len(control)
@@ -82,7 +154,14 @@ def summarise_registry(df, true_ate: float, name: str) -> RegistrySummary:
         float(treated.var(ddof=1) / n_t + control.var(ddof=1) / n_c)
         if n_t > 1 and n_c > 1 else float("nan")
     )
-    se_hat = float(np.sqrt(max(var_ate, 1e-12)))
+    se_indep = float(np.sqrt(max(var_ate, 1e-12)))
+
+    if cluster_robust and "site_id" in df.columns:
+        se_boot = _cluster_bootstrap_se(df, B=bootstrap_B, rng=bootstrap_rng)
+        se_hat = se_boot if np.isfinite(se_boot) else se_indep
+    else:
+        se_hat = se_indep
+
     return RegistrySummary(
         name=name,
         n=len(df),
@@ -281,6 +360,7 @@ def population_level_borrow(
     robust_weight: float = 0.10,
     vague_sd: float = 0.50,
     alpha: float = 0.05,
+    cluster_robust: bool = False,
 ) -> BorrowingResult:
     """Population-level robust MAP borrowing from main → target registry.
 
