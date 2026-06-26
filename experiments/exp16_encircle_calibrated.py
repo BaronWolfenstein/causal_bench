@@ -1,10 +1,44 @@
 """Exp 16: ENCIRCLE-calibrated replication — 14 estimators vs published marginals.
 
 Generates synthetic data calibrated to published 1-year ENCIRCLE marginals
-(device arm, n=299; Feldman et al. / Edwards Lifesciences):
-  composite 25.2% (device) / ~45% (historical performance goal)
+(device arm, n=299; Guerrero, Daniels, Makkar et al., Lancet 2025,
+doi:10.1016/S0140-6736(25)02073-2):
+  composite 25.2% (device) / 45% (pre-specified performance goal)
   mortality 13.9%, HF hospitalization 16.7%, overlap ~5.4%
   ~19% missing at 1-year visit
+
+Pre-specified estimand (SAP Section C, Lancet supplement):
+  Non-hierarchical composite of death + HF rehospitalization at 1 year.
+  Primary analysis: KM 1-year composite rate, 95% CI via Wald test with
+  Greenwood's formula. Hypothesis: H0: π ≥ 45% vs HA: π < 45%, one-sided
+  α = 0.025. Power assumption: true rate 35%, 10% attrition, N = 299.
+  "Non-hierarchical" is stated explicitly twice in the SAP — this is NOT a
+  prioritised/win-statistic composite and NOT a time-to-first-event hazard
+  model.
+
+SCA framing:
+  The pre-specified primary analysis is a performance-goal (PG) test against
+  the 45% historical rate. The synthetic control arm (SCA) augments this
+  design by constructing an external comparator from the TVT Registry,
+  replacing the fixed PG with a data-derived comparator. The SCA is layered
+  on top of — not replacing — the PG framing. This experiment reports both
+  the PG test result and the external-comparator ATE so the two can be
+  compared directly.
+
+TVT Registry / TEER SAP note:
+  The TEER SAP (Makkar et al., JAMA 2023, doi:10.1001/jama.2023.7089) is
+  used as a template for comparator-arm construction conventions (GEE for
+  site clustering, backward selection, MI). Its estimand — 30-day MR success
+  via GEE logistic — is NOT ENCIRCLE's and is not imported here.
+
+Pre-specified subgroups (SAP Section C — exactly two):
+  1. Subject sex (female vs male)
+  2. MR etiology (functional vs degenerative)
+  The DGP uses W1–W4 as synthetic proxies; W1 approximates a continuous
+  severity axis that could be dichotomised to mirror the sex/etiology split,
+  but the experiment does not claim to replicate subgroup-level marginals.
+  Any subgroup analysis in this experiment uses the synthetic proxies and
+  notes this limitation explicitly.
 
 Runs all 14 Python estimators (no R/concrete required) and checks which
 recover the true ATE under ENCIRCLE-like informative censoring and mild
@@ -27,6 +61,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 from causal_bench.dgp.scenarios import get_scenario
 from causal_bench.dgp.survival import compute_true_effects
@@ -47,7 +82,83 @@ ENCIRCLE_ESTIMATORS = [
 
 # Published ENCIRCLE 1-year composite rates (device vs performance goal)
 _PUBLISHED_DEVICE_COMPOSITE = 0.252
-_PUBLISHED_CONTROL_COMPOSITE = 0.45   # historical performance goal
+_PUBLISHED_CONTROL_COMPOSITE = 0.45   # pre-specified performance goal (SAP Section C)
+_PG_ALPHA = 0.025                     # one-sided α per SAP
+
+
+def pg_test(
+    km_rate: float,
+    greenwood_se: float,
+    pg: float = _PUBLISHED_CONTROL_COMPOSITE,
+    alpha: float = _PG_ALPHA,
+) -> dict:
+    """One-sided Wald test of KM 1-year composite rate against a performance goal.
+
+    Implements ENCIRCLE's pre-specified primary analysis (SAP Section C):
+      H0: π ≥ pg   vs   HA: π < pg,  one-sided α = 0.025
+
+    Parameters
+    ----------
+    km_rate : float
+        KM estimate of 1-year composite event rate (device arm).
+    greenwood_se : float
+        Greenwood standard error of the KM rate.
+    pg : float
+        Performance goal (default 0.45 per ENCIRCLE SAP).
+    alpha : float
+        One-sided significance level (default 0.025 per ENCIRCLE SAP).
+
+    Returns
+    -------
+    dict with keys: z, p_value, rejects_h0, ci_lower, ci_upper, pg, alpha.
+    """
+    z = (km_rate - pg) / max(greenwood_se, 1e-9)
+    p = float(norm.cdf(z))
+    z_crit = norm.ppf(1.0 - alpha)
+    return {
+        "km_rate":    km_rate,
+        "greenwood_se": greenwood_se,
+        "z":          z,
+        "p_value":    p,
+        "rejects_h0": p < alpha,
+        "ci_lower":   km_rate - z_crit * greenwood_se,
+        "ci_upper":   km_rate + z_crit * greenwood_se,
+        "pg":         pg,
+        "alpha":      alpha,
+    }
+
+
+def _km_rate_and_greenwood_se(
+    T_obs: np.ndarray,
+    Delta: np.ndarray,
+    horizon: float,
+) -> tuple[float, float]:
+    """KM 1-year composite event rate with Greenwood SE at a given horizon."""
+    order = np.argsort(T_obs)
+    t = T_obs[order]
+    d = Delta[order].astype(float)
+    n_total = len(t)
+
+    S = 1.0
+    greenwood_sum = 0.0
+    at_risk = n_total
+    i = 0
+
+    while i < n_total and t[i] <= horizon:
+        t_i = t[i]
+        j = i
+        events = 0
+        while j < n_total and t[j] == t_i:
+            if d[j] == 1:
+                events += 1
+            j += 1
+        if events > 0 and at_risk > events:
+            S *= (at_risk - events) / at_risk
+            greenwood_sum += events / (at_risk * (at_risk - events))
+        at_risk -= (j - i)
+        i = j
+
+    return float(1.0 - S), float(S * np.sqrt(greenwood_sum))
 
 
 def _report_calibration(cfg) -> None:
@@ -109,6 +220,28 @@ def run(n_sims: int = N_SIMS, n_jobs: int = -1, seed: int = 42) -> dict:
         bias = sr.bias
         within = abs(bias - (published_ate - true_ate)) < 2 * sr.rmse if sr.rmse > 0 else False
         print(f"  {name:30s}: bias={bias:+.3f}  RMSE={sr.rmse:.3f}  cov={sr.coverage:.2f}")
+
+    # Performance-goal test on one synthetic dataset (illustrative — not averaged
+    # over replicates; the SCA external-comparator ATE is the replicate-averaged
+    # quantity above).  The two estimands should agree in direction: device arm
+    # rate < 45% PG, and ATE = device − comparator < 0.
+    from causal_bench.dgp.survival import generate_data
+    df_demo = generate_data(cfg.with_overrides(seed=0))
+    device_only = df_demo[df_demo["A"] == 1]
+    km_rate, gw_se = _km_rate_and_greenwood_se(
+        device_only["T_obs"].values,
+        device_only["Delta"].values,
+        horizon=cfg.horizon,
+    )
+    pg_result = pg_test(km_rate, gw_se)
+    print(f"\n── Performance-goal test (one synthetic dataset, seed=0) ────────────")
+    print(f"  KM 1-yr composite rate: {pg_result['km_rate']:.3f}  (PG = {pg_result['pg']})")
+    print(f"  Greenwood SE:           {pg_result['greenwood_se']:.4f}")
+    print(f"  z = {pg_result['z']:.3f},  p = {pg_result['p_value']:.4f}  "
+          f"({'REJECT H0' if pg_result['rejects_h0'] else 'fail to reject H0'})")
+    print(f"  95% CI: [{pg_result['ci_lower']:.3f}, {pg_result['ci_upper']:.3f}]")
+    print(f"  External-comparator ATE (replicate mean): {true_ate:.3f}")
+    print(f"  Agreement check: both estimands point {'same direction ✓' if (pg_result['rejects_h0'] and true_ate < 0) or (not pg_result['rejects_h0'] and true_ate >= 0) else 'DIFFERENT directions — investigate'}")
 
     forest_path = str(OUT_DIR / "forest.png")
     plot_forest(results, save_path=forest_path)
