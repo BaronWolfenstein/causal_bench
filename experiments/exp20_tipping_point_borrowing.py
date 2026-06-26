@@ -98,12 +98,15 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> pd.DataFrame:
         results = _run_cell(tau_prior_sd, conflict_strength, target, n_reps, seed)
         oc = compute_oc_metrics(results, null_scenario=False)
         done += 1
+        cal_z_str = f"{oc.calibrated_z_mean:.3f}" if np.isfinite(oc.calibrated_z_mean) else "n/a"
+        r_str     = f"{oc.r_ratio_mean:.2f}"      if np.isfinite(oc.r_ratio_mean)     else "n/a"
         print(
             f"[{done:3d}/{total}] tau={tau_prior_sd:.2f}  "
             f"conflict={conflict_strength:.1f}  target={target}  "
             f"conclude={oc.power:.2f}  "
             f"ESS_prior={oc.ess_prior_mean:.1f}  "
-            f"map_w={oc.map_weight_mean:.2f}"
+            f"map_w={oc.map_weight_mean:.2f}  "
+            f"cal_z={cal_z_str}  r={r_str}"
         )
         rows.append({
             "tau_prior_sd":      tau_prior_sd,
@@ -116,6 +119,8 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> pd.DataFrame:
             "map_weight_mean":   oc.map_weight_mean,
             "coverage":          oc.coverage,
             "mde":               oc.mde,
+            "calibrated_z_mean": oc.calibrated_z_mean,
+            "r_ratio_mean":      oc.r_ratio_mean,
         })
 
     df = pd.DataFrame(rows)

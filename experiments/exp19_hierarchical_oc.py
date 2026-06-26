@@ -192,6 +192,8 @@ def _aggregate_subgroup_results(
     var_pooled = float(np.sum(w_norm * [r.borrowing.se_posterior ** 2 for r in sub_results]))
     se_pooled  = float(np.sqrt(max(var_pooled, 1e-12)))
 
+    # Fixed z: ESS-weighted pooling across subgroups is a frequentist aggregation
+    # step, not a Normal-Normal conjugate update — c* calibration does not apply here.
     z = _norm.ppf(1.0 - alpha / 2.0)
     ci_lo = ate_pooled - z * se_pooled
     ci_hi = ate_pooled + z * se_pooled
@@ -557,7 +559,7 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> dict:
     # ── Print summary tables ──
     print("\n── Type M summary (alternative, TEER, no conflict) ──")
     print(f"  {'φ':>5}  {'pop_TypeM':>10}  {'pat_TypeM':>10}  {'pop_MDE':>10}  {'pat_MDE':>10}"
-          f"  {'pop_exact%':>10}  {'pop_dev_mean':>12}")
+          f"  {'pop_exact%':>10}  {'pop_dev_mean':>12}  {'cal_z_mean':>10}  {'r_mean':>8}")
     for phi in PHI_VALUES:
         key = (phi, 0.0, "alternative")
         if key not in oc_grid:
@@ -566,12 +568,16 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> dict:
         pat = oc_grid[key]["patient"]["teer"]
         exact_pct = f"{100*pop.exact_fraction:.0f}%" if np.isfinite(pop.exact_fraction) else "  n/a"
         dev_str   = f"{pop.approx_deviation_mean:.3f}" if np.isfinite(pop.approx_deviation_mean) else "   n/a"
+        cal_z_str = f"{pop.calibrated_z_mean:.3f}" if np.isfinite(pop.calibrated_z_mean) else "   n/a"
+        r_str     = f"{pop.r_ratio_mean:.2f}"      if np.isfinite(pop.r_ratio_mean)     else "  n/a"
         print(f"  {phi:5.2f}  {pop.type_m:10.3f}  {pat.type_m:10.3f}  "
-              f"{pop.mde:10.3f}  {pat.mde:10.3f}  {exact_pct:>10}  {dev_str:>12}")
+              f"{pop.mde:10.3f}  {pat.mde:10.3f}  {exact_pct:>10}  {dev_str:>12}  "
+              f"{cal_z_str:>10}  {r_str:>8}")
 
     print("\n── ESS collapse under conflict (φ=1.0, TEER, alternative) ──")
     print(f"  {'conflict':>8}  {'pop_ESS_prior':>14}  {'pat_ESS_prior':>14}  "
-          f"{'pop_MAP_w':>10}  {'pat_MAP_w':>10}  {'pop_exact%':>10}  {'pop_dev':>8}")
+          f"{'pop_MAP_w':>10}  {'pat_MAP_w':>10}  {'pop_exact%':>10}  {'pop_dev':>8}  "
+          f"{'cal_z':>7}  {'r':>6}")
     for conflict in CONFLICT_VALUES:
         key = (1.0, conflict, "alternative")
         if key not in oc_grid:
@@ -580,9 +586,11 @@ def run(n_reps: int = N_REPS, seed: int = 42) -> dict:
         pat = oc_grid[key]["patient"]["teer"]
         exact_pct = f"{100*pop.exact_fraction:.0f}%" if np.isfinite(pop.exact_fraction) else "n/a"
         dev_str   = f"{pop.approx_deviation_mean:.3f}" if np.isfinite(pop.approx_deviation_mean) else "  n/a"
+        cal_z_str = f"{pop.calibrated_z_mean:.3f}" if np.isfinite(pop.calibrated_z_mean) else "  n/a"
+        r_str     = f"{pop.r_ratio_mean:.2f}"      if np.isfinite(pop.r_ratio_mean)     else " n/a"
         print(f"  {conflict:8.1f}  {pop.ess_prior_mean:14.1f}  {pat.ess_prior_mean:14.1f}  "
               f"{pop.map_weight_mean:10.3f}  {pat.map_weight_mean:10.3f}  "
-              f"{exact_pct:>10}  {dev_str:>8}")
+              f"{exact_pct:>10}  {dev_str:>8}  {cal_z_str:>7}  {r_str:>6}")
 
     save_grid(oc_grid)
 

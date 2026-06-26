@@ -1,0 +1,62 @@
+"""Tests for size-calibrated decision cutoff (issue #22 item 1)."""
+import numpy as np
+import pytest
+from scipy.stats import norm
+
+from causal_bench.estimators.hierarchical import size_calibrated_z
+
+
+class TestSizeCalibratedZ:
+    """Tests for the size_calibrated_z helper (Normal-Normal model, issue #22)."""
+
+    def test_vague_prior_limit_approaches_standard_z(self):
+        """r → ∞ (very large τ relative to s) → calibrated_z → z_{1-α/2}."""
+        cal_z, r = size_calibrated_z(tau_prior_sd=1000.0, likelihood_sd=1.0)
+        standard_z = norm.ppf(0.975)
+        assert abs(cal_z - standard_z) < 0.001, (
+            f"Expected c* ≈ {standard_z:.4f} (vague-prior limit), got {cal_z:.4f} (r={r:.1f})"
+        )
+
+    def test_informative_prior_gives_lower_cutoff(self):
+        """Informative prior (r ≈ 1) → c* < z_{1-α/2} (stricter size control)."""
+        cal_z, r = size_calibrated_z(tau_prior_sd=0.1, likelihood_sd=0.1)
+        standard_z = norm.ppf(0.975)
+        assert cal_z < standard_z, (
+            f"Expected c* < {standard_z:.4f} under informative prior, got {cal_z:.4f} (r={r:.2f})"
+        )
+
+    def test_r_ratio_returned_correctly(self):
+        """r should equal tau / s."""
+        tau, s = 0.5, 0.25
+        _, r = size_calibrated_z(tau_prior_sd=tau, likelihood_sd=s)
+        assert r == pytest.approx(tau / s, rel=1e-6)
+
+    def test_calibrated_z_decreases_with_more_informative_prior(self):
+        """Larger τ/s (stronger prior) → lower c*."""
+        cal_z_weak,  _ = size_calibrated_z(tau_prior_sd=0.1,  likelihood_sd=1.0)  # r=0.1
+        cal_z_strong, _ = size_calibrated_z(tau_prior_sd=10.0, likelihood_sd=1.0)  # r=10
+        assert cal_z_weak < cal_z_strong  # weaker prior → lower c* (more correction needed)
+
+    def test_default_alpha_is_0_05(self):
+        """Default alpha=0.05 → standard z target is norm.ppf(0.975)."""
+        cal_z_default, _ = size_calibrated_z(tau_prior_sd=1000.0, likelihood_sd=1.0)
+        cal_z_explicit, _ = size_calibrated_z(tau_prior_sd=1000.0, likelihood_sd=1.0, alpha=0.05)
+        assert cal_z_default == pytest.approx(cal_z_explicit)
+
+    def test_calibrated_z_is_positive(self):
+        """c* should always be positive."""
+        for tau in [0.01, 0.1, 1.0, 10.0]:
+            for s in [0.01, 0.1, 1.0]:
+                cal_z, _ = size_calibrated_z(tau, s)
+                assert cal_z > 0, f"c* should be positive for tau={tau}, s={s}"
+
+    def test_calibrated_z_bounded_by_standard_z(self):
+        """c* ≤ z_{1-α/2} always (calibrated cutoff can only be lower or equal)."""
+        standard_z = norm.ppf(0.975)
+        for tau in [0.01, 0.1, 1.0, 10.0, 1000.0]:
+            for s in [0.05, 0.1, 0.5]:
+                cal_z, _ = size_calibrated_z(tau, s)
+                assert cal_z <= standard_z + 1e-9, (
+                    f"c* should not exceed z_{{1-α/2}}={standard_z:.4f}, "
+                    f"got {cal_z:.4f} for tau={tau}, s={s}"
+                )

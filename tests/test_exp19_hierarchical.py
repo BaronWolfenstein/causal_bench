@@ -16,6 +16,7 @@ from causal_bench.estimators.hierarchical import (
     patient_level_borrow,
     population_level_borrow,
     robust_map_posterior,
+    size_calibrated_z,
     summarise_registry,
 )
 
@@ -325,10 +326,18 @@ class TestPopulationLevelBorrow:
     def test_covers_truth_is_bool(self):
         assert isinstance(self.result.covers_truth, bool)
 
-    def test_rejects_null_consistent_with_ci(self):
+    def test_rejects_null_uses_calibrated_z(self):
+        """population_level_borrow uses c* (calibrated z), not fixed 1.96.
+
+        rejects_null = |post_mean / post_sd| > calibrated_z, which may differ
+        from CI exclusion of zero (CI still uses standard z_{1-α/2}).
+        """
         r = self.result
-        ci_excludes_zero = r.ci_lower > 0 or r.ci_upper < 0
-        assert r.rejects_null == ci_excludes_zero
+        assert np.isfinite(r.calibrated_z)
+        assert np.isfinite(r.r_ratio)
+        # Verify the decision is consistent with the calibrated cutoff
+        stat = abs(r.ate_posterior / max(r.se_posterior, 1e-12))
+        assert r.rejects_null == (stat > r.calibrated_z)
 
     def test_no_conflict_borrows_toward_main(self):
         """No-conflict case: posterior should move toward main ATE vs. naive target ATE."""
