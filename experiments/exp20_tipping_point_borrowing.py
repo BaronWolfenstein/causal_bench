@@ -22,9 +22,14 @@ Grid:
                       0 = registry ATE matches main; 1 = opposite sign
 
 Additionally sweeps robust_weight (w axis, issue #22 item 2):
-  w_grid = [0.1, 0.3, 0.5, 0.7, 0.9] — MAP component weight (= 1 - robust_weight)
-  For each (τ, conflict, target), reports flip_robust_weight: the minimum
-  robust_weight at which the conclusion flips (95% CrI no longer excludes null).
+  robust_weight ∈ {0.1, 0.3, 0.5, 0.7, 0.9} — weight on the vague (robustifying)
+  component; MAP component weight = 1 − robust_weight. Higher robust_weight = less
+  borrowing from the informative prior.
+  flip_robust_weight: minimum robust_weight at which the conclusion flips.
+  Under conflict: flip happens at LOW robust_weight (prior props up a conclusion the
+  data opposes; small down-weighting of prior lets data flip it immediately).
+  Under concordance: flip happens at HIGH robust_weight or NaN (prior and data agree;
+  conclusion is robust to prior down-weighting).
 
 Outputs (results/exp20_tipping_point_borrowing/):
   tipping_surface_{teer,mac}.png     — 2D heatmap: red = conclusion flips

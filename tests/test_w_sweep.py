@@ -71,11 +71,17 @@ class TestWSweep:
         )
 
     def test_flip_robust_weight_lower_under_conflict(self):
-        """Under conflict, the conclusion flips at a lower robust_weight
-        (the informative prior fights the data → conclusion more fragile).
+        """Under conflict, the conclusion flips at a lower robust_weight than under concordance.
 
-        flip_robust_weight = min rw at which conclude_rate < 0.5.
-        Lower flip_rw means the flip happens sooner (less robust_weight needed).
+        Mechanics (robust_weight = weight on vague component):
+          - Conflict: the informative prior props up a conclusion the data opposes.
+            Only a little down-weighting of the prior (low robust_weight) lets the data
+            flip the conclusion → flip happens at LOW robust_weight.
+          - Concordance: both prior and data support the conclusion; can push robust_weight
+            all the way up without flipping → flip happens at HIGH robust_weight or not at all.
+
+        So: flip_conflict <= flip_concordant, where NaN means "never flips" (= ∞ → NaN allowed on
+        the concordant side; conflict side must flip finitely).
         """
         rates_concordant = _conclude_rate_by_rw(donor_ate=-0.12, target_ate=-0.12, n_reps=300)
         rates_conflict   = _conclude_rate_by_rw(donor_ate=-0.12, target_ate=+0.10, n_reps=300)
@@ -83,20 +89,23 @@ class TestWSweep:
         robust_weights = sorted(rates_concordant.keys())
 
         def _flip_rw(rates: dict[float, float]) -> float:
-            """Min rw where conclude_rate < 0.5. NaN if never flips."""
+            """Min rw where conclude_rate < 0.5. NaN if never flips (= infinity)."""
             flipped = [rw for rw in robust_weights if rates[rw] < 0.5]
             return min(flipped) if flipped else float("nan")
 
         flip_concordant = _flip_rw(rates_concordant)
         flip_conflict   = _flip_rw(rates_conflict)
 
-        # Under conflict, conclude_rate at low rw (prior-dominated) is already low,
-        # so flip happens at lower robust_weight — or concordant case never flips at all.
-        # At minimum, under conflict, the flip point should be ≤ concordant flip point.
+        # Conflict must produce a finite flip point (the data cannot hold the conclusion
+        # once the conflicting prior is down-weighted).
+        assert np.isfinite(flip_conflict), (
+            f"Under conflict, conclusion should flip at some robust_weight, got NaN. "
+            f"Concordant flip: {flip_concordant}"
+        )
+
         if np.isnan(flip_concordant):
-            # Concordant: never flips across rw grid (strongly robust) → conflict must flip
-            # Note: this is the expected case; if concordant never flips, the constraint is met.
-            assert True  # concordant is fully robust — no further assertion needed
+            # Concordant case never flips (= flip at ∞ > any finite conflict flip) — assertion satisfied.
+            pass
         else:
             assert flip_conflict <= flip_concordant + 1e-6, (
                 f"flip_rw under conflict ({flip_conflict}) should be ≤ concordant ({flip_concordant})"
