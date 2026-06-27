@@ -16,6 +16,7 @@ from causal_bench.estimators.hierarchical import (
     patient_level_borrow,
     population_level_borrow,
     robust_map_posterior,
+    size_calibrated_z,
     summarise_registry,
 )
 
@@ -196,7 +197,7 @@ class TestRobustMapPosterior:
     def test_no_conflict_posterior_between_prior_and_data(self):
         donor = self._make_summary(-0.10, 0.02)
         target = self._make_summary(-0.08, 0.04, name="target")
-        mean, sd, w, _ = robust_map_posterior([donor], target)
+        mean, sd, w, *_ = robust_map_posterior([donor], target)
         # Posterior should be between prior mean (-0.10) and data (-0.08)
         assert -0.10 <= mean <= -0.08 or -0.08 <= mean <= -0.10
 
@@ -205,16 +206,16 @@ class TestRobustMapPosterior:
         donor = self._make_summary(-0.15, 0.02)
         target_agree    = self._make_summary(-0.14, 0.04, name="t_agree")
         target_conflict = self._make_summary(+0.10, 0.04, name="t_conflict")
-        _, _, w_agree,    _ = robust_map_posterior([donor], target_agree)
-        _, _, w_conflict, _ = robust_map_posterior([donor], target_conflict)
+        _, _, w_agree,    *_ = robust_map_posterior([donor], target_agree)
+        _, _, w_conflict, *_ = robust_map_posterior([donor], target_conflict)
         assert w_conflict < w_agree
 
     def test_large_vague_sd_reduces_vague_influence(self):
         """Wider vague component → more prior weight stays on MAP."""
         donor = self._make_summary(-0.10, 0.02)
         target = self._make_summary(-0.09, 0.04, name="t")
-        _, _, w_narrow, _ = robust_map_posterior([donor], target, vague_sd=0.20)
-        _, _, w_wide,   _ = robust_map_posterior([donor], target, vague_sd=2.00)
+        _, _, w_narrow, *_ = robust_map_posterior([donor], target, vague_sd=0.20)
+        _, _, w_wide,   *_ = robust_map_posterior([donor], target, vague_sd=2.00)
         # wider vague: prior predictive at data point is broader → less log-lik disadvantage
         # MAP weight can go either way depending on data location; just check both are in [0,1]
         assert 0.0 <= w_narrow <= 1.0
@@ -225,14 +226,14 @@ class TestRobustMapPosterior:
         donor = self._make_summary(-0.10, 0.01)
         # Target fully agrees
         target = self._make_summary(-0.10, 0.01, name="t")
-        _, _, w, _ = robust_map_posterior([donor], target, robust_weight=0.50)
+        _, _, w, *_ = robust_map_posterior([donor], target, robust_weight=0.50)
         # MAP posterior weight should be < 1 because 50% prior on vague
         assert w < 1.0
 
     def test_returns_finite_values(self):
         donor = self._make_summary(-0.12, 0.03)
         target = self._make_summary(-0.10, 0.05, name="t")
-        mean, sd, w, sigma2_map = robust_map_posterior([donor], target)
+        mean, sd, w, sigma2_map, *_ = robust_map_posterior([donor], target)
         assert np.isfinite(mean)
         assert np.isfinite(sd) and sd > 0
         assert 0.0 <= w <= 1.0
@@ -242,7 +243,7 @@ class TestRobustMapPosterior:
         """One donor: DL c_dl could be 0; should not raise."""
         donor = self._make_summary(-0.10, 0.05)
         target = self._make_summary(-0.08, 0.08, name="t")
-        mean, sd, w, _ = robust_map_posterior([donor], target)
+        mean, sd, w, *_ = robust_map_posterior([donor], target)
         assert np.isfinite(mean)
 
 
@@ -325,10 +326,18 @@ class TestPopulationLevelBorrow:
     def test_covers_truth_is_bool(self):
         assert isinstance(self.result.covers_truth, bool)
 
-    def test_rejects_null_consistent_with_ci(self):
+    def test_rejects_null_uses_calibrated_z(self):
+        """population_level_borrow uses c* (calibrated z), not fixed 1.96.
+
+        rejects_null = |post_mean / post_sd| > calibrated_z, which may differ
+        from CI exclusion of zero (CI still uses standard z_{1-α/2}).
+        """
         r = self.result
-        ci_excludes_zero = r.ci_lower > 0 or r.ci_upper < 0
-        assert r.rejects_null == ci_excludes_zero
+        assert np.isfinite(r.calibrated_z)
+        assert np.isfinite(r.r_ratio)
+        # Verify the decision is consistent with the calibrated cutoff
+        stat = abs(r.ate_posterior / max(r.se_posterior, 1e-12))
+        assert r.rejects_null == (stat > r.calibrated_z)
 
     def test_no_conflict_borrows_toward_main(self):
         """No-conflict case: posterior should move toward main ATE vs. naive target ATE."""
@@ -351,8 +360,8 @@ class TestPopulationLevelBorrow:
         donor_agree    = RegistrySummary("main", 2000, 1000, 1000, -0.15, 0.005, -0.15)
         target_agree   = RegistrySummary("teer",  200,  100,  100, -0.14, 0.010, -0.14)
         target_conflict= RegistrySummary("teer",  200,  100,  100, +0.14, 0.010, +0.14)
-        _, _, w_agree,    _ = robust_map_posterior([donor_agree], target_agree)
-        _, _, w_conflict, _ = robust_map_posterior([donor_agree], target_conflict)
+        _, _, w_agree,    *_ = robust_map_posterior([donor_agree], target_agree)
+        _, _, w_conflict, *_ = robust_map_posterior([donor_agree], target_conflict)
         assert w_conflict < w_agree
 
 
@@ -610,7 +619,7 @@ class TestConjugacyDiagnostic:
         """When prior and data agree tightly, MAP weight should exceed threshold → exact."""
         donor  = self._make_summary(-0.10, 0.005)
         target = self._make_summary(-0.10, 0.005, name="t")
-        _, _, w, _ = robust_map_posterior([donor], target, robust_weight=0.05)
+        _, _, w, *_ = robust_map_posterior([donor], target, robust_weight=0.05)
         assert w >= _MAP_EXACT_THRESHOLD, f"expected exact regime, map_weight={w:.3f}"
 
     def test_high_conflict_gives_local_approximation(self):

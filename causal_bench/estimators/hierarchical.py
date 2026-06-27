@@ -49,6 +49,100 @@ class RegistrySummary:
 _MAP_EXACT_THRESHOLD = 0.95  # map_weight above this → conjugate_exact regime
 
 
+# ─── Size-calibrated decision cutoff ─────────────────────────────────────────
+
+def size_calibrated_z(
+    tau_prior_sd: float,
+    likelihood_sd: float,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Size-calibrated critical value for Normal-Normal model (slides §4, eq. c*).
+
+    Under an informative Normal prior, holding the decision cutoff at z_{1-α/2}
+    inflates Type I error. The corrected cutoff is:
+
+        c* = Φ⁻¹(b + k · z_{1-α/2}),   k = r / sqrt(1 + r²),   r = τ / s
+
+    where τ = tau_prior_sd (prior heterogeneity SD) and s = likelihood_sd (SE
+    of the target estimator).  As r → ∞ (vague prior), k → 1 and c* →
+    z_{1-α/2} — the fixed cutoff is the vague-prior limit only.
+
+    Parameters
+    ----------
+    tau_prior_sd : float
+        Prior SD (τ). Use the same value passed to population_level_borrow.
+    likelihood_sd : float
+        Likelihood SD (SE of the target estimator, i.e. target_summary.se_hat).
+    alpha : float
+        Two-sided significance level (default 0.05).
+
+    Returns
+    -------
+    (calibrated_z, r) : tuple[float, float]
+        calibrated_z — the size-corrected critical value.
+        r             — the signal-to-noise ratio τ / s.
+    """
+    z_base = norm.ppf(1.0 - alpha / 2.0)
+    if likelihood_sd <= 0 or tau_prior_sd <= 0:
+        return float(z_base), float("inf")
+    r = tau_prior_sd / likelihood_sd
+    k = r / float(np.sqrt(1.0 + r ** 2))
+    calibrated_z = float(z_base * k)
+    return calibrated_z, float(r)
+
+
+def influence_factor(
+    map_mean: float,
+    map_sd: float,
+    vague_mean: float,
+    vague_sd: float,
+    calibrated_z: float,
+    alpha: float = 0.05,
+) -> float:
+    """Influence factor (slide 221): log Pr_M(reject) − log Pr_V(reject).
+
+    Measures how much the MAP-only component (M) shifts the rejection probability
+    relative to the vague-only component (V):
+        |log IF| < 0.5  → M and V agree; informative prior is not doing real work.
+        |log IF| > 1.0  → informative component is doing meaningful work.
+
+    The reject decision is |posterior_mean / posterior_sd| > z_crit.
+    Under component M:  posterior ~ N(map_mean, map_sd²)
+        Pr_M(reject) = P(|N(map_mean, map_sd)| / map_sd > z_crit)
+                     = 1 - Φ(z_crit - map_mean/map_sd) + Φ(-z_crit - map_mean/map_sd)
+
+    Parameters
+    ----------
+    map_mean, map_sd   : MAP-only posterior mean and SD.
+    vague_mean, vague_sd : Vague-only posterior mean and SD.
+    calibrated_z       : Size-calibrated critical value c* (from size_calibrated_z).
+    alpha              : Two-sided significance level; used only for fallback.
+
+    Returns
+    -------
+    log_IF : float — log(Pr_M) − log(Pr_V), clipped to avoid log(0).
+    """
+    _eps = 1e-15
+
+    def _pr_reject(mean: float, sd: float, z_crit: float) -> float:
+        if sd <= 0:
+            return float("nan")
+        z_standardised = mean / sd
+        pr = (
+            1.0 - float(norm.cdf(z_crit - z_standardised))
+            + float(norm.cdf(-z_crit - z_standardised))
+        )
+        return float(np.clip(pr, _eps, 1.0 - _eps))
+
+    pr_m = _pr_reject(map_mean, map_sd, calibrated_z)
+    pr_v = _pr_reject(vague_mean, vague_sd, calibrated_z)
+
+    if not (np.isfinite(pr_m) and np.isfinite(pr_v)):
+        return float("nan")
+
+    return float(np.log(pr_m) - np.log(pr_v))
+
+
 @dataclass
 class BorrowingResult:
     """Output from one borrowing analysis (any level)."""
@@ -62,12 +156,17 @@ class BorrowingResult:
     ess_data: float                    # ESS from the target registry's own data
     ess_total: float                   # ess_prior + ess_data
     map_weight: float                  # posterior weight on MAP vs vague component
-    rejects_null: bool                 # |ate_posterior / se_posterior| > 1.96
+    rejects_null: bool                 # |ate_posterior / se_posterior| > calibrated_z (or 1.96 if n/a)
     covers_truth: bool                 # ci_lower ≤ true_ate ≤ ci_upper
     true_ate: float
     # Hansen & Tong (2026) conjugacy diagnostic
     conjugacy_regime: str = "local_approximation"  # "conjugate_exact" | "local_approximation"
     approximation_deviation: float = float("nan")  # |mixture_mean - MAP_mean| / se; 0 if exact
+    # Size-calibrated decision cutoff (issue #22 item 1)
+    r_ratio: float = float("nan")       # r = τ / s (signal-to-noise ratio)
+    calibrated_z: float = float("nan")  # size-corrected critical value c*
+    # Influence factor (issue #22 item 3): log Pr_M(reject) - log Pr_V(reject)
+    influence_factor: float = float("nan")  # |log_IF| < 0.5: MAP/vague agree; > 1: MAP does real work
 
 
 # ─── Registry summaries ───────────────────────────────────────────────────────
@@ -201,7 +300,16 @@ def robust_map_posterior(
         + w_vague_post * (post_var_vague + (post_mean_vague - post_mean) ** 2)
     )
 
-    return float(post_mean), float(np.sqrt(max(post_var, 1e-12))), float(w_map_post), float(sigma2_map)
+    return (
+        float(post_mean),
+        float(np.sqrt(max(post_var, 1e-12))),
+        float(w_map_post),
+        float(sigma2_map),
+        float(post_mean_map),
+        float(np.sqrt(max(post_var_map, 1e-12))),
+        float(post_mean_vague),
+        float(np.sqrt(max(post_var_vague, 1e-12))),
+    )
 
 
 # ─── ESS ─────────────────────────────────────────────────────────────────────
@@ -286,7 +394,8 @@ def population_level_borrow(
 
     Standard hierarchical model with one τ² parameter. No embedding dependency.
     """
-    post_mean, post_sd, map_w, sigma2_map = robust_map_posterior(
+    (post_mean, post_sd, map_w, sigma2_map,
+     map_only_mean, map_only_sd, vague_only_mean, vague_only_sd) = robust_map_posterior(
         donor_summaries=[main_summary],
         target_summary=target_summary,
         tau_prior_sd=tau_prior_sd,
@@ -294,9 +403,13 @@ def population_level_borrow(
         vague_sd=vague_sd,
     )
 
-    z = norm.ppf(1.0 - alpha / 2.0)
-    ci_lo = post_mean - z * post_sd
-    ci_hi = post_mean + z * post_sd
+    # Size-calibrated cutoff for the Normal-Normal model (issue #22 item 1).
+    # c* < z_{1-α/2} under an informative prior, controlling Type I inflation.
+    cal_z, r = size_calibrated_z(tau_prior_sd, target_summary.se_hat, alpha)
+    # CI still uses the standard normal quantile for interval construction
+    z_ci = norm.ppf(1.0 - alpha / 2.0)
+    ci_lo = post_mean - z_ci * post_sd
+    ci_hi = post_mean + z_ci * post_sd
 
     ess_prior, ess_data, ess_total = compute_ess(
         prior_sd=float(np.sqrt(sigma2_map)),
@@ -313,6 +426,14 @@ def population_level_borrow(
         vague_sd=vague_sd,
     )
 
+    if_val = influence_factor(
+        map_mean=map_only_mean,
+        map_sd=map_only_sd,
+        vague_mean=vague_only_mean,
+        vague_sd=vague_only_sd,
+        calibrated_z=cal_z,
+    )
+
     return BorrowingResult(
         level="population",
         target_registry=target_summary.name,
@@ -324,11 +445,14 @@ def population_level_borrow(
         ess_data=ess_data,
         ess_total=ess_total,
         map_weight=map_w,
-        rejects_null=bool(abs(post_mean / max(post_sd, 1e-12)) > z),
+        rejects_null=bool(abs(post_mean / max(post_sd, 1e-12)) > cal_z),
         covers_truth=bool(ci_lo <= target_summary.true_ate <= ci_hi),
         true_ate=target_summary.true_ate,
         conjugacy_regime=regime,
         approximation_deviation=deviation,
+        r_ratio=r,
+        calibrated_z=cal_z,
+        influence_factor=if_val,
     )
 
 
@@ -414,6 +538,8 @@ def patient_level_borrow(
     ) * max(1.0 - phi * 0.5, 0.1)   # variance shrinks with φ (approximate)
 
     post_sd = float(np.sqrt(max(var_aug, 1e-8)))
+    # patient-level path is non-conjugate by construction — c* calibration does not apply
+    # exactly here; approximation_deviation (issue #16) quantifies the gap
     z = norm.ppf(1.0 - alpha / 2.0)
 
     # ESS: effective borrowing ≈ φ * n_main weighted by similarity sharpness
@@ -481,6 +607,10 @@ class OCMetrics:
     approx_deviation_mean: float = float("nan")  # mean relative deviation (approximate reps only)
     approx_deviation_max: float = float("nan")   # max relative deviation (approximate reps only)
 
+    # Size-calibrated decision cutoff summary (issue #22 item 1)
+    calibrated_z_mean: float = float("nan")   # mean c* across reps (population level only)
+    r_ratio_mean: float = float("nan")        # mean r = τ/s across reps
+
 
 def compute_oc_metrics(
     results: list[BorrowingResult],
@@ -535,6 +665,12 @@ def compute_oc_metrics(
     dev_mean = float(np.mean(approx_devs)) if approx_devs else float("nan")
     dev_max  = float(np.max(approx_devs))  if approx_devs else float("nan")
 
+    # Size-calibrated cutoff summary (only meaningful for population-level results)
+    cal_zs = [r.calibrated_z for r in results if np.isfinite(r.calibrated_z)]
+    r_ratios = [r.r_ratio for r in results if np.isfinite(r.r_ratio)]
+    cal_z_mean = float(np.mean(cal_zs)) if cal_zs else float("nan")
+    r_ratio_mean = float(np.mean(r_ratios)) if r_ratios else float("nan")
+
     return OCMetrics(
         level=level,
         target_registry=target,
@@ -553,4 +689,6 @@ def compute_oc_metrics(
         exact_fraction=exact_frac,
         approx_deviation_mean=dev_mean,
         approx_deviation_max=dev_max,
+        calibrated_z_mean=cal_z_mean,
+        r_ratio_mean=r_ratio_mean,
     )
