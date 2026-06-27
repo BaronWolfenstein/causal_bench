@@ -595,7 +595,7 @@ def subgroup_level_borrow(
             main_sum   = summarise_registry(main_g,   target_true_ate, "main")
             target_sum = summarise_registry(target_g, target_true_ate, target_registry)
 
-            post_mean, post_sd, map_w, sigma2_map = robust_map_posterior(
+            post_mean, post_sd, map_w, sigma2_map, *_ = robust_map_posterior(
                 donor_summaries=[main_sum],
                 target_summary=target_sum,
                 tau_prior_sd=tau_prior_sd,

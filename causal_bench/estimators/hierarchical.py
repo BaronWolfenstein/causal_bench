@@ -91,6 +91,58 @@ def size_calibrated_z(
     return calibrated_z, float(r)
 
 
+def influence_factor(
+    map_mean: float,
+    map_sd: float,
+    vague_mean: float,
+    vague_sd: float,
+    calibrated_z: float,
+    alpha: float = 0.05,
+) -> float:
+    """Influence factor (slide 221): log Pr_M(reject) − log Pr_V(reject).
+
+    Measures how much the MAP-only component (M) shifts the rejection probability
+    relative to the vague-only component (V):
+        |log IF| < 0.5  → M and V agree; informative prior is not doing real work.
+        |log IF| > 1.0  → informative component is doing meaningful work.
+
+    The reject decision is |posterior_mean / posterior_sd| > z_crit.
+    Under component M:  posterior ~ N(map_mean, map_sd²)
+        Pr_M(reject) = P(|N(map_mean, map_sd)| / map_sd > z_crit)
+                     = 1 - Φ(z_crit - map_mean/map_sd) + Φ(-z_crit - map_mean/map_sd)
+
+    Parameters
+    ----------
+    map_mean, map_sd   : MAP-only posterior mean and SD.
+    vague_mean, vague_sd : Vague-only posterior mean and SD.
+    calibrated_z       : Size-calibrated critical value c* (from size_calibrated_z).
+    alpha              : Two-sided significance level; used only for fallback.
+
+    Returns
+    -------
+    log_IF : float — log(Pr_M) − log(Pr_V), clipped to avoid log(0).
+    """
+    _eps = 1e-15
+
+    def _pr_reject(mean: float, sd: float, z_crit: float) -> float:
+        if sd <= 0:
+            return float("nan")
+        z_standardised = mean / sd
+        pr = (
+            1.0 - float(norm.cdf(z_crit - z_standardised))
+            + float(norm.cdf(-z_crit - z_standardised))
+        )
+        return float(np.clip(pr, _eps, 1.0 - _eps))
+
+    pr_m = _pr_reject(map_mean, map_sd, calibrated_z)
+    pr_v = _pr_reject(vague_mean, vague_sd, calibrated_z)
+
+    if not (np.isfinite(pr_m) and np.isfinite(pr_v)):
+        return float("nan")
+
+    return float(np.log(pr_m) - np.log(pr_v))
+
+
 @dataclass
 class BorrowingResult:
     """Output from one borrowing analysis (any level)."""
@@ -113,6 +165,8 @@ class BorrowingResult:
     # Size-calibrated decision cutoff (issue #22 item 1)
     r_ratio: float = float("nan")       # r = τ / s (signal-to-noise ratio)
     calibrated_z: float = float("nan")  # size-corrected critical value c*
+    # Influence factor (issue #22 item 3): log Pr_M(reject) - log Pr_V(reject)
+    influence_factor: float = float("nan")  # |log_IF| < 0.5: MAP/vague agree; > 1: MAP does real work
 
 
 # ─── Registry summaries ───────────────────────────────────────────────────────
@@ -246,7 +300,16 @@ def robust_map_posterior(
         + w_vague_post * (post_var_vague + (post_mean_vague - post_mean) ** 2)
     )
 
-    return float(post_mean), float(np.sqrt(max(post_var, 1e-12))), float(w_map_post), float(sigma2_map)
+    return (
+        float(post_mean),
+        float(np.sqrt(max(post_var, 1e-12))),
+        float(w_map_post),
+        float(sigma2_map),
+        float(post_mean_map),
+        float(np.sqrt(max(post_var_map, 1e-12))),
+        float(post_mean_vague),
+        float(np.sqrt(max(post_var_vague, 1e-12))),
+    )
 
 
 # ─── ESS ─────────────────────────────────────────────────────────────────────
@@ -331,7 +394,8 @@ def population_level_borrow(
 
     Standard hierarchical model with one τ² parameter. No embedding dependency.
     """
-    post_mean, post_sd, map_w, sigma2_map = robust_map_posterior(
+    (post_mean, post_sd, map_w, sigma2_map,
+     map_only_mean, map_only_sd, vague_only_mean, vague_only_sd) = robust_map_posterior(
         donor_summaries=[main_summary],
         target_summary=target_summary,
         tau_prior_sd=tau_prior_sd,
@@ -362,6 +426,14 @@ def population_level_borrow(
         vague_sd=vague_sd,
     )
 
+    if_val = influence_factor(
+        map_mean=map_only_mean,
+        map_sd=map_only_sd,
+        vague_mean=vague_only_mean,
+        vague_sd=vague_only_sd,
+        calibrated_z=cal_z,
+    )
+
     return BorrowingResult(
         level="population",
         target_registry=target_summary.name,
@@ -380,6 +452,7 @@ def population_level_borrow(
         approximation_deviation=deviation,
         r_ratio=r,
         calibrated_z=cal_z,
+        influence_factor=if_val,
     )
 
 

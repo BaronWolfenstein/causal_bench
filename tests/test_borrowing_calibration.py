@@ -1,9 +1,9 @@
-"""Tests for size-calibrated decision cutoff (issue #22 item 1)."""
+"""Tests for size-calibrated decision cutoff and influence factor (issue #22)."""
 import numpy as np
 import pytest
 from scipy.stats import norm
 
-from causal_bench.estimators.hierarchical import size_calibrated_z
+from causal_bench.estimators.hierarchical import influence_factor, size_calibrated_z
 
 
 class TestSizeCalibratedZ:
@@ -60,3 +60,52 @@ class TestSizeCalibratedZ:
                     f"c* should not exceed z_{{1-α/2}}={standard_z:.4f}, "
                     f"got {cal_z:.4f} for tau={tau}, s={s}"
                 )
+
+
+class TestInfluenceFactor:
+    """Tests for influence_factor helper (issue #22 item 3)."""
+
+    def _cal_z(self):
+        return norm.ppf(0.975)
+
+    def test_full_conflict_gives_negative_log_if(self):
+        """Conflict scenario: MAP posterior is pulled toward null by a conflicting prior.
+        MAP-only posterior near 0 → less likely to reject than vague posterior far from 0.
+        log IF = log Pr_M - log Pr_V < 0."""
+        cal_z = self._cal_z()
+        # MAP-only posterior: pulled to near-null by conflicting prior (map_mean ≈ 0)
+        # Vague-only posterior: stays with data far from null (vague_mean = -0.20)
+        log_if = influence_factor(
+            map_mean=-0.02, map_sd=0.04,
+            vague_mean=-0.20, vague_sd=0.06,
+            calibrated_z=cal_z,
+        )
+        assert log_if < 0.0, f"Expected log IF < 0 (MAP pulls toward null), got {log_if:.4f}"
+
+    def test_concordant_prior_gives_positive_log_if(self):
+        """Concordance: MAP posterior far from null, vague near null.
+        MAP component more likely to reject → positive log IF."""
+        cal_z = self._cal_z()
+        log_if = influence_factor(
+            map_mean=-0.30, map_sd=0.04,
+            vague_mean=-0.02, vague_sd=0.10,
+            calibrated_z=cal_z,
+        )
+        assert log_if > 0.0, f"Expected log IF > 0 under concordance, got {log_if:.4f}"
+
+    def test_returns_finite_float(self):
+        cal_z = self._cal_z()
+        log_if = influence_factor(0.0, 0.10, 0.0, 0.50, cal_z)
+        assert np.isfinite(log_if)
+
+    def test_influence_factor_wired_into_borrowing_result(self):
+        """population_level_borrow should return a BorrowingResult with finite influence_factor."""
+        from causal_bench.estimators.hierarchical import (
+            RegistrySummary, population_level_borrow,
+        )
+        main = RegistrySummary("main", 2000, 1000, 1000, -0.15, 0.02, -0.15)
+        target = RegistrySummary("teer", 200, 100, 100, -0.14, 0.04, -0.14)
+        result = population_level_borrow(main, target)
+        assert np.isfinite(result.influence_factor), (
+            f"influence_factor should be finite, got {result.influence_factor}"
+        )
