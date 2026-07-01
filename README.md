@@ -40,7 +40,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 ---
 
-## Estimators (27)
+## Estimators (30)
 
 ### Risk difference estimators (Python)
 
@@ -96,7 +96,10 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 | Key | Method | Notes |
 |-----|--------|-------|
-| `clmm_ordinal` | Bayesian cumulative-link mixed model | bambi/PyMC; partial pooling over sites; posterior credible intervals. Needs `pip install -e ".[bayes]"`. Assumption-adversary to the PRO win ratio — the head-to-head benchmark (exp25) is gated on `concrete#36` |
+| `clmm_ordinal` | Bayesian cumulative-link mixed model | bambi/PyMC; **partial pooling** (random site intercept); posterior credible intervals; surfaces the site SD (τ) in `convergence_info`. Needs `pip install -e ".[bayes]"`. Assumption-adversary to the PRO win ratio — the head-to-head benchmark (exp25) is gated on `concrete#36` |
+| `clmm_ordinal_slope` | CLMM, `(A \| site)` random slope | Correlated random intercept **and** treatment slope per site; surfaces τ_A. The stronger adversary when the DGP has site-varying treatment effects |
+| `clmm_ordinal_nopool` | CLMM, **no pooling** (fixed site effects) | Reference arm: one intercept per site, no shrinkage |
+| `clmm_ordinal_cpool` | CLMM, **complete pooling** (no site term) | Reference arm: ignores site clustering entirely |
 
 ---
 

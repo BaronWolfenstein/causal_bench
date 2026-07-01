@@ -271,3 +271,64 @@ class TestCLMMOrdinalMCMC:
         est = CLMMOrdinalEstimator(**self._MCMC_KWARGS)
         nc = est.estimate_negative_control(df)
         assert abs(nc) < 0.5, f"NC estimate too large: {nc:.3f}"
+
+
+class TestCLMMPoolingAndRandomSlope:
+    """Pooling spectrum (partial / complete / none) + (A | site) random slope."""
+
+    _MCMC_KWARGS = dict(draws=100, tune=100, chains=1, target_accept=0.8, progressbar=False)
+
+    def test_pooling_validation(self):
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        with pytest.raises(ValueError):
+            CLMMOrdinalEstimator(pooling="bogus")
+
+    def test_random_slope_requires_partial_pooling(self):
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        with pytest.raises(ValueError):
+            CLMMOrdinalEstimator(pooling="none", random_slope=True)
+
+    def test_registry_has_pooling_variants(self):
+        from causal_bench.estimators import ESTIMATOR_REGISTRY as R
+        for key in ("clmm_ordinal", "clmm_ordinal_slope",
+                    "clmm_ordinal_nopool", "clmm_ordinal_cpool"):
+            assert key in R, f"{key} missing from registry"
+
+    @requires_bambi
+    def test_all_pooling_arms_return_finite_log_or(self):
+        """partial / complete / none each fit and return a finite treatment log-OR."""
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        df = _make_ordinal_df(n=300, n_sites=6, true_log_or=0.8, seed=3)
+        for pooling in ("partial", "complete", "none"):
+            est = CLMMOrdinalEstimator(pooling=pooling, **self._MCMC_KWARGS)
+            res = est.estimate(df)
+            assert res, f"pooling={pooling} returned no result"
+            assert np.isfinite(res[0].point_estimate), f"pooling={pooling} non-finite"
+
+    @requires_bambi
+    def test_partial_pooling_surfaces_site_sd(self):
+        """convergence_info exposes the site random-intercept SD (τ)."""
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        df = _make_ordinal_df(n=300, n_sites=6, seed=4)
+        r = CLMMOrdinalEstimator(**self._MCMC_KWARGS).estimate(df)[0]
+        ci = r.convergence_info
+        assert "site_sd_mean" in ci and ci["site_sd_mean"] > 0
+        assert "site_sd_hdi" in ci and len(ci["site_sd_hdi"]) == 2
+
+    @requires_bambi
+    def test_complete_pooling_has_no_site_sd(self):
+        """Complete pooling drops the site term, so no τ is surfaced."""
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        df = _make_ordinal_df(n=300, n_sites=6, seed=5)
+        r = CLMMOrdinalEstimator(pooling="complete", **self._MCMC_KWARGS).estimate(df)[0]
+        assert "site_sd_mean" not in r.convergence_info
+
+    @requires_bambi
+    def test_random_slope_surfaces_slope_sd(self):
+        """(A | site) surfaces both the intercept SD (τ) and the slope SD (τ_A)."""
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        df = _make_ordinal_df(n=350, n_sites=6, seed=6)
+        r = CLMMOrdinalEstimator(random_slope=True, **self._MCMC_KWARGS).estimate(df)[0]
+        ci = r.convergence_info
+        assert "site_sd_mean" in ci and ci["site_sd_mean"] > 0
+        assert "slope_sd_mean" in ci and ci["slope_sd_mean"] > 0
