@@ -508,7 +508,8 @@ Brauer & Day (Kruschke/Kurz): the provenance of every figure and number (@sec-pr
 the software environment and the pinned `concrete` commit (@sec-session), the deterministic
 RNG scheme (@sec-rng), a codebook for the simulated scenarios (@sec-scenario-codebook) and for
 the estimands and estimators (@sec-estimand-codebook), the ordinal-PRO generative model
-(@sec-ordinal-dgp), and the from-scratch build commands (@sec-reproduce).
+(@sec-ordinal-dgp), the hierarchical borrowing operating characteristics (@sec-borrowing), and
+the from-scratch build commands (@sec-reproduce).
 
 ::: {.callout-note}
 ## Appendix scope
@@ -850,6 +851,40 @@ violation they fan out — the signal the CLMM's one coefficient cannot represen
 exp25 (#28) scores each estimator on its own estimand. That efficiency-vs-coverage sweep across the
 PO-violation knob, plus the posterior-predictive-check reproduction, complete item 6 once
 `concrete#36` unblocks the benchmark.
+
+### Hierarchical borrowing operating characteristics {#sec-borrowing}
+
+ENCIRCLE is single-arm: the comparator is an external TVT registry plus synthetic
+augmentation, not a randomized control (per the SAP). How much to borrow from that external
+information must be *calibrated* — borrow too much and prior-data conflict imports bias, too
+little and the precision gain is wasted. `exp19_hierarchical_oc.py` and
+`exp20_tipping_point_borrowing.py` characterize that trade-off as an operating-characteristics
+study; this section documents the machinery (the results figures live under `results/exp19*`
+/ `results/exp20*`).
+
+**Model.** A **robust meta-analytic-predictive (MAP) prior** (Schmidli et al. 2014):
+$\text{prior} = w\cdot\mathcal N(\mu_{\text{MAP}}, \sigma^2_{\text{MAP}}) + (1-w)\cdot\mathcal N(0, \text{vague})$.
+Under prior-data conflict the vague component dominates and borrowing **auto-discounts** — the
+runtime diagnostic is the **collapse of the prior effective sample size**. Three borrowing
+levels: **population** (single $\tau^2$ shrinkage, no embeddings), **subgroup** (CATE-stratified),
+and **patient** (continuous similarity-weighted, gated on SMB trajectory embeddings).
+
+**Key lever $\varphi$ (embedding fidelity).** $\varphi=1$: embedding proximity perfectly proxies
+true CATE similarity → borrowing ideal; $\varphi=0$: proximity is noise → patient-level borrowing
+is pure variance. `exp19` sweeps $\varphi \times$ conflict $\times$ scenario and reports Type M
+(exaggeration) / Type S (sign error) (Gelman-Carlin 2014), MDE, coverage, power, and prior-ESS
+collapse; `exp20` sweeps borrowing strength to the tipping point.
+
+::: {.callout-note}
+## Three distinct "ESS" — do not cross-wire
+The ESS in this study is the **prior effective sample size** (Morita-Thall-Müller 2008) — how many
+patients-worth of information the prior injects — **not** an MCMC ESS. The robust-MAP kernel is a
+**closed-form** conjugate Normal-Normal update (no chains), so bulk/tail-ESS do not apply here. A
+full *three-level* BHM with a hyperprior on $\tau$ is non-conjugate → would need MCMC per fit →
+tail-ESS becomes live (Type I error is a tail event on a rare subpopulation). See the
+`exp19_hierarchical_oc.py` docstring and issue #16 for the fidelity distinction: the
+`_conjugacy_diagnostic` bounds the *mixture linearization*, not the two-vs-three-level OC gap.
+:::
 
 ### Reproducing from scratch {#sec-reproduce}
 
