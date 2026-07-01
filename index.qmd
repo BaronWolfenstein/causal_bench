@@ -501,7 +501,234 @@ The dashed contour is the tipping point — the boundary where the 95% CI crosse
 
 ---
 
-## Reproducing results
+## Replication data appendix {#sec-appendix}
+
+Everything needed to reproduce this document, in the reproducible-supplement style of
+Brauer & Day (Kruschke/Kurz): the provenance of every figure and number (@sec-provenance),
+the software environment and the pinned `concrete` commit (@sec-session), the deterministic
+RNG scheme (@sec-rng), a codebook for the simulated scenarios (@sec-scenario-codebook) and for
+the estimands and estimators (@sec-estimand-codebook), and the from-scratch build commands
+(@sec-reproduce).
+
+::: {.callout-note}
+## Appendix scope
+This covers the concrete-independent scaffolding (items 1–5 of the appendix plan). The ordinal
+codebook (item 6) and the data-availability / DOI + license block (item 7) land with the
+ordinal-PRO benchmark (#28) and are gated on `blind-contours/concrete#36`.
+:::
+
+### Provenance {#sec-provenance}
+
+Every figure and table traces to an experiment script, the exact command that produces it, the
+`results/` artifact it reads, and the notebook chunk that renders it. Rows marked *inline* are
+computed at render time from a fresh `generate_data()` draw and persist no artifact. Full
+experiments use `--n-sims 200`; the notebook chunks fall back to a 50-sim quick run when the
+artifact is absent (see each chunk's guard).
+
+| Output | Rendered by chunk | Experiment script | Command | Artifact |
+|---|---|---|---|---|
+| @fig-dgp-overview | `fig-dgp-overview` | — (inline) | `generate_data(get_scenario("edwards_realistic"))` | *inline* |
+| @tbl-scenarios | `tbl-scenarios` | `dgp/scenarios.py` | registry introspection | *inline* |
+| @tbl-estimators | `tbl-estimators` | `estimators/__init__.py` | registry introspection | *inline* |
+| @fig-exp1 | `exp1-run` | `experiments/exp1_censoring.py` | `python experiments/exp1_censoring.py --n-sims 200 --n-jobs -1` | `results/exp1_censoring/panel.png` |
+| @fig-exp5 | `exp5-run` | `experiments/exp5_collider.py` | `python experiments/exp5_collider.py --n-sims 200 --n-jobs -1` | `results/exp5_collider/collider_panel.png` |
+| @fig-exp7 | `exp7-run` | `experiments/exp7_edwards.py` | `python experiments/exp7_edwards.py --n-sims 200 --seed 42` | `results/exp7_edwards/forest_realistic.png` |
+| @tbl-exp7 | `tbl-exp7` | `experiments/exp7_edwards.py` | (as @fig-exp7) | `results/exp7_edwards/summary_edwards_{optimistic,realistic,pessimistic}.md` |
+| Exp 8 panel | `exp8-python` | `experiments/exp8_mccoy.py` | `python experiments/exp8_mccoy.py --n-sims 200 --n-jobs -1` | `results/exp8_mccoy/{forest.png, parquet/*.parquet, summary.md}` |
+| concrete RMST ATE (@sec-exp8) | `r-concrete-run` | `r_scripts/concrete_bridge.R` | `run_concrete_bridge(df, horizon = 1.0)` | *inline* (needs `concrete`) |
+| @fig-overlap | `fig-overlap` | `diagnostics.plot_overlap` | inline (edwards_realistic draw) | *inline* |
+| @fig-love | `fig-love` | `diagnostics.plot_love` | inline (edwards_realistic draw) | *inline* |
+| @fig-se-calibration | `fig-se-calibration` | `diagnostics.plot_se_calibration` | inline (Exp 7 results) | *inline* |
+| @fig-tipping | `fig-tipping` | `diagnostics.plot_tipping_point` | inline | *inline* |
+| @fig-ess | `fig-ess` | `diagnostics.plot_ess_distribution` | inline | *inline* |
+| @fig-mnar | `fig-mnar` | `diagnostics.plot_tipping_point_mnar` | inline | `results/edwards_realistic/mnar_tipping_point.png` |
+
+: Provenance — figure/number → script → command → artifact → render chunk {#tbl-provenance}
+
+### Software environment {#sec-session}
+
+A `sessionInfo()`-equivalent, captured live at render. Because the concrete results in @sec-exp8
+depend on *unmerged* `concrete` PRs, the pinned commit — not the package version — is the
+reproducibility linchpin: record the `@<sha>` printed below alongside any number you cite.
+
+```{python}
+#| label: session-info-py
+#| tbl-cap: "Python environment captured at render time"
+import sys, platform, subprocess
+import importlib.metadata as im
+
+def _ver(pkg):
+    try:
+        return im.version(pkg)
+    except Exception:
+        return "—"
+
+pkgs = ["numpy", "scipy", "pandas", "scikit-learn", "lifelines",
+        "matplotlib", "joblib", "rpy2", "pydantic", "pandera", "pyarrow"]
+env = {"python": sys.version.split()[0], "platform": platform.platform()}
+env.update({p: _ver(p) for p in pkgs})
+
+try:
+    env["causal_bench commit"] = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, check=True).stdout.strip()
+except Exception:
+    env["causal_bench commit"] = "—"
+env["causal_bench version"] = _ver("causal_bench")
+
+pd.DataFrame({"version": env}).rename_axis("component")
+```
+
+```{r}
+#| label: session-info-r
+cat(R.version.string, "\n\n")
+pin <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) return(sprintf("%-12s not installed", pkg))
+  d   <- packageDescription(pkg)
+  sha <- d$RemoteSha; if (is.null(sha)) sha <- d$GithubSHA1; if (is.null(sha)) sha <- ""
+  sprintf("%-12s %s%s", pkg, d$Version,
+          if (nzchar(sha)) paste0("  @", substr(sha, 1, 10)) else "")
+}
+for (p in c("reticulate", "data.table", "concrete")) cat(pin(p), "\n")
+```
+
+::: {.callout-important}
+## The `concrete` pin is the reproducibility linchpin
+The `concrete` line above is empty (`not installed`) or shows a `@<sha>` — the RMST results in
+@sec-exp8 are only reproducible against that exact commit, because they depend on the unmerged
+`blind-contours/concrete#36`. When #36 merges, re-pin to the merge commit and update this note.
+:::
+
+### Seeds and RNG {#sec-rng}
+
+Every simulated figure is a deterministic function of a single integer seed. `DGPConfig.seed`
+defaults to **42**; `generate_data()` draws from `np.random.default_rng(config.seed)`, and the
+auxiliary streams (censoring, competing risks) derive from `config.seed ^ 0xDEADBEEF` so they are
+independent yet equally reproducible. Re-running any experiment script with the same `--seed`
+reproduces its artifact bit-for-bit.
+
+The DGP additionally provides a SHA-256-**keyed** draw primitive (`dgp/keyed_random.py`, after
+Buffalo et al. 2026). Rather than consuming a stateful stream in generation order, each draw is a
+pure hash of its key:
+
+$$\texttt{keyed\_uniform}(i, e, s, \text{seed}) = \frac{\text{SHA256}(\texttt{"seed:i:e:s"})_{[0:8]}}{2^{64}}$$
+
+for patient `i`, event type `e`, scenario `s`. This makes a draw independent of evaluation order:
+adding a patient, reordering the cohort, or parallelising across workers leaves every other
+patient's draws untouched — a guarantee a stateful `default_rng` cannot give. That
+order-independence is a stronger reproducibility story than a stated seed. It is the RNG path
+wired into the ordinal-PRO DGP (#26); the survival DGPs above still seed via `default_rng`.
+
+```{python}
+#| label: rng-demo
+from causal_bench.dgp.keyed_random import keyed_uniform
+
+# Same key → same draw, in any order, at any call count
+u1 = keyed_uniform(patient_id=17, event_type="T_event", scenario="edwards_realistic", seed=42)
+u2 = keyed_uniform(patient_id=17, event_type="T_event", scenario="edwards_realistic", seed=42)
+assert u1 == u2
+print(f"patient 17 · edwards_realistic · seed 42 → {u1:.6f}")
+```
+
+**Reproduce a specific figure.** Each figure is a pure function of its script, this repo's commit
+(@sec-session), and `--seed`. To regenerate @fig-exp7 exactly:
+
+```bash
+python experiments/exp7_edwards.py --n-sims 200 --seed 42   # → results/exp7_edwards/
+```
+
+### Scenario codebook {#sec-scenario-codebook}
+
+The "data" here is simulated, so we document it like a codebook. @tbl-scenarios lists the headline
+knobs; @tbl-scenario-codebook is the exhaustive dictionary — every scenario in `dgp/scenarios.py`,
+introspected from the live registry (so it cannot drift from the code), showing only the DGP
+parameters that differ from the `clean` baseline (`n=500`, `true_tau=−0.5`, no corruptions). A
+blank cell means "equals baseline."
+
+```{python}
+#| label: tbl-scenario-codebook
+#| tbl-cap: "Scenario codebook — DGP parameters per scenario (differences from the `clean` baseline; blank = baseline)"
+from causal_bench.dgp.scenarios import list_scenarios, get_scenario
+
+def _flatten(name):
+    d = get_scenario(name).model_dump()
+    cens = d.pop("censoring", {}) or {}
+    d["censoring_kind"] = cens.get("kind")
+    d["censoring_informativeness"] = cens.get("informativeness")
+    return d
+
+base = _flatten("clean")
+records = {}
+for name in list_scenarios():
+    d = _flatten(name)
+    row = {k: v for k, v in d.items() if k != "seed" and v != base.get(k)}
+    row["n"] = d["n"]                      # always show cohort size
+    row["true_tau"] = d["true_tau"]        # …and the true effect
+    records[name] = row
+
+codebook = pd.DataFrame(records).T
+front = ["n", "true_tau"]
+codebook = codebook.reindex(
+    columns=front + [c for c in codebook.columns if c not in front])
+codebook = codebook.dropna(axis=1, how="all").fillna("").astype(object)
+codebook.rename_axis("scenario")
+```
+
+The DGP knobs referenced above:
+
+| Parameter | Meaning | Range / values |
+|---|---|---|
+| `n` | cohort size | `[1, 100000]`, default 500 |
+| `true_tau` | true treatment effect (log-hazard; <0 delays the event) | default −0.5 |
+| `treatment_prevalence` | marginal `P(A=1)` via propensity intercept | `[0, 1]`, default 0.5 |
+| `positivity_severity` | strength of propensity extremes (near-violations) | `≥0`, documented `[0, 3]` |
+| `unmeasured_confounding_strength` | magnitude of the latent confounder `U` | `≥0`, documented `[0, 0.8]` |
+| `outcome_nonlinearity` | nonlinearity in the outcome model | default 0 |
+| `effect_heterogeneity` | linear CATE modifier on `W1` (excludes `subgroup_*`) | default 0 |
+| `horizon` | RMST / evaluation horizon | `>0`, default 1.0 |
+| `censoring_rate` | marginal censoring fraction | `[0, 1)`, default 0.25 |
+| `censoring_kind` | mechanism: `covariate_dependent` (MAR ∣ W,A), `latent_confounder` (MNAR via U), `informative` (on T), `independent` | — |
+| `censoring_informativeness` | strength of the censoring mechanism | `[0, 1]` |
+| `crossover_rate` | treatment-crossover fraction | `[0, 1]` |
+| `collider_strength` | post-treatment confounder `L1` effect (collider) | `[0, 1]` |
+| `competing_risks` | enable the cause-2 competing event | bool |
+| `cause2_treatment_effect` | treatment effect on the competing hazard (needs `competing_risks`) | default 0 |
+| `hfh_death_escalation` | shared-frailty coupling (HFH-prone die sooner; needs `competing_risks`) | `[0, 2]` |
+| `enrollment_drift` | time trend in the enrolled population | `[0, 1]` |
+| `strata_cols` / `strata_block_size` | permuted-block randomization within strata | cols ⊆ {W1…W4}; block even `≥2` |
+| `subgroup_col` / `cate_high` / `cate_low` | explicit binary-subgroup step CATE (all-or-none) | col ⊆ {W1…W4} |
+| `seed` | RNG seed (see @sec-rng) | default 42 |
+
+: DGP parameter dictionary {#tbl-dgp-params}
+
+### Estimand and estimator codebook {#sec-estimand-codebook}
+
+@tbl-estimators lists the estimators as an adjustment hierarchy; this codebook is
+estimand-first — each target parameter, its definition, and the registry estimators that
+target it. Estimators score against *their own* estimand (an RMST estimator is not judged on a
+risk-difference target). `concrete_*` and `clinical_*` estimators require R with the `concrete`
+package (@sec-reproduce); the rest are pure Python.
+
+| Estimand | Definition | Registry estimator(s) | Backend |
+|---|---|---|---|
+| Risk difference at horizon $\tau$ | $P(T\le\tau\mid A{=}1) - P(T\le\tau\mid A{=}0)$ | `naive`, `km`, `cox`, `cox_l1`, `ipw`, `aipw`, `tmle_ipcw`(+`_cv`/`_boot`/`_comply`), `ltmle` | Python |
+| RMST difference | $E[\min(T,\tau)\mid A{=}1] - E[\min(T,\tau)\mid A{=}0]$ | `rmst_k{2,5,10,20}` (pointwise, $O(1/K)$ bias), `concrete_RMST`(`_strata`) (direct targeting), `concrete_simult` (joint $t{=}1,2$) | Python; `concrete_*` need R |
+| Overlap-weighted ATE (ATO) | risk difference on the overlap population (weights $A(1{-}e)+(1{-}A)e$) | `overlap` | Python |
+| Win ratio (GPC) | favorable : unfavorable pairwise-comparison ratio over the ordered composite (death > HF hospitalization > PRO); win-ratio ATE/ATT | `concrete_WR_direct`, `concrete_WR_plugin` | R + `concrete` |
+| Restricted mean time in favorable state (RMT-IF) | expected time spent in the favorable multistate stratum up to $\tau$ | `clinical_RMTIF` | R + `concrete` |
+| Priority-standardized net benefit (PSNB) | priority-ranked net-benefit / win-ratio variant | `clinical_PSNB` | R + `concrete` |
+| CATE / subgroup effect | conditional risk difference within a subgroup | `effectxshift`, `bcf_bart` | Python |
+| Cumulative log-OR (ordinal) | $\log\text{OR}$ for the $P(Y\ge k)$ contrast, constant across $k$ under proportional odds | Bayesian CLMM (#27) | Python (bambi/PyMC) |
+
+: Estimand codebook — target parameter → definition → estimator {#tbl-estimand-codebook}
+
+::: {.callout-note}
+The cumulative-log-OR row is the ordinal-PRO benchmark's target: its estimator (the Bayesian
+CLMM, #27) and the head-to-head against the win ratio (exp25, #28) land with the benchmark,
+gated on `blind-contours/concrete#36`.
+:::
+
+### Reproducing from scratch {#sec-reproduce}
 
 ```bash
 # Install
@@ -513,7 +740,7 @@ python -m causal_bench --scenario edwards_realistic --n-sims 50 \
     --diagnostics --tipping-point --ess \
     --mnar-tipping-point --mnar-estimator km --mnar-grid 10
 
-# Full experiments
+# Full experiments (the artifacts in @tbl-provenance)
 python experiments/exp1_censoring.py --n-sims 200
 python experiments/exp5_collider.py  --n-sims 200
 python experiments/exp7_edwards.py   --n-sims 200
@@ -523,7 +750,7 @@ python experiments/exp8_mccoy.py     --n-sims 200   # concrete results need R
 quarto render index.qmd
 ```
 
-### R setup (for concrete cells)
+R setup (for the `concrete` cells in @sec-exp8):
 
 ```r
 install.packages("remotes")
