@@ -45,7 +45,10 @@ ESTIMATOR_REGISTRY: dict = {
     "clinical_PSNB":      ClinicalPSNBEstimator(),
     "effectxshift":       EffectXShiftEstimator(),
     "bcf_bart":           BCFBARTEstimator(),
-    "clmm_ordinal":       CLMMOrdinalEstimator(),
+    "clmm_ordinal":       CLMMOrdinalEstimator(),                    # partial pooling, random intercept
+    "clmm_ordinal_slope": CLMMOrdinalEstimator(random_slope=True),   # partial pooling, (A | site) random slope
+    "clmm_ordinal_nopool": CLMMOrdinalEstimator(pooling="none"),     # no pooling: fixed site effects
+    "clmm_ordinal_cpool": CLMMOrdinalEstimator(pooling="complete"),  # complete pooling: no site term
 }
 
 MVP_ESTIMATORS = ["naive", "km", "cox", "tmle_ipcw", "tmle_ipcw_comply"]

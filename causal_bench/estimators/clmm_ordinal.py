@@ -98,6 +98,17 @@ class CLMMOrdinalEstimator(BaseEstimator):
         Covariate columns entered as linear fixed effects (default W1-W4).
     site_col : str
         Site/cluster column for the random intercept (default "site").
+    pooling : str
+        Pooling spectrum for the site term: "partial" (default; random site
+        intercept — the hierarchy), "complete" (no site term at all), or "none"
+        (fixed site effects via `C(site)` — one intercept per site, no
+        shrinkage). "complete" and "none" are reference arms bracketing the
+        partial-pooling estimator.
+    random_slope : bool
+        Partial pooling only. When True, use `(A | site)` — a correlated random
+        intercept *and* treatment slope per site — instead of `(1 | site)`. This
+        is the stronger adversary when the DGP has site-varying treatment
+        effects; the slope SD (τ_A) is surfaced in `convergence_info`.
     draws : int
         Number of posterior draws per chain (default 1000).
     tune : int
@@ -124,6 +135,8 @@ class CLMMOrdinalEstimator(BaseEstimator):
         treatment_col: str = "A",
         covariate_cols: list[str] | None = None,
         site_col: str = "site",
+        pooling: str = "partial",
+        random_slope: bool = False,
         draws: int = 1000,
         tune: int = 1000,
         chains: int = 2,
@@ -137,6 +150,8 @@ class CLMMOrdinalEstimator(BaseEstimator):
         self._treatment_col  = treatment_col
         self._covariate_cols = covariate_cols or ["W1", "W2", "W3", "W4"]
         self._site_col       = site_col
+        self._pooling        = pooling
+        self._random_slope   = random_slope
         self._draws          = draws
         self._tune           = tune
         self._chains         = chains
@@ -145,6 +160,16 @@ class CLMMOrdinalEstimator(BaseEstimator):
         self._random_seed    = random_seed
         self._hdi_prob       = hdi_prob
         self._sampler_kwargs = sampler_kwargs
+
+        if pooling not in ("partial", "complete", "none"):
+            raise ValueError(
+                f"pooling must be 'partial', 'complete', or 'none' (got {pooling!r})"
+            )
+        if random_slope and pooling != "partial":
+            raise ValueError(
+                "random_slope=True requires pooling='partial' (got "
+                f"pooling={pooling!r}) — random slopes are a partial-pooling construct"
+            )
 
     # ------------------------------------------------------------------
     # BaseEstimator interface
@@ -234,10 +259,15 @@ class CLMMOrdinalEstimator(BaseEstimator):
         # threshold parameters as its intercept-equivalent; bambi also warns
         # when an explicit intercept is requested for ordinal families.
         fixed_terms = " + ".join([self._treatment_col] + present_covars)
-        if has_site:
-            formula = f"{self._outcome_col} ~ 0 + {fixed_terms} + (1 | {self._site_col})"
+        base = f"{self._outcome_col} ~ 0 + {fixed_terms}"
+        if not has_site or self._pooling == "complete":
+            formula = base                                          # complete pooling: no site term
+        elif self._pooling == "none":
+            formula = f"{base} + C({self._site_col})"               # no pooling: fixed site effects
+        elif self._random_slope:
+            formula = f"{base} + ({self._treatment_col} | {self._site_col})"  # partial: random intercept + slope
         else:
-            formula = f"{self._outcome_col} ~ 0 + {fixed_terms}"
+            formula = f"{base} + (1 | {self._site_col})"            # partial: random intercept
 
         # ---- fit -------------------------------------------------------
         try:
@@ -300,6 +330,30 @@ class CLMMOrdinalEstimator(BaseEstimator):
             r_hat = float("nan")
             n_eff = float(len(samples))
 
+        # ---- hierarchical variance (τ) posteriors -------------------
+        # Surface the population SD of the group-level effects: the site
+        # random-intercept SD (τ), and — under random_slope — the treatment
+        # slope SD (τ_A). A τ posterior concentrated near zero says the sites
+        # are similar (hierarchy collapsing toward complete pooling); a wide
+        # posterior says the data don't constrain how similar they are.
+        conv: dict = {"r_hat": r_hat, "n_eff": n_eff}
+        try:
+            conv["divergences"] = int(
+                np.asarray(idata.sample_stats["diverging"].values).sum()
+            )
+        except Exception:
+            pass
+        for var, key in (
+            (f"1|{self._site_col}_sigma", "site_sd"),
+            (f"{self._treatment_col}|{self._site_col}_sigma", "slope_sd"),
+        ):
+            if var in idata.posterior:
+                s = np.asarray(idata.posterior[var].values).reshape(-1)
+                if s.size and np.all(np.isfinite(s)):
+                    hdi = az.hdi(s, prob=self._hdi_prob)
+                    conv[f"{key}_mean"] = float(np.mean(s))
+                    conv[f"{key}_hdi"] = [float(hdi[0]), float(hdi[1])]
+
         return [
             EstimatorResult(
                 name=self.name,
@@ -309,6 +363,6 @@ class CLMMOrdinalEstimator(BaseEstimator):
                 ci_lower=ci_lower,
                 ci_upper=ci_upper,
                 ess=n_eff,
-                convergence_info={"r_hat": r_hat, "n_eff": n_eff},
+                convergence_info=conv,
             )
         ]
