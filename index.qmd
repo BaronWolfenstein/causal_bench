@@ -507,14 +507,16 @@ Everything needed to reproduce this document, in the reproducible-supplement sty
 Brauer & Day (Kruschke/Kurz): the provenance of every figure and number (@sec-provenance),
 the software environment and the pinned `concrete` commit (@sec-session), the deterministic
 RNG scheme (@sec-rng), a codebook for the simulated scenarios (@sec-scenario-codebook) and for
-the estimands and estimators (@sec-estimand-codebook), and the from-scratch build commands
-(@sec-reproduce).
+the estimands and estimators (@sec-estimand-codebook), the ordinal-PRO generative model
+(@sec-ordinal-dgp), and the from-scratch build commands (@sec-reproduce).
 
 ::: {.callout-note}
 ## Appendix scope
-This covers the concrete-independent scaffolding (items 1–5 of the appendix plan). The ordinal
-codebook (item 6) and the data-availability / DOI + license block (item 7) land with the
-ordinal-PRO benchmark (#28) and are gated on `blind-contours/concrete#36`.
+This covers the concrete-independent scaffolding (items 1–5) plus the **generative half of item
+6** — the ordinal-PRO DGP description (@sec-ordinal-dgp). The remainder of item 6 (the
+win-ratio-vs-CLMM results section and the posterior-predictive-check reproduction) and item 7
+(data availability / DOI + license) land with the ordinal-PRO benchmark (#28) and are gated on
+`blind-contours/concrete#36`.
 :::
 
 ### Provenance {#sec-provenance}
@@ -727,6 +729,127 @@ The cumulative-log-OR row is the ordinal-PRO benchmark's target: its estimator (
 CLMM, #27) and the head-to-head against the win ratio (exp25, #28) land with the benchmark,
 gated on `blind-contours/concrete#36`.
 :::
+
+### Ordinal-PRO data-generating process {#sec-ordinal-dgp}
+
+This is the concrete-independent half of appendix item 6 — the generative model behind the
+ordinal-PRO benchmark (#26, merged). The win-ratio-vs-CLMM results and the posterior-predictive
+checks that complete item 6 land with exp25 (#28), gated on `blind-contours/concrete#36`.
+
+#### Motivation and design
+
+The survival experiments (@sec-exp1, @sec-exp5, @sec-exp7) show estimators disagreeing under
+censoring and collider corruption of a *survival* outcome. The ordinal-PRO benchmark poses a
+different adversary on a *patient-reported* outcome: a parametric Bayesian CLMM (which targets
+the cumulative log-OR, @sec-estimand-codebook) versus the distribution-free win ratio (a
+generalized pairwise comparison). We simulate an ordinal PRO — e.g. NYHA I–IV or KCCQ tertiles —
+with a **known** treatment effect under *both* proportional-odds (PO) respecting and PO-violating
+mechanisms.
+
+The design invariant (epic #25): the DGP must generate under **both** mechanisms. Simulating only
+from the CLM's own generative assumptions would rig the benchmark for the CLMM. The on-thesis
+result to be demonstrated: the CLMM is **more efficient when PO holds** and **biased with collapsed
+coverage when it doesn't**, while the win ratio is **robust but less efficient** — the same "your
+estimator is probably wrong" lesson as the censoring and collider experiments, now on the
+distributional (not just mean) structure of the outcome.
+
+#### Mathematical summary of the data-generating process
+
+A thresholded-latent cumulative logistic model. For category $j = 1,\dots,K-1$:
+
+$$
+P(Y \le j \mid W, A, \text{site}) =
+\operatorname{logistic}\!\big(c_j + \delta_{\text{site},j} - f(W) - b_{\text{site}} - \tau_{\text{eff},j}\, A\big)
+$$
+
+where
+
+- $f(W) = 0.4 W_1 - 0.3 W_2 + 0.2 W_3 - 0.2 W_4$ — the prognostic signal, **shared with the
+  survival DGP** so covariate structure is comparable across benchmarks;
+- $c_1 < \dots < c_{K-1}$ — cutpoints (default: standard-logistic quantiles → balanced categories
+  under the null);
+- $b_{\text{site}} \sim N(0, \sigma^2_{\text{site}})$ — site random intercept, with
+  $\sigma^2_{\text{site}} = \text{ICC}\cdot\tfrac{\pi^2}{3}\big/(1-\text{ICC})$ on the logistic scale;
+- $\tau_{\text{eff},j} = \tau + \text{offset}_j$ — the per-threshold treatment effect;
+  $\delta_{\text{site},j}$ is an optional per-site cutpoint perturbation.
+
+**Proportional odds** holds $\iff$ every violation knob is off ($\text{offset}_j = 0$, no
+floor/ceiling, $\sigma_{\delta}=0$) $\Rightarrow \tau_{\text{eff},j} = \tau$ for all $j$
+$\Rightarrow$ a **single** cumulative log-OR at every threshold. Turning any knob up makes the
+per-threshold effects diverge.
+
+Two known estimands, each scored against **its own** target (as in @tbl-estimand-codebook):
+
+| Estimand | Function | Behaviour |
+|---|---|---|
+| Cumulative log-OR (CLM target) | `compute_true_cumulative_logOR` | constant across thresholds under PO; fans out under violation. Reported on the $P(Y\le j)$ convention, so positive $\tau$ → **negative** log-OR — the sign to reconcile with the CLMM (tracked in #28) |
+| Ordinal win ratio (GPC target) | `compute_true_ordinal_win_ratio` | $P(Y_1{>}Y_0)/P(Y_1{<}Y_0)$, mirroring the survival win ratio; summarizes stochastic ordering regardless of PO |
+
+**Key insight (both fitted models are simplifications).** The true per-threshold structure is
+richer than either estimator's estimand. Under PO-respecting truth the CLMM's single log-OR is
+correctly specified and efficient; under violation it is misspecified — one coefficient cannot
+represent effects that change sign across thresholds — while the ordinal win ratio degrades
+gracefully because it never assumed a constant log-OR to begin with.
+
+The ordinal DGP knobs (`OrdinalPROConfig`):
+
+| Parameter | Meaning | Range / default |
+|---|---|---|
+| `K` | ordinal categories (NYHA I–IV → 4; KCCQ tertiles → 3) | `[2, 10]`, default 4 |
+| `tau` | latent treatment effect (positive → higher/better categories) | default 0.5 |
+| `cutpoints` | $K-1$ thresholds $c_j$ | default: logistic quantiles (balanced) |
+| `tau_category_offsets` | per-threshold deviations from `tau` (**PO-violation**) | length $K-1$; default `()` = PO |
+| `site_threshold_sd` | per-site cutpoint spread $\sigma_\delta$ (**PO-violation**) | `≥0`, default 0 |
+| `floor_effect` / `ceiling_effect` | shrink $\tau_{\text{eff}}$ at the lowest / highest threshold (**PO-violation**) | `≥0`, default 0 |
+| `n_sites` / `site_icc` | site count / intraclass correlation (logistic scale) | `n_sites≥1`; ICC `[0, 1]` |
+| `treatment_prevalence` | marginal `P(A=1)` | `[0, 1]`, default 0.5 |
+| `marker_col` | ordinal marker column (consumable by `ConcretePROWinRatioEstimator`) | default `"ordinal_pro"` |
+| `seed` | RNG seed (`np.random.default_rng`) | default 42 |
+
+: Ordinal-PRO DGP parameter dictionary {#tbl-ordinal-params}
+
+#### Theoretical process — one simulated cohort
+
+Rather than only stating distributions, we generate cohorts under both mechanisms and read off the
+true estimands. @fig-ordinal-dgp contrasts a PO-respecting draw (flat true log-OR) against a
+PO-violating draw (log-OR that fans out and changes sign across thresholds) at fixed $\tau$.
+
+```{python}
+#| label: fig-ordinal-dgp
+#| fig-cap: "Ordinal-PRO DGP: category distribution by arm under PO-respecting vs PO-violating truth (K=4, τ=0.7, 8 sites, ICC 0.05). The PO-violating draw uses category offsets (+0.9, 0, −0.9) and a floor effect (0.5)."
+from causal_bench.dgp.ordinal_pro import (
+    OrdinalPROConfig, generate_data,
+    compute_true_cumulative_logOR, compute_true_ordinal_win_ratio,
+)
+
+po  = OrdinalPROConfig(n=800, K=4, tau=0.7, n_sites=8, site_icc=0.05, seed=42)
+vio = OrdinalPROConfig(n=800, K=4, tau=0.7, n_sites=8, site_icc=0.05,
+                       tau_category_offsets=(0.9, 0.0, -0.9), floor_effect=0.5, seed=42)
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 3.9), sharey=True)
+for ax, (title, cfg) in zip(axes, [("PO-respecting", po), ("PO-violating", vio)]):
+    d = generate_data(cfg)
+    K = cfg.K
+    for arm, color in [(1, "#E34A33"), (0, "#3182BD")]:
+        props = (d.loc[d["A"] == arm, "ordinal_pro"]
+                   .value_counts(normalize=True).reindex(range(1, K + 1), fill_value=0))
+        ax.bar(np.arange(1, K + 1) + (0.2 if arm else -0.2), props.values, width=0.4,
+               color=color, label="Treated" if arm else "Control")
+    lor = compute_true_cumulative_logOR(cfg, n_ref=60_000)["log_OR"]
+    wr  = compute_true_ordinal_win_ratio(cfg, n_ref=60_000)["ATE"]
+    ax.set_title(f"{title}\ntrue log-OR = {[round(v, 2) for v in lor]}\n"
+                 f"spread {max(lor) - min(lor):.2f} · win ratio {wr:.2f}")
+    ax.set_xlabel("ordinal category (higher = better)"); ax.set_xticks(range(1, K + 1))
+axes[0].set_ylabel("proportion"); axes[0].legend()
+fig.tight_layout()
+plt.show()
+```
+
+Under PO the three threshold log-ORs are ≈ equal (a single number the CLMM can capture); under
+violation they fan out — the signal the CLMM's one coefficient cannot represent, and the reason
+exp25 (#28) scores each estimator on its own estimand. That efficiency-vs-coverage sweep across the
+PO-violation knob, plus the posterior-predictive-check reproduction, complete item 6 once
+`concrete#36` unblocks the benchmark.
 
 ### Reproducing from scratch {#sec-reproduce}
 
