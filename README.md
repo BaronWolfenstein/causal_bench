@@ -2,11 +2,11 @@
 
 Monte Carlo benchmarking of causal estimators for clinical trials with survival outcomes.
 
-Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 11 experiments.
+Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 22 experiments.
 
 The core finding: the "right" estimator depends entirely on what's wrong with your data. This framework makes that concrete.
 
-Designed for biostatisticians working on device trials (ENCIRCLE-scale, n≈700) who need to decide between TMLE, IPCW, LTMLE, and McCoy's `concrete` package. Estimand coverage includes risk difference, RMST difference, and win ratio.
+Designed for biostatisticians working on device trials (ENCIRCLE-scale, n≈700) who need to decide between TMLE, IPCW, LTMLE, and McCoy's `concrete` package. Estimand coverage includes risk difference, RMST difference, win ratio, restricted mean time in favorable state (RMT-IF), priority-standardized net benefit, and — for ordinal patient-reported outcomes — the cumulative log-OR.
 
 ENCIRCLE's pre-specified primary estimand (Guerrero et al., *Lancet* 2025, SAP Section C) is a **non-hierarchical** KM composite event rate at 1 year tested against a 45% performance goal (one-sided Wald/Greenwood, α = 0.025) — not a hierarchical composite or hazard model. The synthetic control arm (SCA) augments this with an external TVT Registry comparator; the two estimands are reported side by side in `exp16_encircle_calibrated.py`.
 
@@ -17,6 +17,7 @@ ENCIRCLE's pre-specified primary estimand (Guerrero et al., *Lancet* 2025, SAP S
 ```bash
 git clone <repo> && cd causal_bench
 pip install -e ".[dev,storage]"        # storage adds pyarrow for result persistence
+pip install -e ".[bayes]"              # bambi/PyMC for the ordinal CLMM estimator (optional)
 
 # Single scenario, 100 sims, MVP estimators
 python -m causal_bench --scenario edwards_realistic --n-sims 100
@@ -39,7 +40,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 ---
 
-## Estimators (18)
+## Estimators (27)
 
 ### Risk difference estimators (Python)
 
@@ -55,6 +56,9 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `tmle_ipcw` | TMLE + IPCW | ✓ | ✓ | One-step Newton targeting, cross-fitted IC |
 | `tmle_ipcw_comply` | TMLE + IPCW + compliance | ✓ | ✓ | Compliance score in censoring model |
 | `ltmle` | Longitudinal TMLE | ✓ | ✓ | Sequential regression over L1; no collider bias |
+| `tmle_ipcw_cv` | CV-TMLE (cross-fitted) | ✓ | ✓ | Cross-fitted censoring model → calibrated SE at finite n |
+| `tmle_ipcw_cv_comply` | CV-TMLE + compliance | ✓ | ✓ | Cross-fitted, with compliance score in the censoring model |
+| `tmle_ipcw_boot` | TMLE + IPCW (bootstrap SE) | ✓ | ✓ | Nonparametric bootstrap SE instead of the IC-based SE |
 
 ### RMST estimators (R bridge — requires `concrete`)
 
@@ -63,6 +67,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `concrete_RMST` | Direct RMST targeting | McCoy (2026); iid SE |
 | `concrete_RMST_strata` | Direct RMST + BCS SE correction | Bugni-Canay-Shaikh / Ye-Shao correction for stratified randomization (concrete PR #29) |
 | `rmst_k2 / k5 / k10 / k20` | Pointwise-then-integrate RMST | Bias O(1/K); K=20 near-exact |
+| `concrete_simult` | Multi-horizon RMST, simultaneous bands | Joint TMLE across horizons (e.g. t=1,2) with simultaneous confidence bands |
 
 ### Win ratio estimators (R bridge — requires `concrete`)
 
@@ -73,9 +78,29 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 **True win ratio benchmark:** `compute_true_win_ratio(config)` computes P(T₁>T₀)/P(T₁<T₀) via U-statistic on 50k potential-outcome pairs using `np.searchsorted` (O(n log n)).
 
+### Clinical composite estimators (R bridge — requires `concrete`)
+
+| Key | Method | Notes |
+|-----|--------|-------|
+| `clinical_RMTIF` | Restricted mean time in favorable state | `clinicalRMTIF()` multistate engine (concrete PR #33) |
+| `clinical_PSNB` | Priority-standardized net benefit | `clinicalPSNB()` priority-ranked win-ratio variant (concrete PR #34) |
+
+### HTE / subgroup estimators (CATE)
+
+| Key | Method | Notes |
+|-----|--------|-------|
+| `effectxshift` | Post-selection HTE subgroups | McCoy's EffectXShift R package; CV-TMLE subgroup effects |
+| `bcf_bart` | BCF/BART CATE | Bayesian Causal Forest + rpart summary tree (Hahn et al. 2020) |
+
+### Ordinal PRO estimator (Bayesian, Python)
+
+| Key | Method | Notes |
+|-----|--------|-------|
+| `clmm_ordinal` | Bayesian cumulative-link mixed model | bambi/PyMC; partial pooling over sites; posterior credible intervals. Needs `pip install -e ".[bayes]"`. Assumption-adversary to the PRO win ratio — the head-to-head benchmark (exp25) is gated on `concrete#36` |
+
 ---
 
-## Experiments (11)
+## Experiments (22)
 
 | Script | Swept parameter | Key story | Estimators |
 |--------|-----------------|-----------|------------|
@@ -90,6 +115,24 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp9_sample_size.py` | `n` 100→2000 | Where TMLE asymptotics hold for ENCIRCLE (n=700) | MVP |
 | `exp10_win_ratio.py` | — | Direct TMLE cuts WR bias ~5× vs plug-in | concrete_WR_direct, concrete_WR_plugin |
 | `exp11_strata.py` | — | BCS SE correction narrows CIs under stratified RCT | concrete_RMST, concrete_RMST_strata, tmle_ipcw |
+
+**Extended experiments (design & operating-characteristics studies):**
+
+| Script | Focus |
+|--------|-------|
+| `exp12_simultaneous.py` | Simultaneous coverage across a multi-estimand family |
+| `exp13_censoring_sweep.py` | Censoring mechanism sweep (MAR / MNAR / informative) |
+| `exp14_synthetic_augmentation.py` | Provenance-linked synthetic augmentation — cross-fitting independence |
+| `exp15_sequential_monitoring.py` | Sequential CED monitoring — anytime-valid vs alpha-spending vs naive |
+| `exp16_encircle_calibrated.py` | ENCIRCLE-calibrated replication — 14 estimators vs published marginals |
+| `exp17_transport.py` | Transport decomposition — trial-to-commercial generalizability |
+| `exp18_hawthorne.py` | Hawthorne decomposition — durable vs transient monitoring artifact |
+| `exp19_hierarchical_oc.py` | Hierarchical borrowing operating characteristics |
+| `exp20_tipping_point_borrowing.py` | Tipping-point sweep × borrowing strength |
+| `exp21_hte_subgroup.py` | HTE subgroup benchmark — EffectXShift CV-TMLE vs BCF/BART posterior tree |
+| `exp24_site_clustering.py` | Site clustering in registry comparator — undercoverage demonstration |
+
+exp25 — the win-ratio-vs-CLMM ordinal-PRO benchmark — is planned and gated on `concrete#36`.
 
 ---
 
@@ -151,6 +194,19 @@ Competing risks (when enabled):
 ```
 
 True ATE/ATT: G-computation on n=50,000 with shared Gumbel noise. True RMST: same population, trapezoidal integration. True win ratio: U-statistic on 50k potential-outcome pairs via `np.searchsorted`.
+
+### Ordinal PRO DGP (`dgp/ordinal_pro.py`)
+
+A separate thresholded-latent cumulative-logistic model for an ordinal patient-reported outcome (NYHA I–IV, KCCQ tertiles), used by the ordinal-PRO benchmark (issue #26):
+
+```
+P(Y<=j | W,A,site) = logistic(c_j + δ_site,j − f(W) − b_site − τ_eff,j·A),   j = 1..K-1
+  f(W)      = 0.4W1 − 0.3W2 + 0.2W3 − 0.2W4     (shared with the survival DGP)
+  b_site    ~ N(0, σ²_site)                      site random intercept (ICC-parameterized)
+  τ_eff,j   = τ + offset_j                       proportional odds ⟺ offsets/floor/ceiling = 0
+```
+
+Both PO-respecting and PO-violating modes are supported so a Bayesian CLMM (targets the cumulative log-OR) and a GPC win ratio (targets the ordinal win ratio) can each be scored against known truth via `compute_true_cumulative_logOR` and `compute_true_ordinal_win_ratio`. Emits an `ordinal_pro` marker column consumable by `ConcretePROWinRatioEstimator`. Full writeup in the `index.qmd` Replication Data appendix.
 
 ---
 
