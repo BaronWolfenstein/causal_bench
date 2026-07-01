@@ -49,6 +49,32 @@ class RegistrySummary:
 _MAP_EXACT_THRESHOLD = 0.95  # map_weight above this → conjugate_exact regime
 
 
+# ─── Cloglog borrowing scale (issue #43) ────────────────────────────────────
+
+def to_cloglog(rate: float, se_rate: float) -> tuple[float, float]:
+    """Map a cumulative incidence and its rate-scale SE to the cloglog scale.
+
+    The KM 1-yr composite is a cumulative incidence F ∈ [0,1], not naturally
+    Normal. Borrowing is performed on θ = cloglog(F) = log(-log(1-F)), the
+    survival-standard variance-stabilizing link. The SE is propagated by the
+    delta method: SE_θ = SE_F · |dθ/dF|, with dθ/dF = 1 / [(1-F)·(-log(1-F))].
+
+    Returns (theta, se_theta) — the cloglog point estimate and its SE, the `s`
+    fed to size_calibrated_z on the borrowing scale.
+    """
+    log_surv = np.log(1.0 - rate)  # log(1-F) < 0 for F ∈ (0,1)
+    theta = np.log(-log_surv)
+    dtheta_drate = 1.0 / ((1.0 - rate) * (-log_surv))
+    return float(theta), float(se_rate * dtheta_drate)
+
+
+def from_cloglog(theta: float) -> float:
+    """Inverse cloglog: F = 1 - exp(-exp(θ)). Maps a pooled cloglog-scale
+    estimate (or CI bound) back to the native cumulative-incidence rate scale
+    for the decision vs the 45% performance goal."""
+    return float(1.0 - np.exp(-np.exp(theta)))
+
+
 # ─── Size-calibrated decision cutoff ─────────────────────────────────────────
 
 def size_calibrated_z(
