@@ -16,6 +16,7 @@ from causal_bench.estimators.concrete_clinical_rmtif import ClinicalRMTIFEstimat
 from causal_bench.estimators.concrete_psnb import ClinicalPSNBEstimator
 from causal_bench.estimators.effectxshift import EffectXShiftEstimator
 from causal_bench.estimators.bcf_bart import BCFBARTEstimator
+from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
 
 ESTIMATOR_REGISTRY: dict = {
     "naive":              NaiveEstimator(),
@@ -44,6 +45,7 @@ ESTIMATOR_REGISTRY: dict = {
     "clinical_PSNB":      ClinicalPSNBEstimator(),
     "effectxshift":       EffectXShiftEstimator(),
     "bcf_bart":           BCFBARTEstimator(),
+    "clmm_ordinal":       CLMMOrdinalEstimator(),
 }
 
 MVP_ESTIMATORS = ["naive", "km", "cox", "tmle_ipcw", "tmle_ipcw_comply"]
