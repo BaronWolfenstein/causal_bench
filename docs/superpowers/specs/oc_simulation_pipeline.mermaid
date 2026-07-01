@@ -1,0 +1,95 @@
+%% OC Simulation Pipeline — ENCIRCLE SCA borrowing layer
+%% Corresponds to 2026-07-01-three-level-borrowing-design.md §6 (tipping-point/sensitivity) and §7 (OC + two-vs-three-level fidelity)
+flowchart TD
+
+    %% ---- Scenario generation ----
+    subgraph GEN["Scenario generation"]
+        direction TB
+        DGP["DGP: simulate trials\n(null + alternative scenarios)\ncalibrated to ENCIRCLE\n(N=299, PG=45%, true-rate 35%, 10% attrition)"]
+        GRID["Scenario grid\nτ (borrowing strength) × conflict\n× w (mixture weight) × censoring severity"]
+        DGP --> GRID
+    end
+
+    %% ---- Inner analysis: the fork ----
+    GRID --> FORK{"Inner-loop model"}
+
+    subgraph FAST["Default path — conjugate analytical (fast, full grid)"]
+        direction TB
+        CONJ["Two-level Normal-Normal robust-MAP\nclosed-form posterior\n(no MCMC; runs in seconds over 15k+ cells)"]
+        CONJDEC["Decision: KM 1-yr composite rate\nvs 45% PG, size-calibrated cutoff c*\n(c* = Φ(b+k·z), k=r/√(1+r²), r=τ/s\n— NOT fixed 1.96 under informative prior)"]
+        CONJ --> CONJDEC
+    end
+
+    subgraph FID["Fidelity path — 3-level MCMC (subsample only)"]
+        direction TB
+        MCMC["Full three-level BHM\n(hyperprior on τ, non-conjugate)\nMCMC: NumPyro/JAX, GPU-parallel on A100s\nsubsample of replicates (200–500)"]
+        TAILGATE{"Convergence gate\nR-hat, bulk-ESS, tail-ESS\ntail-ESS ≥ threshold?"}
+        TAILFLAG["Flag & rerun/resample fit\n(Type I error is a tail event on a\nrare-subpop estimand — do NOT\nsilently average low-tail-ESS fits)"]
+        MCMC --> TAILGATE
+        TAILGATE -->|"fail"| TAILFLAG
+        TAILFLAG -.-> MCMC
+    end
+
+    FORK -->|"full grid (default)"| CONJ
+    FORK -->|"subsample (fidelity check)"| MCMC
+
+    %% ---- Fidelity comparison ----
+    CONJDEC --> FIDCMP["Two-vs-three-level fidelity\ncompare OC on SHARED replicates:\nΔType-I, Δpower, Δcoverage, Δreversals\n(replaces leaning on mixture-linearization\ndeviation; deviation retained as\ncomplementary analytical bound)"]
+    TAILGATE -->|"pass"| FIDCMP
+
+    %% ---- Tipping-point / sensitivity family (spec §6) ----
+    subgraph TIP["Tipping-point / sensitivity family (§6)"]
+        direction TB
+        T1["Borrowing-strength τ tipping point\n(2D τ×conflict surface — exp20)"]
+        T2["Mixture-weight w tipping point\n(regular w-grid per cell, min-flip-w\nBrensocatib-style — refinement)"]
+        T3["Worst-case event-imputation\ntipping point (ENCIRCLE Fig S4:\nj=0…k censored → event, j*/k — exp13)"]
+        T4["Confounding tipping point (exp3)\n+ positivity (exp2)"]
+    end
+    CONJDEC --> TIP
+
+    %% ---- Conflict diagnostics (spec §8) ----
+    subgraph CONF["Prior–data conflict diagnostics (§8)"]
+        direction TB
+        IF["Influence factor (named)\nlog IF = log Pr_M(A|y) − log Pr_V(A|y)\nat decision threshold"]
+        REV["Reversal probability surface\n(decision reverses vs vague-only)"]
+        DEV["approximation_deviation\n(Hansen-Tong, retained)"]
+    end
+    CONJDEC --> CONF
+
+    %% ---- Measurement-error sensitivity (spec §9, consumer slice) ----
+    SIGEPS_IN["Σ_ε (supplied: encoder-side MC-dropout\nor synthetic) — consumed here"]
+    MESENS["Measurement-error sensitivity\nSIMEX / error-in-variables\nestimand + CI with/without Σ_ε\n(consumes Σ_ε; does NOT change primary estimand)"]
+    SIGEPS_IN -.-> MESENS
+    CONJDEC --> MESENS
+
+    %% ---- Outputs ----
+    FIDCMP --> OUT["OC report (frequentist translation)\nType I, power, coverage\n+ Type-M/Type-S (Gelman-Carlin), MDE\n+ prior-ESS (Morita-Thall-Müller) at τ median\n+ tipping-point surfaces + IF/reversal profiles"]
+    TIP --> OUT
+    CONF --> OUT
+    MESENS --> OUT
+
+    %% ---- ESS disambiguation note ----
+    ESSNOTE["ESS ≠ ESS ≠ ESS (3 objects, same name):\n• prior-ESS (Morita-Thall-Müller) — borrowing, analytical\n• particle-ESS (Kish) — SMC layer\n• MCMC bulk/tail-ESS — 3-level fidelity fits ONLY\nbulk/tail applies ONLY to the MCMC path here"]
+    TAILGATE -.-> ESSNOTE
+
+    %% ---- Styling ----
+    classDef gen fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef fast fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef fid fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef tip fill:#f3e8ff,stroke:#9333ea,color:#4c1d95
+    classDef conf fill:#ffe4e6,stroke:#e11d48,color:#881337
+    classDef mesens fill:#fef2f2,stroke:#b91c1c,color:#7f1d1d,stroke-dasharray: 3 2
+    classDef out fill:#f0f9ff,stroke:#0284c7,color:#082f49
+    classDef note fill:#f8fafc,stroke:#64748b,color:#0f172a,stroke-dasharray: 2 2
+    classDef gate fill:#fff7ed,stroke:#ea580c,color:#7c2d12,stroke-width:2px
+
+    class DGP,GRID gen
+    class CONJ,CONJDEC fast
+    class MCMC,TAILFLAG fid
+    class FORK,TAILGATE gate
+    class T1,T2,T3,T4 tip
+    class IF,REV,DEV conf
+    class MESENS,SIGEPS_IN mesens
+    class FIDCMP fast
+    class OUT out
+    class ESSNOTE note
