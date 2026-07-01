@@ -32,6 +32,25 @@ The φ proxy diagnostic (cross-validated embedding-predicts-effect concordance)
 should be estimated from the main cohort before relying on patient-level
 borrowing for anything regulatory. See hierarchical.py for ESS collapse as
 the runtime conflict diagnostic.
+
+Note — model fidelity and MCMC/tail-ESS (verified 2026-07-01):
+  This OC study's inner loop is ANALYTICAL — the two-level Normal-Normal robust-MAP
+  kernel (summarise_registry → robust_map_posterior) has a closed-form posterior, so
+  each of the thousands of inner analyses is matrix ops, not MCMC. There are no chains,
+  hence no bulk/tail-ESS convergence diagnostics apply here. The "ESS" this study reports
+  is the *prior* effective sample size (Morita-Thall-Müller), a borrowing quantity, not
+  an MCMC quantity. Parallelism is across replicates/scenario cells, not chains.
+
+  This holds ONLY for the collapsed two-level kernel. A full THREE-level BHM with a
+  hyperprior on the between-group variance τ is generally NON-conjugate → each inner fit
+  would need MCMC → bulk-ESS and especially TAIL-ESS become live per-fit diagnostics
+  (Type I error is a tail event on a rare-subpopulation estimand, so tail quantiles, not
+  central ones, are what must be well-sampled). If this OC is ever moved to a three-level
+  MCMC model, add tail-ESS to the OC spec AND a two-vs-three-level fidelity check
+  (compare OC of the closed-form approximation vs the MCMC model on a subsample).
+  Caveat: hierarchical.py's _conjugacy_diagnostic (Hansen & Tong 2026, issue #16) measures
+  the robust *mixture's* linearization — NOT the two-level-vs-three-level gap; that gap is
+  a separate, currently-unbuilt diagnostic.
 """
 from __future__ import annotations
 
