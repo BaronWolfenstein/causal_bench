@@ -322,13 +322,19 @@ class CLMMOrdinalEstimator(BaseEstimator):
         ci_upper = max(ci_upper, point_est)
 
         # ---- convergence diagnostics --------------------------------
+        # Report both bulk-ESS (central quantities) and tail-ESS. The credible-interval
+        # endpoints are *tail* quantiles, so tail-ESS is the relevant reliability check
+        # for the reported CI — bulk-ESS can look fine while the tails are under-sampled.
+        # Vehtari et al. (2021), rank-normalized ESS.
         try:
             summary = az.summary(idata, var_names=[self._treatment_col], round_to=4)
             r_hat = float(summary["r_hat"].iloc[0]) if "r_hat" in summary.columns else float("nan")
             n_eff = float(summary["ess_bulk"].iloc[0]) if "ess_bulk" in summary.columns else float(len(samples))
+            ess_tail = float(summary["ess_tail"].iloc[0]) if "ess_tail" in summary.columns else float("nan")
         except Exception:
             r_hat = float("nan")
             n_eff = float(len(samples))
+            ess_tail = float("nan")
 
         # ---- hierarchical variance (τ) posteriors -------------------
         # Surface the population SD of the group-level effects: the site
@@ -336,7 +342,7 @@ class CLMMOrdinalEstimator(BaseEstimator):
         # slope SD (τ_A). A τ posterior concentrated near zero says the sites
         # are similar (hierarchy collapsing toward complete pooling); a wide
         # posterior says the data don't constrain how similar they are.
-        conv: dict = {"r_hat": r_hat, "n_eff": n_eff}
+        conv: dict = {"r_hat": r_hat, "n_eff": n_eff, "ess_bulk": n_eff, "ess_tail": ess_tail}
         try:
             conv["divergences"] = int(
                 np.asarray(idata.sample_stats["diverging"].values).sum()

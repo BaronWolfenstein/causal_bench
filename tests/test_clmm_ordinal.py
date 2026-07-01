@@ -324,6 +324,16 @@ class TestCLMMPoolingAndRandomSlope:
         assert "site_sd_mean" not in r.convergence_info
 
     @requires_bambi
+    def test_surfaces_bulk_and_tail_ess(self):
+        """convergence_info reports both bulk-ESS and tail-ESS (CI endpoints are tail
+        quantiles, so tail-ESS is the reliability check for the reported interval)."""
+        from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
+        df = _make_ordinal_df(n=300, n_sites=6, seed=8)
+        ci = CLMMOrdinalEstimator(**self._MCMC_KWARGS).estimate(df)[0].convergence_info
+        assert "ess_bulk" in ci and ci["ess_bulk"] > 0
+        assert "ess_tail" in ci and ci["ess_tail"] > 0
+
+    @requires_bambi
     def test_random_slope_surfaces_slope_sd(self):
         """(A | site) surfaces both the intercept SD (τ) and the slope SD (τ_A)."""
         from causal_bench.estimators.clmm_ordinal import CLMMOrdinalEstimator
