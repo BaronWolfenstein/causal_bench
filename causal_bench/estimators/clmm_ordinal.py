@@ -283,7 +283,7 @@ class CLMMOrdinalEstimator(BaseEstimator):
         post_sd    = max(post_sd, 1e-8)          # safety floor; never triggers in practice
 
         # 95% HDI as the credible interval
-        hdi_arr = az.hdi(samples, hdi_prob=self._hdi_prob)
+        hdi_arr = az.hdi(samples, prob=self._hdi_prob)
         ci_lower = float(hdi_arr[0])
         ci_upper = float(hdi_arr[1])
 
