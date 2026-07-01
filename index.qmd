@@ -506,14 +506,15 @@ The dashed contour is the tipping point — the boundary where the 95% CI crosse
 Everything needed to reproduce this document, in the reproducible-supplement style of
 Brauer & Day (Kruschke/Kurz): the provenance of every figure and number (@sec-provenance),
 the software environment and the pinned `concrete` commit (@sec-session), the deterministic
-RNG scheme (@sec-rng), a codebook for the simulated scenarios (@sec-scenario-codebook), and
-the from-scratch build commands (@sec-reproduce).
+RNG scheme (@sec-rng), a codebook for the simulated scenarios (@sec-scenario-codebook) and for
+the estimands and estimators (@sec-estimand-codebook), and the from-scratch build commands
+(@sec-reproduce).
 
 ::: {.callout-note}
 ## Appendix scope
-This covers the concrete-independent scaffolding (items 1–4 of the appendix plan). The
-estimand/estimator codebook, the ordinal codebook, and the data-availability / DOI + license
-block land with the ordinal-PRO benchmark (#28) and are gated on `blind-contours/concrete#36`.
+This covers the concrete-independent scaffolding (items 1–5 of the appendix plan). The ordinal
+codebook (item 6) and the data-availability / DOI + license block (item 7) land with the
+ordinal-PRO benchmark (#28) and are gated on `blind-contours/concrete#36`.
 :::
 
 ### Provenance {#sec-provenance}
@@ -699,6 +700,33 @@ The DGP knobs referenced above:
 | `seed` | RNG seed (see @sec-rng) | default 42 |
 
 : DGP parameter dictionary {#tbl-dgp-params}
+
+### Estimand and estimator codebook {#sec-estimand-codebook}
+
+@tbl-estimators lists the estimators as an adjustment hierarchy; this codebook is
+estimand-first — each target parameter, its definition, and the registry estimators that
+target it. Estimators score against *their own* estimand (an RMST estimator is not judged on a
+risk-difference target). `concrete_*` and `clinical_*` estimators require R with the `concrete`
+package (@sec-reproduce); the rest are pure Python.
+
+| Estimand | Definition | Registry estimator(s) | Backend |
+|---|---|---|---|
+| Risk difference at horizon $\tau$ | $P(T\le\tau\mid A{=}1) - P(T\le\tau\mid A{=}0)$ | `naive`, `km`, `cox`, `cox_l1`, `ipw`, `aipw`, `tmle_ipcw`(+`_cv`/`_boot`/`_comply`), `ltmle` | Python |
+| RMST difference | $E[\min(T,\tau)\mid A{=}1] - E[\min(T,\tau)\mid A{=}0]$ | `rmst_k{2,5,10,20}` (pointwise, $O(1/K)$ bias), `concrete_RMST`(`_strata`) (direct targeting), `concrete_simult` (joint $t{=}1,2$) | Python; `concrete_*` need R |
+| Overlap-weighted ATE (ATO) | risk difference on the overlap population (weights $A(1{-}e)+(1{-}A)e$) | `overlap` | Python |
+| Win ratio (GPC) | favorable : unfavorable pairwise-comparison ratio over the ordered composite (death > HF hospitalization > PRO); win-ratio ATE/ATT | `concrete_WR_direct`, `concrete_WR_plugin` | R + `concrete` |
+| Restricted mean time in favorable state (RMT-IF) | expected time spent in the favorable multistate stratum up to $\tau$ | `clinical_RMTIF` | R + `concrete` |
+| Priority-standardized net benefit (PSNB) | priority-ranked net-benefit / win-ratio variant | `clinical_PSNB` | R + `concrete` |
+| CATE / subgroup effect | conditional risk difference within a subgroup | `effectxshift`, `bcf_bart` | Python |
+| Cumulative log-OR (ordinal) | $\log\text{OR}$ for the $P(Y\ge k)$ contrast, constant across $k$ under proportional odds | Bayesian CLMM (#27) | Python (bambi/PyMC) |
+
+: Estimand codebook — target parameter → definition → estimator {#tbl-estimand-codebook}
+
+::: {.callout-note}
+The cumulative-log-OR row is the ordinal-PRO benchmark's target: its estimator (the Bayesian
+CLMM, #27) and the head-to-head against the win ratio (exp25, #28) land with the benchmark,
+gated on `blind-contours/concrete#36`.
+:::
 
 ### Reproducing from scratch {#sec-reproduce}
 
