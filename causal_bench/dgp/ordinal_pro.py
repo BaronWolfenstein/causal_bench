@@ -338,7 +338,9 @@ def compute_true_cumulative_logOR(
     Returns
     -------
     dict with keys:
-        "log_OR"        — list of K-1 marginal cumulative log-ORs (one per threshold)
+        "log_OR"        — list of K-1 marginal cumulative log-ORs (one per threshold),
+                          on the cumulative-link coefficient convention (positive tau →
+                          positive log-OR; matches brms/polr/clm and the CLMM estimator)
         "is_PO"         — True if max |log_OR[j] − log_OR[0]| < 0.05 (heuristic)
         "structural_tau_eff" — list of K-1 structural tau_eff values (DGP parameters)
     """
@@ -359,7 +361,12 @@ def compute_true_cumulative_logOR(
         # Guard against boundary probs
         p1 = np.clip(p1, 1e-6, 1 - 1e-6)
         p0 = np.clip(p0, 1e-6, 1 - 1e-6)
-        log_or = np.log(p1 / (1 - p1)) - np.log(p0 / (1 - p0))
+        # Report on the cumulative-link *coefficient* convention (brms / MASS::polr /
+        # ordinal::clm): positive tau → positive log-OR (treatment shifts toward higher
+        # categories). This is the log-OR for {Y >= k}, i.e. the negative of the raw
+        # {Y <= j} log-OR, so DGP truth agrees natively with the CLMM estimator and no
+        # sign flip is needed downstream (resolves the #28 sign-reconciliation issue).
+        log_or = np.log(p0 / (1 - p0)) - np.log(p1 / (1 - p1))
         log_ors.append(float(log_or))
 
     tau_eff = _effective_tau(config).tolist()

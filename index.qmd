@@ -782,7 +782,7 @@ Two known estimands, each scored against **its own** target (as in @tbl-estimand
 
 | Estimand | Function | Behaviour |
 |---|---|---|
-| Cumulative log-OR (CLM target) | `compute_true_cumulative_logOR` | constant across thresholds under PO; fans out under violation. Reported on the $P(Y\le j)$ convention, so positive $\tau$ → **negative** log-OR — the sign to reconcile with the CLMM (tracked in #28) |
+| Cumulative log-OR (CLM target) | `compute_true_cumulative_logOR` | constant across thresholds under PO; fans out under violation. Reported on the cumulative-link **coefficient** convention (brms/`polr`/`clm`), so positive $\tau$ → positive log-OR — agrees natively with the CLMM (the #28 sign issue is resolved at source) |
 | Ordinal win ratio (GPC target) | `compute_true_ordinal_win_ratio` | $P(Y_1{>}Y_0)/P(Y_1{<}Y_0)$, mirroring the survival win ratio; summarizes stochastic ordering regardless of PO |
 
 **Key insight (both fitted models are simplifications).** The true per-threshold structure is

@@ -28,11 +28,10 @@ Design (issue #28):
 ╚══════════════════════════════════════════════════════════════════════════════════════╝
 
 OPEN DESIGN QUESTIONS to resolve when #36 lands (do NOT silently paper over):
-  1. SIGN RECONCILIATION (#28): the DGP reports cumulative log-OR on the P(Y<=j)
-     convention (positive tau -> NEGATIVE log-OR); the CLMM reports on the latent /
-     P(Y>=k) convention (positive tau -> POSITIVE). `_CLMM_SIGN` below negates the DGP
-     truth to match the estimator. VERIFY this against a PO-respecting run before trusting
-     any coverage number.
+  1. SIGN RECONCILIATION (#28): RESOLVED. compute_true_cumulative_logOR now reports on the
+     cumulative-link coefficient convention (positive tau -> POSITIVE log-OR), matching the
+     CLMM / brms, so DGP truth and estimator agree natively (no sign flip). Still worth a
+     PO-respecting sanity run when #36 lands: reconciled truth ~ +tau vs CLMM estimate.
   2. TRUE CLMM TARGET UNDER VIOLATION: under PO violation there is no single cumulative
      log-OR. We use the mean of the per-threshold true log-ORs as the marginal target;
      confirm this is the estimand the CLMM's single coefficient actually converges to
@@ -65,8 +64,9 @@ from causal_bench.metrics import SimResult
 OUT_DIR = Path("results/exp25_ordinal_pro")
 N_REPS = 200
 
-# See OPEN DESIGN QUESTION #1: negate DGP (P(Y<=j)) truth to the CLMM (P(Y>=k)) convention.
-_CLMM_SIGN = -1.0
+# Sign convention: RESOLVED (#28). compute_true_cumulative_logOR now reports on the
+# cumulative-link coefficient convention (positive tau -> positive log-OR), matching the
+# CLMM / brms natively, so no sign flip is needed when scoring the CLMM against truth.
 
 # Primary sweep — the PO-violation knob (per-threshold offsets, symmetric fan-out).
 # strength 0.0 == PO-respecting; larger == stronger violation.
@@ -102,7 +102,7 @@ def _true_targets(cfg: OrdinalPROConfig) -> dict[str, float]:
     wr = compute_true_ordinal_win_ratio(cfg, n_ref=100_000)["ATE"]
     return {
         # OPEN QUESTION #2: marginal cumulative log-OR = mean of per-threshold log-ORs.
-        "cumulative_log_OR": _CLMM_SIGN * float(np.mean(lor)),
+        "cumulative_log_OR": float(np.mean(lor)),
         "WR": float(wr),
     }
 
