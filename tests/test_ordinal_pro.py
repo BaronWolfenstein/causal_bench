@@ -282,13 +282,7 @@ class TestPOViolation:
 
     def test_floor_effect_reduces_logOR_magnitude_at_boundary1(self):
         """floor_effect should weaken (shrink the magnitude of) the cumulative log-OR
-        at threshold 1.
-
-        Convention: with tau > 0 (treatment beneficial), log-OR < 0.  "Reducing benefit"
-        means |log-OR| decreases, i.e., log-OR becomes LESS negative (closer to 0,
-        numerically larger).  Use a moderate floor_effect so we don't overshoot to
-        positive — floor_effect=0.4 with tau=0.8 gives tau_eff[0]=0.4 (still positive,
-        just weaker).
+        at threshold 1. Magnitude comparison is sign-convention-independent.
         """
         cfg_base  = OrdinalPROConfig(n=2000, K=4, tau=0.8, seed=42)
         cfg_floor = OrdinalPROConfig(n=2000, K=4, tau=0.8, floor_effect=0.5, seed=42)
@@ -296,24 +290,23 @@ class TestPOViolation:
         res_base  = compute_true_cumulative_logOR(cfg_base,  n_ref=60_000)
         res_floor = compute_true_cumulative_logOR(cfg_floor, n_ref=60_000)
 
-        # Floor effect reduces tau_eff[0] → |log-OR[0]| shrinks → log-OR[0] is less negative
-        # i.e., numerically LARGER (closer to 0) than the base.
-        assert res_floor["log_OR"][0] > res_base["log_OR"][0], (
-            f"floor_effect should weaken treatment at threshold 1 (log-OR less negative): "
+        # Floor effect reduces tau_eff[0] → |log-OR[0]| shrinks toward 0.
+        assert abs(res_floor["log_OR"][0]) < abs(res_base["log_OR"][0]), (
+            f"floor_effect should shrink |log-OR| at threshold 1: "
             f"base={res_base['log_OR'][0]:.3f}, floor={res_floor['log_OR'][0]:.3f}"
         )
 
     def test_ceiling_effect_reduces_logOR_magnitude_at_top_boundary(self):
-        """ceiling_effect should weaken the cumulative log-OR at the top threshold
-        (makes it less negative when tau > 0)."""
+        """ceiling_effect should shrink the magnitude of the cumulative log-OR at the
+        top threshold. Magnitude comparison is sign-convention-independent."""
         cfg_base = OrdinalPROConfig(n=2000, K=4, tau=0.8, seed=42)
         cfg_ceil = OrdinalPROConfig(n=2000, K=4, tau=0.8, ceiling_effect=0.5, seed=42)
 
         res_base = compute_true_cumulative_logOR(cfg_base, n_ref=60_000)
         res_ceil = compute_true_cumulative_logOR(cfg_ceil, n_ref=60_000)
 
-        assert res_ceil["log_OR"][-1] > res_base["log_OR"][-1], (
-            f"ceiling_effect should weaken treatment at top threshold (log-OR less negative): "
+        assert abs(res_ceil["log_OR"][-1]) < abs(res_base["log_OR"][-1]), (
+            f"ceiling_effect should shrink |log-OR| at top threshold: "
             f"base={res_base['log_OR'][-1]:.3f}, ceil={res_ceil['log_OR'][-1]:.3f}"
         )
 
@@ -350,18 +343,16 @@ class TestEstimandRecovery:
 
     def test_cumulative_logOR_sign_positive_tau(self):
         """With tau > 0 (treatment shifts toward higher categories), all log-ORs
-        should be negative (P(Y<=j | A=1) < P(Y<=j | A=0)) under the CLM convention
-        where positive latent shift → higher categories are MORE likely under treatment.
-
-        Note: P(Y<=j | W,A) = logistic(c_j - f_W - b_site - tau*A)
-        Higher A (treated) → subtract more → lower P(Y<=j) → log-OR < 0.
+        should be POSITIVE on the cumulative-link coefficient convention (brms/polr/clm):
+        a positive coefficient means treatment makes higher categories more likely.
+        This matches the CLMM estimator natively (resolves the #28 sign issue).
         """
         cfg = OrdinalPROConfig(n=1000, K=4, tau=0.8, seed=42)
         result = compute_true_cumulative_logOR(cfg, n_ref=100_000)
         for j, lor in enumerate(result["log_OR"]):
-            assert lor < 0, (
-                f"tau=0.8 should give negative cumulative log-OR (treated have lower P(Y<=j)); "
-                f"got log_OR[{j}]={lor:.3f}"
+            assert lor > 0, (
+                f"tau=0.8 should give positive cumulative log-OR on the coefficient "
+                f"convention; got log_OR[{j}]={lor:.3f}"
             )
 
     def test_cumulative_logOR_tau_zero_near_zero(self):
