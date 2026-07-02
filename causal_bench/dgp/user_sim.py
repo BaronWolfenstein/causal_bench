@@ -29,6 +29,7 @@ class UserSimConfig(BaseModel):
     shock_delta: float = 0.0                          # δ — shock magnitude (swept)
     emit_noise_sd: float = Field(0.2, ge=0.0)
     nc_noise_sd: float = Field(0.2, ge=0.0)
+    nc_coupling: float = Field(1.0, ge=0.0)   # how strongly the neg. control reads z; <1 = weaker/indirect
 
 
 def generate_user_sim_trajectories(config: UserSimConfig, seed: int) -> pd.DataFrame:
@@ -50,7 +51,7 @@ def generate_user_sim_trajectories(config: UserSimConfig, seed: int) -> pd.DataF
             e = int(rng.random() < config.shock_rate)
             # Negative control: driven by the latent state, with NO term in a_t —
             # the agent's action has zero causal path to n, so any shift in n is exogenous.
-            n = float(z + rng.normal(0.0, config.nc_noise_sd))
+            n = float(config.nc_coupling * z + rng.normal(0.0, config.nc_noise_sd))
             rows.append(
                 {"trajectory_id": traj, "t": t, "z": z, "u": u, "a": a, "n": n, "e": e}
             )

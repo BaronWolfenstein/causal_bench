@@ -34,6 +34,28 @@ def _mechanism_severity(mechanism: str, intensity: float) -> float:
     return intensity
 
 
+def run_proxy_quality_sweep(proxy_noise_sds, severity: float = 2.5,
+                            seed: int = 12) -> pd.DataFrame:
+    """Under MNAR at fixed severity, sweep the latent-proxy noise.
+
+    v1 used a near-direct proxy (z + N(0, 0.3)); this shows how much MNAR bias the
+    proxy correction removes as the proxy degrades, and the residual that survives
+    even a good proxy — the honest recovery-vs-proxy-quality curve.
+    """
+    base = _base(seed)
+    rows = []
+    for noise in proxy_noise_sds:
+        d = apply_turn_missingness(base, "mnar", float(severity), seed=seed + 1,
+                                   proxy_noise_sd=float(noise))
+        t = true_reward(d)
+        rows.append({
+            "proxy_noise_sd": float(noise),
+            "naive_bias": naive_reward(d) - t,
+            "proxy_bias": proxy_reward(d, "z_proxy") - t,
+        })
+    return pd.DataFrame(rows)
+
+
 def run_missingness_sweep(mechanisms, severities, seed: int = 12) -> pd.DataFrame:
     base = _base(seed)
     rows = []

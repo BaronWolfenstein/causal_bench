@@ -39,3 +39,16 @@ def test_sweep_returns_monotone_auc_table():
     assert list(tbl["shock_delta"]) == [0.0, 1.0, 3.0]
     # δ=0 → no signal (AUC ~0.5 or NaN); δ=3 → strong
     assert tbl.loc[tbl.shock_delta == 3.0, "auc"].iloc[0] > 0.75
+
+
+def test_detection_degrades_with_observability():
+    """At fixed δ, weakening the negative control's coupling to the latent state
+    lowers detection AUC — gracefully, not a cliff. This is the transferable result:
+    detection under a realistic (weak, indirect) control, not a near-direct sensor."""
+    from experiments.exp26_user_sim_detection import run_observability_sweep
+    tbl = run_observability_sweep(couplings=[1.0, 0.5, 0.2], shock_delta=2.0,
+                                  n_trajectories=400, seed=7)
+    assert list(tbl["nc_coupling"]) == [1.0, 0.5, 0.2]
+    aucs = tbl.set_index("nc_coupling")["auc"]
+    assert aucs[1.0] > aucs[0.2]        # weaker signal → lower AUC
+    assert aucs[1.0] > 0.9              # near-direct control detects well
