@@ -35,3 +35,11 @@ def ipw_reward(df: pd.DataFrame, feature_cols: list[str]) -> float:
     w = np.where(obs, 1.0 / np.clip(p, 1e-3, 1.0), 0.0)
     u = df["u"].to_numpy()
     return float(np.sum(w * u) / np.sum(w))
+
+
+def proxy_reward(df: pd.DataFrame, proxy_col: str = "z_proxy") -> float:
+    """IPW using a noisy proxy for the latent state in the propensity model.
+
+    Recovers *part* of the MNAR bias, in proportion to proxy quality; a nonzero
+    residual remains (the honest endpoint — no proxy fully corrects MNAR)."""
+    return ipw_reward(df, [proxy_col])

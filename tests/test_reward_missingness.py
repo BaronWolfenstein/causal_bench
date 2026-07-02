@@ -3,7 +3,7 @@ import numpy as np
 
 from causal_bench.dgp.dialogue_missingness import apply_turn_missingness
 from causal_bench.estimators.reward_missingness import (
-    true_reward, naive_reward, ipw_reward,
+    true_reward, naive_reward, ipw_reward, proxy_reward,
 )
 from tests.test_dialogue_missingness import _traj
 
@@ -32,3 +32,14 @@ def test_ipw_corrects_mar_but_not_mnar():
     assert abs(ipw_reward(mar, ["u_prev"]) - t_mar) < abs(naive_reward(mar) - t_mar) * 0.5
     # MNAR: IPW on observables does NOT close the bias (still substantial)
     assert abs(ipw_reward(mnar, ["u_prev"]) - t_mnar) > 0.02
+
+
+def test_proxy_partially_recovers_mnar_with_residual():
+    base = _traj(n_traj=800, seed=10)
+    # good proxy (low noise) recovers more of the MNAR bias than naive, but not all
+    mnar = apply_turn_missingness(base, "mnar", severity=2.5, seed=11, proxy_noise_sd=0.3)
+    t = true_reward(mnar)
+    naive_bias = abs(naive_reward(mnar) - t)
+    proxy_bias = abs(proxy_reward(mnar, "z_proxy") - t)
+    assert proxy_bias < naive_bias        # partial recovery
+    assert proxy_bias > 0.005             # residual remains — no full correction
