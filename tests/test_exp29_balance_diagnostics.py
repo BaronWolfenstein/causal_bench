@@ -6,7 +6,8 @@ visible only in the region-resolved ESS map, never in the global SMD column.
 """
 import numpy as np
 
-from experiments.exp29_balance_diagnostics import run_panels
+from experiments.exp29_balance_diagnostics import (
+    love_frame, plot_love_regions, run_panels)
 
 
 def test_three_panel_balance_and_ess_map():
@@ -32,3 +33,16 @@ def test_three_panel_balance_and_ess_map():
     # and within-R imbalance on the severity covariate is WORSE than doing nothing
     assert abs(bal.loc[("edge", "X5"), "smd_post_R"]) > abs(
         bal.loc[("none", "X5"), "smd_post_R"])
+
+
+def test_region_split_love_plot():
+    balance, _ = run_panels(seed=20260702)
+    lf = love_frame(balance, "edge")
+    # two series (global + region R), both present for the severity covariate
+    assert set(lf["series"]) == {"global", "region R"}
+    x5 = lf[lf.covariate == "X5"].set_index("series")["abs_smd"]
+    # the region-R series exposes what the global series hides
+    assert x5["region R"] > x5["global"]
+    fig = plot_love_regions(balance, "edge")
+    # one y-tick per covariate
+    assert len(fig.axes[0].get_yticks()) == balance[balance.panel == "edge"].shape[0]

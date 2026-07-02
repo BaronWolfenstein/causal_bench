@@ -165,6 +165,47 @@ def plot_love(df: pd.DataFrame, cov_cols: Optional[list[str]] = None,
     return fig
 
 
+def love_plot(smd_long: pd.DataFrame, *, covariate_col: str = "covariate",
+              series_col: str = "series", value_col: str = "abs_smd",
+              threshold: float = 0.1, title: str = "Covariate balance (Love plot)",
+              save_path: Optional[str] = None) -> plt.Figure:
+    """Love plot from a precomputed long-format |SMD| frame.
+
+    Generic renderer (reusable beyond the binary-treatment ``plot_love`` path):
+    ``smd_long`` has one row per (covariate, series), where ``series`` labels
+    each marker set — e.g. ``unadjusted``/``adjusted``, or ``global``/``region R``
+    for a region-resolved balance view. Covariates are ordered by their worst
+    (max) |SMD| across series. Returns the Figure.
+    """
+    d = smd_long[[covariate_col, series_col, value_col]].copy()
+    d[value_col] = d[value_col].abs()
+    order = (d.groupby(covariate_col)[value_col].max()
+              .sort_values(ascending=True).index.tolist())
+    covs = {c: i for i, c in enumerate(order)}
+    series = list(dict.fromkeys(d[series_col]))
+    markers = ["o", "D", "s", "^", "v"]
+    colors = ["#E34A33", "#31A354", "#3182BD", "#756BB1", "#636363"]
+
+    fig, ax = plt.subplots(figsize=(7, max(3, len(order) * 0.5 + 1)))
+    for k, s in enumerate(series):
+        sub = d[d[series_col] == s]
+        ax.scatter(sub[value_col], [covs[c] for c in sub[covariate_col]],
+                   color=colors[k % len(colors)], marker=markers[k % len(markers)],
+                   s=50, zorder=3, label=str(s))
+    ax.axvline(threshold, color="gray", linestyle="--", linewidth=0.8,
+               label=f"|SMD|={threshold:g} threshold")
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels(order)
+    ax.set_xlabel("|Standardized Mean Difference|")
+    ax.set_title(title)
+    ax.legend(loc="lower right")
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # 3. SE calibration across estimators
 # ---------------------------------------------------------------------------

@@ -162,11 +162,42 @@ def run_panels(seed: int = 20260702, n_aug: int = 120):
     return pd.concat(tables, ignore_index=True), pd.DataFrame(metas)
 
 
+def love_frame(balance: pd.DataFrame, panel: str) -> pd.DataFrame:
+    """Long-format |SMD| frame for a panel: global vs region-R post-weighting.
+
+    Feeds ``causal_bench.diagnostics.love_plot``. The 'region R' series is the
+    load-bearing view — global balance can pass while region R fails (the false
+    pass), and edge-fill augmentation makes region-R imbalance *worse* than none.
+    """
+    p = balance[balance.panel == panel]
+    rows = []
+    for _, r in p.iterrows():
+        rows.append({"covariate": r.covariate, "series": "global",
+                     "abs_smd": abs(r.smd_post)})
+        if pd.notna(r.smd_post_R):
+            rows.append({"covariate": r.covariate, "series": "region R",
+                         "abs_smd": abs(r.smd_post_R)})
+    return pd.DataFrame(rows)
+
+
+def plot_love_regions(balance: pd.DataFrame, panel: str = "edge",
+                      save_path=None):
+    """Region-split Love plot for one augmentation panel (reuses the shared
+    ``diagnostics.love_plot`` renderer)."""
+    from causal_bench.diagnostics import love_plot
+
+    return love_plot(love_frame(balance, panel),
+                     title=f"Covariate balance — {panel} augmentation (global vs region R)",
+                     save_path=save_path)
+
+
 def run(seed: int = 20260702):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     balance, ess_map = run_panels(seed)
     balance.to_parquet(OUT_DIR / "balance_table.parquet", index=False)
     ess_map.to_parquet(OUT_DIR / "ess_map.parquet", index=False)
+    for panel in ["interior", "edge"]:
+        plot_love_regions(balance, panel, save_path=str(OUT_DIR / f"love_{panel}.png"))
     pd.set_option("display.float_format", lambda v: f"{v:0.3f}")
     print(balance.to_string(index=False))
     print(ess_map.to_string(index=False))

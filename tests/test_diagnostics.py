@@ -118,6 +118,32 @@ class TestPlotLove:
         plt.close("all")
 
 
+class TestLovePlotGeneric:
+    def _long(self):
+        import pandas as pd
+        return pd.DataFrame({
+            "covariate": ["X1", "X1", "X2", "X2"],
+            "series": ["global", "region R", "global", "region R"],
+            "abs_smd": [0.02, 0.30, 0.05, 0.08],
+        })
+
+    def test_returns_figure_with_one_tick_per_covariate(self):
+        from causal_bench.diagnostics import love_plot
+        import matplotlib.pyplot as plt
+        fig = love_plot(self._long())
+        assert isinstance(fig, plt.Figure)
+        assert len(fig.axes[0].get_yticks()) == 2   # X1, X2
+        plt.close(fig)
+
+    def test_saves_file(self, tmp_path):
+        from causal_bench.diagnostics import love_plot
+        import matplotlib.pyplot as plt
+        path = str(tmp_path / "love_generic.png")
+        love_plot(self._long(), save_path=path)
+        assert (tmp_path / "love_generic.png").exists()
+        plt.close("all")
+
+
 class TestSECalibration:
     def test_table_returns_dataframe(self):
         from causal_bench.diagnostics import se_calibration_table
