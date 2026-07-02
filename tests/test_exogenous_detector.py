@@ -31,3 +31,11 @@ def test_auc_increases_with_shock_magnitude():
         return detection_roc(scored, e_prev)["auc"]
     assert auc_for(0.5) < auc_for(3.0)          # bigger shocks are easier to detect
     assert auc_for(3.0) > 0.75                   # large shocks are clearly detectable
+
+
+def test_sweep_returns_monotone_auc_table():
+    from experiments.exp26_user_sim_detection import run_detection_sweep
+    tbl = run_detection_sweep(deltas=[0.0, 1.0, 3.0], n_trajectories=300, seed=7)
+    assert list(tbl["shock_delta"]) == [0.0, 1.0, 3.0]
+    # δ=0 → no signal (AUC ~0.5 or NaN); δ=3 → strong
+    assert tbl.loc[tbl.shock_delta == 3.0, "auc"].iloc[0] > 0.75
