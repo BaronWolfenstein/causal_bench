@@ -3,6 +3,7 @@ import numpy as np
 
 from causal_bench.dgp.user_sim import UserSimConfig, generate_user_sim_trajectories
 from causal_bench.detectors.exogenous import negative_control_residual
+from causal_bench.detectors.metrics import detection_roc
 
 
 def test_residual_spikes_at_shock_turns():
@@ -17,3 +18,16 @@ def test_residual_spikes_at_shock_turns():
     post_shock = merged.loc[merged.e_prev == 1, "nc_residual"].abs().mean()
     quiet = merged.loc[merged.e_prev == 0, "nc_residual"].abs().mean()
     assert post_shock > 2 * quiet
+
+
+def test_auc_increases_with_shock_magnitude():
+    def auc_for(delta):
+        cfg = UserSimConfig(n_trajectories=400, n_turns=8, shock_rate=0.15,
+                            shock_delta=delta, nc_noise_sd=0.3, gamma_action=0.3)
+        d = generate_user_sim_trajectories(cfg, seed=6)
+        scored = negative_control_residual(d)
+        e_prev = (d.sort_values(["trajectory_id", "t"])
+                    .groupby("trajectory_id")["e"].shift(1).fillna(0).to_numpy())
+        return detection_roc(scored, e_prev)["auc"]
+    assert auc_for(0.5) < auc_for(3.0)          # bigger shocks are easier to detect
+    assert auc_for(3.0) > 0.75                   # large shocks are clearly detectable
