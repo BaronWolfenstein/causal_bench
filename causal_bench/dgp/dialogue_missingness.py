@@ -14,6 +14,11 @@ import pandas as pd
 def _miss_prob(df: pd.DataFrame, mechanism: str, severity: float) -> np.ndarray:
     if mechanism == "mcar":
         return np.full(len(df), severity)
+    if mechanism == "mar":
+        # Observable-driven: prior action magnitude |a_{t-1}| (MAR — IPW-correctable).
+        a_prev = df.groupby("trajectory_id")["a"].shift(1).abs()
+        x = a_prev.fillna(a_prev.mean()).to_numpy()
+        return 1.0 / (1.0 + np.exp(-severity * (x - np.nanmean(x))))
     raise ValueError(f"unknown mechanism {mechanism!r}")
 
 

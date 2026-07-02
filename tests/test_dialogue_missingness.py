@@ -26,3 +26,11 @@ def test_mcar_drops_independent_fraction_and_sets_dt():
     assert df["dt"].min() >= 1                          # turn-lapse ≥ 1
     corr = np.corrcoef(df["z"], df["observed"].astype(float))[0, 1]
     assert abs(corr) < 0.05                            # MCAR: drop ⊥ latent state
+
+
+def test_mar_depends_on_observable_not_latent_given_it():
+    df = apply_turn_missingness(_traj(seed=2), mechanism="mar", severity=2.0, seed=3)
+    df["a_prev_abs"] = df.groupby("trajectory_id")["a"].shift(1).abs()
+    sub = df.dropna(subset=["a_prev_abs"])
+    c_obs = np.corrcoef(sub["a_prev_abs"], (~sub["observed"]).astype(float))[0, 1]
+    assert c_obs > 0.1                                 # missingness tracks observable |a_prev|
