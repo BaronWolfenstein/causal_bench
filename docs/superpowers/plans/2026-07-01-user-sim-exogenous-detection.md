@@ -4,7 +4,7 @@
 
 **Goal:** A new synthetic user-simulator DGP where an exogenous, agent-unobservable shock `eₜ` moves the user's latent state via the *transition*, plus a negative-control detector that recovers `eₜ` from its footprint — instrumenting the Collinear "cigarette" problem as a known-ground-truth causal experiment.
 
-**Architecture:** A new sequential-trajectory DGP family (`dgp/user_sim.py`) producing long-format panel data (one row per trajectory×turn), a standalone negative-control detector (`detectors/exogenous.py`) that does not touch the cross-sectional estimator base, and an experiment (`experiments/exp21_user_sim_detection.py`) with its own lightweight δ-sweep harness. The existing `run_parameter_sweep` is cross-sectional and is deliberately NOT reused.
+**Architecture:** A new sequential-trajectory DGP family (`dgp/user_sim.py`) producing long-format panel data (one row per trajectory×turn), a standalone negative-control detector (`detectors/exogenous.py`) that does not touch the cross-sectional estimator base, and an experiment (`experiments/exp26_user_sim_detection.py`) with its own lightweight δ-sweep harness. The existing `run_parameter_sweep` is cross-sectional and is deliberately NOT reused.
 
 **Tech Stack:** Python 3.11+, numpy, pandas, pydantic, scikit-learn (ROC), pytest.
 
@@ -22,7 +22,7 @@
 - `causal_bench/dgp/user_sim.py` — **new.** `UserSimConfig` (pydantic) + `generate_user_sim_trajectories(config, seed) -> pd.DataFrame` (long format). One responsibility: the sequential latent-state generative process.
 - `causal_bench/detectors/__init__.py`, `causal_bench/detectors/exogenous.py` — **new subpackage.** `negative_control_residual(traj_df) -> pd.DataFrame` and `detect_exogenous_shift(traj_df, threshold) -> pd.DataFrame`. Consumes only agent-observable columns.
 - `causal_bench/detectors/metrics.py` — **new.** `detection_roc(scored_df) -> dict` (AUC, power at a fixed FPR) scoring detector output against the hidden `eₜ`.
-- `experiments/exp21_user_sim_detection.py` — **new.** δ-sweep harness + the endogenous-continuation-vs-NC-flag agent contrast; saves parquet + ROC plot.
+- `experiments/exp26_user_sim_detection.py` — **new.** δ-sweep harness + the endogenous-continuation-vs-NC-flag agent contrast; saves parquet + ROC plot.
 - `tests/test_user_sim_dgp.py`, `tests/test_exogenous_detector.py` — **new.**
 
 ---
@@ -377,20 +377,20 @@ git add -A && git commit -m "feat(detectors): detection ROC/power metric for exo
 
 ---
 
-## Task 6: exp21 — δ sweep + endogenous-continuation-vs-NC-flag contrast
+## Task 6: exp26 — δ sweep + endogenous-continuation-vs-NC-flag contrast
 
 **Files:**
-- Create: `experiments/exp21_user_sim_detection.py`
+- Create: `experiments/exp26_user_sim_detection.py`
 - Test: `tests/test_exogenous_detector.py`
 
 **Interfaces:**
 - Consumes: all of the above.
-- Produces: `run_detection_sweep(deltas, n_trajectories, seed) -> pd.DataFrame` with columns `["shock_delta","auc","power_at_fpr"]` (one row per δ). A thin `run(...)` entrypoint saves `results/exp21_user_sim/detection_sweep.parquet` and an AUC-vs-δ plot. The "agent contrast" is reported as: adaptation error of a naive agent (treats every turn as endogenous continuation) vs an NC-flag agent (resets its plan when `|nc_residual|` exceeds threshold), scored against the hidden `e`.
+- Produces: `run_detection_sweep(deltas, n_trajectories, seed) -> pd.DataFrame` with columns `["shock_delta","auc","power_at_fpr"]` (one row per δ). A thin `run(...)` entrypoint saves `results/exp26_user_sim/detection_sweep.parquet` and an AUC-vs-δ plot. The "agent contrast" is reported as: adaptation error of a naive agent (treats every turn as endogenous continuation) vs an NC-flag agent (resets its plan when `|nc_residual|` exceeds threshold), scored against the hidden `e`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-from experiments.exp21_user_sim_detection import run_detection_sweep
+from experiments.exp26_user_sim_detection import run_detection_sweep
 
 def test_sweep_returns_monotone_auc_table():
     tbl = run_detection_sweep(deltas=[0.0, 1.0, 3.0], n_trajectories=300, seed=7)
@@ -407,8 +407,8 @@ Expected: FAIL — module missing.
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# experiments/exp21_user_sim_detection.py
-"""Exp 21: exogenous-shock detection in a user simulator (#46).
+# experiments/exp26_user_sim_detection.py
+"""Exp 26: exogenous-shock detection in a user simulator (#46).
 
 Sweeps shock magnitude δ; reports how well a negative-control residual detects the
 agent-unobservable eₜ from its footprint (ROC/power), and contrasts an agent that
@@ -422,7 +422,7 @@ from causal_bench.dgp.user_sim import UserSimConfig, generate_user_sim_trajector
 from causal_bench.detectors.exogenous import negative_control_residual
 from causal_bench.detectors.metrics import detection_roc
 
-OUT_DIR = Path("results/exp21_user_sim")
+OUT_DIR = Path("results/exp26_user_sim")
 
 def run_detection_sweep(deltas, n_trajectories=400, seed=7) -> pd.DataFrame:
     rows = []
@@ -456,7 +456,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A && git commit -m "feat(exp21): user-sim exogenous-shock detection sweep (#46)"
+git add -A && git commit -m "feat(exp26): user-sim exogenous-shock detection sweep (#46)"
 ```
 
 ---
