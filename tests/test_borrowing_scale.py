@@ -103,3 +103,22 @@ class TestPgTestBorrow:
         assert res.map_weight < 0.5, "mixture should escape the conflicting registry prior"
         assert res.rate_posterior > 0.45, "posterior should revert to the data, not the registry"
         assert res.concludes_below_pg is False
+
+    def test_reports_conjugacy_regime(self):
+        """#43 item 3 / #16: the size-calibrated cutoff is exact for the
+        Normal-Normal (MAP-dominated) population level on the cloglog scale;
+        when the robust mixture escapes it is a local approximation. The result
+        surfaces which regime it is in, with the deviation."""
+        concordant = pg_test_borrow(
+            target_rate=0.34, target_se=0.03, target_n=299,
+            donor_rate=0.32, donor_se=0.03,
+        )
+        assert concordant.conjugacy_regime == "conjugate_exact"
+        assert concordant.approximation_deviation == pytest.approx(0.0, abs=1e-9)
+
+        conflict = pg_test_borrow(
+            target_rate=0.50, target_se=0.03, target_n=299,
+            donor_rate=0.20, donor_se=0.01,
+        )
+        assert conflict.conjugacy_regime == "local_approximation"
+        assert conflict.approximation_deviation > 0.0

@@ -581,6 +581,8 @@ class PgTestResult:
     r_ratio: float              # τ / s on the cloglog scale
     calibrated_z: float
     map_weight: float
+    conjugacy_regime: str       # "conjugate_exact" (c* exact) | "local_approximation"
+    approximation_deviation: float
 
 
 def _cloglog_summary(name: str, rate: float, se_rate: float, n: int) -> RegistrySummary:
@@ -634,6 +636,16 @@ def pg_test_borrow(
     cal_z, r = size_calibrated_z(tau_prior_sd, s_t, alpha)
     z_ci = norm.ppf(1.0 - alpha / 2.0)
 
+    # Regime: c* is exact when the MAP component dominates (Normal-Normal on the
+    # cloglog scale); when the mixture escapes it is a local approximation (#16).
+    regime, deviation = _conjugacy_diagnostic(
+        post_mean=post_mean,
+        map_weight=map_w,
+        target_ate=theta_t,
+        target_se=s_t,
+        vague_sd=vague_sd,
+    )
+
     # cloglog is monotone increasing: F < PG  ⇔  θ_post < θ_PG.
     test_stat = (theta_pg - post_mean) / max(post_sd, 1e-12)
     concludes = bool(test_stat > cal_z)
@@ -648,6 +660,8 @@ def pg_test_borrow(
         r_ratio=float(r),
         calibrated_z=float(cal_z),
         map_weight=float(map_w),
+        conjugacy_regime=regime,
+        approximation_deviation=float(deviation),
     )
 
 
