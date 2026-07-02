@@ -34,3 +34,9 @@ def test_mar_depends_on_observable_not_latent_given_it():
     sub = df.dropna(subset=["a_prev_abs"])
     c_obs = np.corrcoef(sub["a_prev_abs"], (~sub["observed"]).astype(float))[0, 1]
     assert c_obs > 0.1                                 # missingness tracks observable |a_prev|
+
+
+def test_mnar_low_latent_state_drops_more():
+    df = apply_turn_missingness(_traj(seed=4), mechanism="mnar", severity=2.0, seed=5)
+    c = np.corrcoef(df["z"], (~df["observed"]).astype(float))[0, 1]
+    assert c < -0.1                                    # lower z (frustrated) → more missing

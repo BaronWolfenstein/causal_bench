@@ -19,6 +19,10 @@ def _miss_prob(df: pd.DataFrame, mechanism: str, severity: float) -> np.ndarray:
         a_prev = df.groupby("trajectory_id")["a"].shift(1).abs()
         x = a_prev.fillna(a_prev.mean()).to_numpy()
         return 1.0 / (1.0 + np.exp(-severity * (x - np.nanmean(x))))
+    if mechanism == "mnar":
+        # Latent-driven: low z (frustrated) drops more; not a function of observables.
+        z = df["z"].to_numpy()
+        return 1.0 / (1.0 + np.exp(-severity * (-(z - z.mean()))))
     raise ValueError(f"unknown mechanism {mechanism!r}")
 
 
