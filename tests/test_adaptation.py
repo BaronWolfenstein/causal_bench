@@ -57,3 +57,45 @@ def test_naive_filter_partially_self_corrects_after_shock():
             if e[i] == 1:
                 last = i
     assert np.mean(errs_by_k[4]) < 0.8 * np.mean(errs_by_k[1])
+
+
+def test_oracle_and_nc_flags_align_and_fire():
+    from causal_bench.adaptation.filters import oracle_flags, nc_flags
+    from causal_bench.detectors.exogenous import negative_control_residual
+    from causal_bench.detectors.metrics import threshold_at_fpr
+    cfg = UserSimConfig(n_trajectories=200, n_turns=8, shock_rate=0.15,
+                        shock_delta=2.0, nc_noise_sd=0.3, gamma_action=0.3)
+    d = generate_user_sim_trajectories(cfg, seed=3)
+    ds = d.sort_values(["trajectory_id", "t"]).reset_index(drop=True)
+
+    ofl = oracle_flags(d)
+    expected = (ds.groupby("trajectory_id")["e"].shift(1).fillna(0) == 1).to_numpy()
+    assert ofl.dtype == bool and (ofl == expected).all()
+
+    scored = negative_control_residual(d)
+    e_prev = ds.groupby("trajectory_id")["e"].shift(1).fillna(0).to_numpy()
+    c = threshold_at_fpr(scored, e_prev, target_fpr=0.1)
+    nfl = nc_flags(d, threshold=c)
+    assert nfl.dtype == bool and len(nfl) == len(d)
+    assert not nfl[ds["t"] == 0].any()          # NaN residual on first turns → no flag
+    # detector flags fire mostly where the oracle does (δ=2 is well-detectable)
+    assert nfl[ofl].mean() > 0.5
+    assert nfl[~ofl].mean() < 0.15
+
+
+def test_oracle_arm_beats_naive_post_shock():
+    from causal_bench.adaptation.filters import oracle_flags
+    cfg = UserSimConfig(n_trajectories=500, n_turns=12, shock_rate=0.08,
+                        shock_delta=2.0, emit_noise_sd=0.2, gamma_action=0.3)
+    d = generate_user_sim_trajectories(cfg, seed=4)
+    kw = _filter_kwargs(cfg)
+    f_naive = run_belief_filter(d, **kw)
+    f_oracle = run_belief_filter(d, flag=oracle_flags(d), **kw)
+
+    def post_shock_err(f):
+        f = f.copy()
+        f["abs_err"] = (f["z_hat"] - f["z"]).abs()
+        e_prev = f.groupby("trajectory_id")["e"].shift(1).fillna(0)
+        return f.loc[e_prev == 1, "abs_err"].mean()
+
+    assert post_shock_err(f_oracle) < 0.75 * post_shock_err(f_naive)

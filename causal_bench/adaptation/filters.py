@@ -73,3 +73,21 @@ def run_belief_filter(
     out["z_hat"] = z_hats
     out["z_hat_var"] = p_vars
     return out
+
+
+def oracle_flags(traj_df: pd.DataFrame) -> np.ndarray:
+    """Ceiling arm's flag: the TRUE shock indicator, shifted to the turn where the
+    jumped latent state is first observable. Reads ground-truth ``e`` — permitted
+    only here, for the oracle ceiling (design spec §4)."""
+    d = traj_df.sort_values(["trajectory_id", "t"])
+    return (d.groupby("trajectory_id")["e"].shift(1).fillna(0) == 1).to_numpy()
+
+
+def nc_flags(traj_df: pd.DataFrame, threshold: float) -> np.ndarray:
+    """Detector arm's flag: |nc_residual| > threshold, aligned to sorted rows.
+    NaN residuals (first turns) never flag."""
+    from causal_bench.detectors.exogenous import negative_control_residual
+
+    scored = negative_control_residual(traj_df)   # sorted by (trajectory_id, t)
+    resid = scored["nc_residual"].abs().to_numpy()
+    return np.nan_to_num(resid, nan=-np.inf) > threshold
