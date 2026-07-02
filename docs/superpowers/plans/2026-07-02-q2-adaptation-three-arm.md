@@ -724,3 +724,11 @@ EOF
 ```
 
 Expected: PR created. (Reminder: no closing keywords anywhere in the body.)
+
+---
+
+## Deviation log (recorded during execution)
+
+- **exp28 uses `shock_rate=0.08`, not exp26's 0.15.** Shocks are same-sign, so at rate 0.15 over 12 turns `z` accumulates into the sigmoid emission's saturated range (53% of post-shock turns at |z|>3), where `u` is uninformative — no arm can re-track, the achievable gap collapses, and the NC arm's false-positive inflations even nudged it past the "ceiling" (capture 1.017). At 0.08 the regime is informative and the predicted curve is clean. Detection itself is unaffected (the NC is linear in `z`).
+- **Task 5's ordering test was split in two.** At coupling 1.0 the detector is near-perfect, so `nc_flag` is statistically AT the oracle ceiling and strict `oracle < nc_flag` tests noise. The strict betweenness `oracle < nc_flag < naive` is asserted at coupling 0.3 (imperfect detector); the coupling-1.0 test asserts near-ceiling capture (> 0.7) instead.
+- **Task 4's exact float equalities** in `test_marginal_capture_bounds_and_degeneracy` were switched to `pytest.approx` (0.6/0.8 is not exactly representable).
