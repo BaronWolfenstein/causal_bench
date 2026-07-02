@@ -10,6 +10,10 @@ flowchart TD
         DGP --> GRID
     end
 
+    %% ---- Primary-estimand provenance note (spec §9) ----
+    PRIMNOTE["Primary estimand = REAL TVT external control + borrowing\n(likelihood s and prior-ESS computed on real patients only).\nGenerative augmentation = positivity/robustness instrument,\nNOT independent outcome information, NOT primary evidence.\nIf synthetic ever enters the primary estimand, simulate\naugmentation → estimation → borrowing END-TO-END so\ndouble-counting shows up as Type I inflation. (spec §9)"]
+    DGP -.-> PRIMNOTE
+
     %% ---- Inner analysis: the fork ----
     GRID --> FORK{"Inner-loop model"}
 
@@ -56,17 +60,22 @@ flowchart TD
     end
     CONJDEC --> CONF
 
-    %% ---- Measurement-error sensitivity (spec §9, consumer slice) ----
+    %% ---- Measurement-error sensitivity — TWO distinct objects (spec §9, consumer slices) ----
     SIGEPS_IN["Σ_ε (supplied: encoder-side MC-dropout\nor synthetic) — consumed here"]
-    MESENS["Measurement-error sensitivity\nSIMEX / error-in-variables\nestimand + CI with/without Σ_ε\n(consumes Σ_ε; does NOT change primary estimand)"]
+    MESENS["Embedding measurement-error sensitivity (Σ_ε)\nSIMEX / error-in-variables\nestimand + CI with/without Σ_ε\n→ attenuation / understated uncertainty\n(consumes Σ_ε; does NOT change primary estimand)"]
+    SIGX_IN["Σ_x (supplied: inter-reader reliability\nICC / limits-of-agreement, or synthetic) — consumed here"]
+    COVME["Covariate measurement-error sensitivity (Σ_x)\nregression calibration / SIMEX\noracle / naive / corrected on shared replicates\n→ RESIDUAL CONFOUNDING readout\n(distinct from Σ_ε; biases the estimand borrowed on)"]
     SIGEPS_IN -.-> MESENS
+    SIGX_IN -.-> COVME
     CONJDEC --> MESENS
+    CONJDEC --> COVME
 
     %% ---- Outputs ----
     FIDCMP --> OUT["OC report (frequentist translation)\nType I, power, coverage\n+ Type-M/Type-S (Gelman-Carlin), MDE\n+ prior-ESS (Morita-Thall-Müller) at τ median\n+ tipping-point surfaces + IF/reversal profiles"]
     TIP --> OUT
     CONF --> OUT
     MESENS --> OUT
+    COVME --> OUT
 
     %% ---- ESS disambiguation note ----
     ESSNOTE["ESS ≠ ESS ≠ ESS (3 objects, same name):\n• prior-ESS (Morita-Thall-Müller) — borrowing, analytical\n• particle-ESS (Kish) — SMC layer\n• MCMC bulk/tail-ESS — 3-level fidelity fits ONLY\nbulk/tail applies ONLY to the MCMC path here"]
@@ -89,7 +98,7 @@ flowchart TD
     class FORK,TAILGATE gate
     class T1,T2,T3,T4 tip
     class IF,REV,DEV conf
-    class MESENS,SIGEPS_IN mesens
+    class MESENS,SIGEPS_IN,COVME,SIGX_IN mesens
     class FIDCMP fast
     class OUT out
-    class ESSNOTE note
+    class ESSNOTE,PRIMNOTE note
