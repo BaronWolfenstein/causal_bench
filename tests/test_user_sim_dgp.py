@@ -37,3 +37,20 @@ def test_shock_shifts_next_state_by_delta():
     one = d[d.trajectory_id == 0].sort_values("t").reset_index(drop=True)
     step = one.loc[1, "z"] - (one.loc[0, "z"] + 0.3 * np.tanh(one.loc[0, "a"]))
     assert abs(step - 2.0) < 1e-9
+
+
+def test_negative_control_has_zero_action_effect():
+    """Regressing n_t on a_t (within a turn) yields ~0 slope: a has no path to n."""
+    cfg = UserSimConfig(n_trajectories=2000, n_turns=2, shock_rate=0.0,
+                        nc_noise_sd=0.3, gamma_action=0.5)
+    d = generate_user_sim_trajectories(cfg, seed=3)
+    t0 = d[d.t == 0]
+    slope = np.polyfit(t0["a"], t0["n"], 1)[0]
+    assert abs(slope) < 0.05, f"n_t must not respond to a_t within-turn, slope={slope:.3f}"
+
+
+def test_negative_control_moves_with_latent_state():
+    cfg = UserSimConfig(n_trajectories=2000, n_turns=2, shock_rate=0.0, nc_noise_sd=0.0)
+    d = generate_user_sim_trajectories(cfg, seed=4)
+    t0 = d[d.t == 0]
+    assert np.allclose(t0["n"], t0["z"])  # n = z (noiseless) — tracks the latent state

@@ -48,8 +48,11 @@ def generate_user_sim_trajectories(config: UserSimConfig, seed: int) -> pd.DataF
                 + rng.normal(0.0, config.emit_noise_sd)
             )
             e = int(rng.random() < config.shock_rate)
+            # Negative control: driven by the latent state, with NO term in a_t —
+            # the agent's action has zero causal path to n, so any shift in n is exogenous.
+            n = float(z + rng.normal(0.0, config.nc_noise_sd))
             rows.append(
-                {"trajectory_id": traj, "t": t, "z": z, "u": u, "a": a, "n": 0.0, "e": e}
+                {"trajectory_id": traj, "t": t, "z": z, "u": u, "a": a, "n": n, "e": e}
             )
             # Endogenous transition + exogenous shock (shock enters only here).
             z = z + config.gamma_action * np.tanh(a) + (config.shock_delta if e else 0.0)
