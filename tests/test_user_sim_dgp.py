@@ -53,4 +53,15 @@ def test_negative_control_moves_with_latent_state():
     cfg = UserSimConfig(n_trajectories=2000, n_turns=2, shock_rate=0.0, nc_noise_sd=0.0)
     d = generate_user_sim_trajectories(cfg, seed=4)
     t0 = d[d.t == 0]
-    assert np.allclose(t0["n"], t0["z"])  # n = z (noiseless) — tracks the latent state
+    assert np.allclose(t0["n"], t0["z"])  # n = z (noiseless, default coupling=1) — tracks latent state
+
+
+def test_nc_coupling_attenuates_control():
+    """nc_coupling scales how strongly n reads the latent state: n = coupling·z (+noise).
+    Lower coupling → a weaker, more indirect control signal (the realistic regime)."""
+    cfg = UserSimConfig(n_trajectories=2000, n_turns=2, shock_rate=0.0,
+                        nc_noise_sd=0.0, nc_coupling=0.4)
+    d = generate_user_sim_trajectories(cfg, seed=4)
+    t0 = d[d.t == 0]
+    slope = np.polyfit(t0["z"], t0["n"], 1)[0]
+    assert abs(slope - 0.4) < 1e-6
