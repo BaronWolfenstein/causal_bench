@@ -43,11 +43,14 @@ def generate_user_sim_trajectories(config: UserSimConfig, seed: int) -> pd.DataF
         z = rng.normal(config.z0_mean, config.z0_sd)
         for t in range(config.n_turns):
             a = float(rng.normal(0.0, 1.0))            # agent action (placeholder policy)
-            e = 0
-            u = 0.0
-            n = 0.0
-            rows.append(
-                {"trajectory_id": traj, "t": t, "z": z, "u": u, "a": a, "n": n, "e": e}
+            u = float(
+                1.0 / (1.0 + np.exp(-config.beta_emit * z))
+                + rng.normal(0.0, config.emit_noise_sd)
             )
-            z = z  # transition filled in Task 2
+            e = int(rng.random() < config.shock_rate)
+            rows.append(
+                {"trajectory_id": traj, "t": t, "z": z, "u": u, "a": a, "n": 0.0, "e": e}
+            )
+            # Endogenous transition + exogenous shock (shock enters only here).
+            z = z + config.gamma_action * np.tanh(a) + (config.shock_delta if e else 0.0)
     return pd.DataFrame(rows)
