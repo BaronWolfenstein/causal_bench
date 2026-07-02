@@ -1,8 +1,13 @@
 """Exp 26: exogenous-shock detection in a user simulator (#46).
 
 Sweeps shock magnitude δ; reports how well a negative-control residual detects the
-agent-unobservable e_t from its footprint (ROC/power), and contrasts an agent that
-treats every turn as endogenous continuation vs one that conditions on the NC flag.
+agent-unobservable e_t from its footprint (ROC/power).
+
+Detection only (the post's Q1). The agent-adaptation contrast — endogenous-
+continuation vs an NC-flag agent that re-plans on detection (Q2) — is NOT built
+here; it is tracked as follow-up in #46. Detection here is also measured under a
+near-direct negative control (n = z + small noise); the degraded-observability
+regime that actually stresses the method is likewise tracked in #46.
 """
 from pathlib import Path
 
