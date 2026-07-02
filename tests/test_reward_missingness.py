@@ -43,3 +43,11 @@ def test_proxy_partially_recovers_mnar_with_residual():
     proxy_bias = abs(proxy_reward(mnar, "z_proxy") - t)
     assert proxy_bias < naive_bias        # partial recovery
     assert proxy_bias > 0.005             # residual remains — no full correction
+
+
+def test_sweep_shows_mnar_ipw_gap():
+    from experiments.exp27_dialogue_mnar import run_missingness_sweep
+    tbl = run_missingness_sweep(mechanisms=["mcar", "mnar"], severities=[2.0], seed=12)
+    mnar = tbl[tbl.mechanism == "mnar"].iloc[0]
+    # under MNAR, IPW-on-observables leaves more bias than the proxy correction
+    assert abs(mnar["ipw_bias"]) > abs(mnar["proxy_bias"])
