@@ -29,6 +29,28 @@ def run_detection_sweep(deltas, n_trajectories: int = 400, seed: int = 7) -> pd.
     return pd.DataFrame(rows)
 
 
+def run_observability_sweep(couplings, shock_delta: float = 2.0,
+                            n_trajectories: int = 400, seed: int = 7) -> pd.DataFrame:
+    """At fixed δ, sweep the negative control's coupling to the latent state.
+
+    The v1 control (coupling≈1) is a near-direct latent sensor, so detection
+    saturates; this curve shows how detection degrades as the control becomes a
+    weaker, more indirect signal — the regime that transfers to the real problem.
+    """
+    rows = []
+    for i, coupling in enumerate(couplings):
+        cfg = UserSimConfig(n_trajectories=n_trajectories, n_turns=8, shock_rate=0.15,
+                            shock_delta=float(shock_delta), nc_noise_sd=0.3,
+                            nc_coupling=float(coupling), gamma_action=0.3)
+        d = generate_user_sim_trajectories(cfg, seed=seed + i)
+        scored = negative_control_residual(d)
+        e_prev = (d.sort_values(["trajectory_id", "t"])
+                    .groupby("trajectory_id")["e"].shift(1).fillna(0).to_numpy())
+        roc = detection_roc(scored, e_prev)
+        rows.append({"nc_coupling": float(coupling), "shock_delta": float(shock_delta), **roc})
+    return pd.DataFrame(rows)
+
+
 def run(n_trajectories: int = 400, seed: int = 7):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     tbl = run_detection_sweep([0.0, 0.5, 1.0, 2.0, 3.0, 4.0], n_trajectories, seed)
