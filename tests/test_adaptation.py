@@ -99,3 +99,34 @@ def test_oracle_arm_beats_naive_post_shock():
         return f.loc[e_prev == 1, "abs_err"].mean()
 
     assert post_shock_err(f_oracle) < 0.75 * post_shock_err(f_naive)
+
+
+def test_tracking_metrics_on_constructed_trajectory():
+    import pandas as pd
+    from causal_bench.adaptation.metrics import tracking_metrics
+    # one trajectory, shock fires at t=2; error is 0 on quiet turns, then 2, 1, 0.05
+    df = pd.DataFrame({
+        "trajectory_id": [0] * 8,
+        "t": range(8),
+        "z":     [0.0] * 8,
+        "e":     [0, 0, 1, 0, 0, 0, 0, 0],
+        "z_hat": [0.0, 0.0, 0.0, 2.0, 1.0, 0.05, 0.0, 0.0],
+    })
+    m = tracking_metrics(df, window=4)
+    # post-shock turns are t=3..6 with errors 2, 1, 0.05, 0
+    assert abs(m["post_shock_err"] - np.mean([2.0, 1.0, 0.05, 0.0])) < 1e-12
+    assert m["n_shock_turns"] == 4
+    # quiet turns t=0,1,2,7 have error 0
+    assert m["quiet_err"] == 0.0
+    # quiet_err = 0 → tolerance 0 → recovery at first exactly-zero error: k=4 (t=6)
+    assert m["time_to_recover"] == 4.0
+
+
+def test_marginal_capture_bounds_and_degeneracy():
+    import pytest
+    from causal_bench.adaptation.metrics import marginal_capture
+    assert marginal_capture(1.0, 0.4, 0.2) == pytest.approx(0.75)
+    assert marginal_capture(1.0, 1.0, 0.2) == pytest.approx(0.0)
+    assert marginal_capture(1.0, 0.2, 0.2) == pytest.approx(1.0)
+    assert np.isnan(marginal_capture(1.0, 0.5, 1.0))     # no achievable gap
+    assert np.isnan(marginal_capture(1.0, 0.5, float("nan")))
