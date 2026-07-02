@@ -107,3 +107,37 @@ def test_ic_bootstrap_end_to_end():
     lo, hi = ic_bootstrap_ci(result, B=500, method="bca", rng=np.random.default_rng(0))
     assert np.isfinite(lo) and np.isfinite(hi)
     assert lo < hi
+
+
+def test_row_bootstrap_ci_generic_estimator():
+    """Row-resampling bootstrap brackets a simple estimator and has positive width."""
+    import pandas as pd
+    from causal_bench.bootstrap import row_bootstrap_ci
+
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"x": rng.normal(3.0, 1.0, 500)})
+    lo, hi = row_bootstrap_ci(lambda d: d["x"].mean(), df, B=400, seed=1)
+    assert lo < hi
+    assert lo <= df["x"].mean() <= hi
+    # basic method also runs and is ordered
+    lo2, hi2 = row_bootstrap_ci(lambda d: d["x"].mean(), df, B=400,
+                                method="basic", seed=1)
+    assert lo2 < hi2
+
+
+def test_row_bootstrap_reruns_internal_calibration_step():
+    """The estimator (incl. any internal fit) is re-run per replicate, so a
+    calibration-then-coef pipeline yields a non-degenerate interval."""
+    import pandas as pd
+    from causal_bench.bootstrap import row_bootstrap_ci
+
+    rng = np.random.default_rng(2)
+    x = rng.normal(0, 1, 400)
+    df = pd.DataFrame({"x": x, "y": 2.0 * x + rng.normal(0, 1, 400)})
+
+    def slope_after_standardizing(d):          # internal "calibration" = standardize
+        xs = (d["x"] - d["x"].mean()) / d["x"].std()
+        return float(np.polyfit(xs, d["y"], 1)[0])
+
+    lo, hi = row_bootstrap_ci(slope_after_standardizing, df, B=300, seed=3)
+    assert lo < hi and (hi - lo) > 0

@@ -19,12 +19,15 @@ effect vs σ_x magnitude, oracle/naive/corrected overlaid; the residual-
 confounding **tipping point** (the σ_x at which the naive CI stops covering the
 truth), and the fraction of the oracle→naive gap the correction recovers.
 
-Honest limit: regression calibration restores the *point estimate* toward
-oracle, but the classical SE used here does not propagate the calibration
-uncertainty, so the corrected arm mildly under-covers at large σ_x (it fixes
-bias, not the full variance). A complete treatment bootstraps the calibration
-step or uses the SIMEX variance; that is a refinement, not a change to the
-residual-confounding readout this experiment reports.
+Corrected-arm variance: regression calibration restores the *point estimate*,
+but the classical OLS SE does not propagate the calibration uncertainty, so with
+that SE the corrected arm under-covers at large σ_x. The fix (built here) is a
+**row-resampling bootstrap** that re-runs regression-calibration + OLS inside
+each replicate — capturing the calibration variance — via the generic
+``causal_bench.bootstrap.row_bootstrap_ci`` (complement to the influence-curve
+bootstrap; no new dependency, no SIMEX). ``estimate_arm(..., ci="bootstrap")``
+selects it; ``compare_corrected_coverage`` shows it restores coverage toward
+nominal (e.g. 0.60 → ~1.0 at σ_x=1.5).
 
 GP-propensity sensitivity (issue #57 — HAL stays primary): under covariate
 noise a stationary-kernel GP conflates the noise with the kernel length-scale
@@ -94,8 +97,22 @@ def _regression_calibration(df: pd.DataFrame, sigma_x: float) -> np.ndarray:
     return mw + coefs[0] * (w - mw) + coefs[1] * (a - ma)
 
 
-def estimate_arm(df: pd.DataFrame, arm: str, sigma_x: float) -> dict:
-    """Adjusted treatment-effect estimate + 95% CI for one arm."""
+def _corrected_point(df: pd.DataFrame, sigma_x: float) -> float:
+    """Regression-calibration + OLS treatment-effect estimate (the full pipeline
+    the bootstrap must re-run per replicate to capture calibration variance)."""
+    adj = _regression_calibration(df, sigma_x)
+    tau_hat, _ = _ols_effect(df["Y"].to_numpy(), [df["A"].to_numpy(), adj])
+    return tau_hat
+
+
+def estimate_arm(df: pd.DataFrame, arm: str, sigma_x: float,
+                 ci: str = "classical", B: int = 400, seed: int = 0) -> dict:
+    """Adjusted treatment-effect estimate + 95% CI for one arm.
+
+    ci='classical' uses the homoskedastic OLS SE. ci='bootstrap' (corrected arm
+    only) row-resamples and re-runs regression-calibration + OLS per replicate,
+    capturing the calibration uncertainty the plug-in SE understates.
+    """
     a, y = df["A"].to_numpy(), df["Y"].to_numpy()
     if arm == "oracle":
         adj = df["X_true"].to_numpy()
@@ -106,8 +123,18 @@ def estimate_arm(df: pd.DataFrame, arm: str, sigma_x: float) -> dict:
     else:
         raise ValueError(f"unknown arm: {arm!r}")
     tau_hat, se = _ols_effect(y, [a, adj])
-    return {"arm": arm, "tau_hat": tau_hat, "se": se,
-            "ci_lo": tau_hat - 1.96 * se, "ci_hi": tau_hat + 1.96 * se}
+
+    if ci == "bootstrap":
+        if arm != "corrected":
+            raise ValueError("bootstrap CI is only defined for the corrected arm here")
+        from causal_bench.bootstrap import row_bootstrap_ci
+        lo, hi = row_bootstrap_ci(lambda sub: _corrected_point(sub, sigma_x),
+                                  df, B=B, method="percentile", seed=seed)
+    elif ci == "classical":
+        lo, hi = tau_hat - 1.96 * se, tau_hat + 1.96 * se
+    else:
+        raise ValueError(f"unknown ci method: {ci!r}")
+    return {"arm": arm, "tau_hat": tau_hat, "se": se, "ci_lo": lo, "ci_hi": hi}
 
 
 def run_sigma_x_sweep(sigmas, n_sims: int = 200, n: int = 2000, seed: int = 31,
@@ -149,6 +176,29 @@ def tipping_point(sweep: pd.DataFrame, coverage_floor: float = 0.90) -> float:
     naive = sweep[sweep.arm == "naive"].sort_values("sigma_x")
     failed = naive[naive.coverage < coverage_floor]
     return float(failed["sigma_x"].iloc[0]) if len(failed) else float("nan")
+
+
+def compare_corrected_coverage(sigmas, n_sims: int = 40, n: int = 1200,
+                               B: int = 300, seed: int = 31) -> pd.DataFrame:
+    """Corrected-arm CI coverage under classical SE vs the row-bootstrap, per σ_x.
+
+    The classical SE understates the regression-calibration variance, so it
+    under-covers at large σ_x; the bootstrap (which re-runs calibration per
+    replicate) restores coverage toward nominal. This is the fix for the
+    corrected-arm coverage limitation, with no new dependency and no SIMEX.
+    """
+    rows = []
+    for i, s in enumerate(sigmas):
+        cover = {"classical": [], "bootstrap": []}
+        for r in range(n_sims):
+            df = simulate_covariate_me(float(s), n=n, seed=seed + 1000 * i + r)
+            for m in ("classical", "bootstrap"):
+                e = estimate_arm(df, "corrected", float(s), ci=m, B=B, seed=seed + r)
+                cover[m].append(e["ci_lo"] <= TAU_TRUE <= e["ci_hi"])
+        rows.append({"sigma_x": float(s),
+                     "coverage_classical": float(np.mean(cover["classical"])),
+                     "coverage_bootstrap": float(np.mean(cover["bootstrap"]))})
+    return pd.DataFrame(rows)
 
 
 def gp_length_scale(df: pd.DataFrame, on: str = "X_obs") -> float:

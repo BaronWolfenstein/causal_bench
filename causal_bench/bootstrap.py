@@ -131,3 +131,63 @@ def ic_bootstrap_ci(
         return float(lo), float(hi)
 
     raise ValueError(f"Unknown method {method!r}. Choose 'percentile', 't', or 'bca'.")
+
+
+def row_bootstrap_ci(
+    estimator,
+    data,
+    B: int = 1000,
+    method: str = "percentile",
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """Nonparametric row-resampling bootstrap CI for an arbitrary scalar estimator.
+
+    Unlike ``ic_bootstrap_ci`` (which resamples a precomputed influence curve and
+    is O(B·n)), this resamples ROWS with replacement and RE-RUNS the full
+    ``estimator`` on each resample — so any internal calibration / nuisance step
+    is re-estimated per replicate and its variance is captured. Use it for
+    estimators with no closed-form influence curve, e.g. a regression-calibration
+    + OLS pipeline whose plug-in SE understates the calibration uncertainty.
+
+    Parameters
+    ----------
+    estimator : callable(data_like) -> float
+        Maps a (row-resampled) copy of ``data`` to a scalar estimate. Must
+        include every step whose variance should be captured (the calibration
+        step, not just the final fit).
+    data : pandas DataFrame or numpy ndarray
+        Row-indexable sample; rows are resampled with replacement.
+    method : {"percentile", "basic"}
+        Percentile interval, or the basic (reflected) interval
+        ``[2θ̂ − q_hi, 2θ̂ − q_lo]``.
+
+    Returns ``(lo, hi)``. Replicates that raise or return non-finite are dropped.
+    """
+    n = len(data)
+    use_iloc = hasattr(data, "iloc")
+
+    def _take(idx):
+        return data.iloc[idx] if use_iloc else data[idx]
+
+    rng = np.random.default_rng(seed)
+    theta = np.empty(B)
+    theta[:] = np.nan
+    for b in range(B):
+        idx = rng.integers(0, n, n)
+        try:
+            val = float(estimator(_take(idx)))
+        except Exception:
+            continue
+        theta[b] = val
+    theta = theta[np.isfinite(theta)]
+    if theta.size < max(20, B // 10):
+        raise ValueError("too many bootstrap replicates failed to produce a finite estimate")
+
+    q_lo, q_hi = np.percentile(theta, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    if method == "percentile":
+        return float(q_lo), float(q_hi)
+    if method == "basic":
+        point = float(estimator(data))
+        return float(2 * point - q_hi), float(2 * point - q_lo)
+    raise ValueError(f"Unknown method {method!r}. Choose 'percentile' or 'basic'.")

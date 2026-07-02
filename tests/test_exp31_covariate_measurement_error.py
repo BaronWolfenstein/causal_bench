@@ -58,6 +58,16 @@ def test_tipping_point_is_finite_and_early(sweep):
     assert np.isfinite(tp) and tp <= 0.5                  # naive fails by σ_x=0.5
 
 
+def test_bootstrap_fixes_corrected_arm_undercoverage():
+    from experiments.exp31_covariate_measurement_error import compare_corrected_coverage
+    cov = compare_corrected_coverage([1.0], n_sims=20, n=800, B=150, seed=31)
+    row = cov.iloc[0]
+    # the row-bootstrap (re-running calibration per replicate) captures the RC
+    # variance the classical SE understates -> higher, closer-to-nominal coverage
+    assert row["coverage_bootstrap"] > row["coverage_classical"]
+    assert row["coverage_bootstrap"] >= 0.88
+
+
 def test_gp_length_scale_conflates_with_covariate_noise():
     df = simulate_covariate_me(sigma_x=1.0, n=2000, seed=31)
     ls_true = gp_length_scale(df, "X_true")
