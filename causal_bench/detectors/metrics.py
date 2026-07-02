@@ -27,3 +27,17 @@ def detection_roc(scored_df: pd.DataFrame, e_label, target_fpr: float = 0.1) -> 
     fpr, tpr, _ = roc_curve(y, score)
     power = float(np.interp(target_fpr, fpr, tpr))
     return {"auc": auc, "power_at_fpr": power}
+
+
+def threshold_at_fpr(scored_df: pd.DataFrame, e_label, target_fpr: float = 0.1) -> float:
+    """Detection cutoff c for the |nc_residual| detector at a target false-positive rate.
+
+    c is the (1 − target_fpr) quantile of |nc_residual| over quiet steps (previous
+    step fired no shock). Flagging when |nc_residual| > c then false-alarms on
+    quiet steps at ≈ target_fpr. NaN residuals (first turns) are dropped.
+    """
+    score = scored_df["nc_residual"].abs().to_numpy()
+    y = np.asarray(e_label, dtype=float)
+    mask = ~np.isnan(score)
+    quiet = score[mask][y[mask] == 0]
+    return float(np.quantile(quiet, 1.0 - target_fpr))

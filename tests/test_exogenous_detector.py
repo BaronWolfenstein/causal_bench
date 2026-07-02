@@ -41,6 +41,25 @@ def test_sweep_returns_monotone_auc_table():
     assert tbl.loc[tbl.shock_delta == 3.0, "auc"].iloc[0] > 0.75
 
 
+def test_threshold_at_fpr_hits_target_on_quiet_steps():
+    from causal_bench.detectors.metrics import threshold_at_fpr
+    cfg = UserSimConfig(n_trajectories=400, n_turns=8, shock_rate=0.15,
+                        shock_delta=2.0, nc_noise_sd=0.3, gamma_action=0.3)
+    d = generate_user_sim_trajectories(cfg, seed=6)
+    scored = negative_control_residual(d)
+    e_prev = (d.sort_values(["trajectory_id", "t"])
+                .groupby("trajectory_id")["e"].shift(1).fillna(0).to_numpy())
+    c = threshold_at_fpr(scored, e_prev, target_fpr=0.1)
+    score = scored["nc_residual"].abs().to_numpy()
+    mask = ~np.isnan(score)
+    quiet = score[mask][np.asarray(e_prev, dtype=float)[mask] == 0]
+    fpr = float((quiet > c).mean())
+    assert abs(fpr - 0.1) < 0.02          # empirical FPR ≈ target
+    # and the threshold has power: post-shock steps exceed it more often than quiet ones
+    hot = score[mask][np.asarray(e_prev, dtype=float)[mask] == 1]
+    assert (hot > c).mean() > 0.5
+
+
 def test_detection_degrades_with_observability():
     """At fixed δ, weakening the negative control's coupling to the latent state
     lowers detection AUC — gracefully, not a cliff. This is the transferable result:
