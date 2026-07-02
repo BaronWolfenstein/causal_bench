@@ -51,3 +51,15 @@ def test_sweep_shows_mnar_ipw_gap():
     mnar = tbl[tbl.mechanism == "mnar"].iloc[0]
     # under MNAR, IPW-on-observables leaves more bias than the proxy correction
     assert abs(mnar["ipw_bias"]) > abs(mnar["proxy_bias"])
+
+
+def test_proxy_recovery_degrades_with_proxy_noise():
+    """How much MNAR bias a proxy removes depends on proxy quality. v1 used a
+    near-direct proxy (z + N(0,0.3)); degrading it shows the recovery-vs-proxy-quality
+    curve, and the residual bias that survives even a good proxy."""
+    from experiments.exp27_dialogue_mnar import run_proxy_quality_sweep
+    tbl = run_proxy_quality_sweep(proxy_noise_sds=[0.1, 0.5, 1.5], severity=2.5, seed=12)
+    assert list(tbl["proxy_noise_sd"]) == [0.1, 0.5, 1.5]
+    b = tbl.set_index("proxy_noise_sd")["proxy_bias"].abs()
+    assert b[0.1] < b[1.5]         # better proxy → smaller residual
+    assert b[0.1] > 0.005          # even a good proxy leaves a residual (MNAR not fully fixed)
