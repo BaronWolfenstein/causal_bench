@@ -36,3 +36,11 @@ include = ["causal_bench*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# macOS Accelerate BLAS raises spurious FP flags on degenerate/empty matmuls
+# (HAR dominance kernel, sklearn linear solvers); results are finite. Narrowly
+# silence just these so real warnings stay visible.
+filterwarnings = [
+    "ignore:invalid value encountered in matmul:RuntimeWarning",
+    "ignore:divide by zero encountered in matmul:RuntimeWarning",
+    "ignore:overflow encountered in matmul:RuntimeWarning",
+]

@@ -12,11 +12,27 @@ the two terms of the estimator expansion directly against the DGP truth:
   remainder = P[eif0(f_hat)] - tau_0
 
 where the population part P[.] is evaluated on a fixed independent
-Monte Carlo sample (N=1e5 per surface). The Donsker theory's claim is
-precisely that sqrt(n)*EP -> 0 without cross-fitting for LTB/HAL (and
-HAR on the smooth surface only); xgboost is the non-Donsker control.
-Under crossfit, the P_n part uses out-of-fold nuisances and the P part
-averages the fold models (see NuisanceFits.predict).
+Monte Carlo sample (--mc-n, default 1e5 per surface). The Donsker
+theory's claim is precisely that sqrt(n)*EP -> 0 without cross-fitting
+for LTB/HAL (and HAR on the smooth surface only); xgboost is the
+non-Donsker control.
+
+Crossfit-OFF is the headline arm and is measured EXACTLY: the P_n and P
+parts use the same single fitted model, so (P_n - P) is an honest
+empirical-process term. Crossfit-ON is a reference arm only and its EP
+carries one extra approximation: the P_n part uses per-fold OOF
+nuisances, but the P part averages the fold models' predictions
+(NuisanceFits.predict) before forming eif0. Because eif0 is nonlinear in
+g, eif0(mean_k f_k) != mean_k eif0(f_k), so the crossfit-ON EP column has
+a Jensen-type discrepancy the crossfit-OFF column does not. Do not
+compare on-vs-off EP magnitudes quantitatively without accounting for it;
+a per-fold P evaluation would remove it (deferred, phase 2).
+
+HAR cost note: HARRegressor.predict is O(n_eval * n_train) per call, so
+the P-part evaluation dominates runtime for the HAR arm at n_eval=1e5
+(minutes/sim, x5 under crossfit for fold-averaging). Pass a smaller
+--mc-n (e.g. 10000) for HAR runs; sqrt(n)*EP MC-noise scales as
+1/sqrt(mc_n), so 1e4 is ample.
 
 The oracle arm (f_hat = f_0) pins both terms at zero by construction.
 HAL runs via the existing rpy2 wrappers at reduced n_sims and is
@@ -71,9 +87,9 @@ def make_learners(name: str, seed: int):
 
 
 @lru_cache(maxsize=None)
-def mc_eval_sample(surface: str) -> pd.DataFrame:
+def mc_eval_sample(surface: str, mc_n: int = _MC_N) -> pd.DataFrame:
     """Fixed independent draw used as the population P[.] in EP/remainder."""
-    return draw_point_treatment(n=_MC_N, surface=surface, seed=_MC_SEED)
+    return draw_point_treatment(n=mc_n, surface=surface, seed=_MC_SEED)
 
 
 def eif0_values(g, Q1, Q0, A, Y) -> np.ndarray:
@@ -84,7 +100,7 @@ def eif0_values(g, Q1, Q0, A, Y) -> np.ndarray:
     return Q1 - Q0 + H * (Y - QA)
 
 
-def ep_and_remainder(nf, df_sim: pd.DataFrame, surface: str):
+def ep_and_remainder(nf, df_sim: pd.DataFrame, surface: str, mc_n: int = _MC_N):
     """(sqrt(n)*EP, remainder) for the fitted nuisances nf on this sim."""
     W = df_sim[W_COLS].values
     A = df_sim["A"].values.astype(float)
@@ -95,7 +111,7 @@ def ep_and_remainder(nf, df_sim: pd.DataFrame, surface: str):
                 - eif0_values(true_g(W, surface), true_Q(1, W, surface),
                               true_Q(0, W, surface), A, Y))
 
-    mc = mc_eval_sample(surface)
+    mc = mc_eval_sample(surface, mc_n)
     W_mc = mc[W_COLS].values
     A_mc = mc["A"].values.astype(float)
     Y_mc = mc["Y"].values.astype(float)
@@ -110,8 +126,22 @@ def ep_and_remainder(nf, df_sim: pd.DataFrame, surface: str):
     return float(np.sqrt(n)) * ep, remainder
 
 
+def nuisance_rmse(nf, W: np.ndarray, surface: str) -> tuple[float, float]:
+    """(g_rmse, q_rmse) of fitted nuisances vs truth.
+
+    q_rmse is the pooled RMSE over the stacked Q1/Q0 errors: the sum of the
+    two mean-squared errors is divided by 2 (not sqrt(2)) inside the sqrt, so
+    for constant offsets +a on Q1 and -b on Q0 it equals sqrt((a^2+b^2)/2).
+    """
+    g_rmse = float(np.sqrt(np.mean((nf.g - true_g(W, surface)) ** 2)))
+    q_rmse = float(np.sqrt(np.mean(
+        (nf.Q1 - true_Q(1, W, surface)) ** 2
+        + (nf.Q0 - true_Q(0, W, surface)) ** 2) / 2.0))
+    return g_rmse, q_rmse
+
+
 def run_cell(learner: str, crossfit: bool, surface: str, n: int,
-             n_sims: int, base_seed: int) -> pd.DataFrame:
+             n_sims: int, base_seed: int, mc_n: int = _MC_N) -> pd.DataFrame:
     """All simulations for one (learner, crossfit, surface) cell."""
     tau0 = true_tau(surface)
     rows = []
@@ -129,11 +159,8 @@ def run_cell(learner: str, crossfit: bool, surface: str, n: int,
             nf = fit_nuisances(W, A, Y, g_l, q_l, crossfit=crossfit,
                                random_state=seed)
 
-        g_rmse = float(np.sqrt(np.mean((nf.g - true_g(W, surface)) ** 2)))
-        q_rmse = float(np.sqrt(np.mean(
-            (nf.Q1 - true_Q(1, W, surface)) ** 2
-            + (nf.Q0 - true_Q(0, W, surface)) ** 2) / 2.0))
-        sqrtn_ep, remainder = ep_and_remainder(nf, df, surface)
+        g_rmse, q_rmse = nuisance_rmse(nf, W, surface)
+        sqrtn_ep, remainder = ep_and_remainder(nf, df, surface, mc_n)
 
         for est_name, est in (("aipw", point_aipw), ("tmle", point_tmle)):
             r = est(A, Y, nf)
@@ -180,6 +207,9 @@ def main():
     ap.add_argument("--seed", type=int, default=20260702)
     ap.add_argument("--skip-hal", action="store_true")
     ap.add_argument("--learners", nargs="+", default=list(LEARNERS))
+    ap.add_argument("--mc-n", type=int, default=_MC_N,
+                    help="MC eval-sample size for EP/remainder. HAR predict is "
+                         "O(n_eval*n_train); use ~10000 for the HAR arm.")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -201,7 +231,7 @@ def main():
                       f"({n_sims} sims)")
                 frames.append(run_cell(learner, crossfit, surface,
                                        n=args.n, n_sims=n_sims,
-                                       base_seed=args.seed))
+                                       base_seed=args.seed, mc_n=args.mc_n))
     raw = pd.concat(frames, ignore_index=True)
     raw.to_csv(OUT_DIR / "raw.csv", index=False)
     summ = summarize(raw)
