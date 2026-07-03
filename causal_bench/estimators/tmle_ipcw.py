@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit, logit
 from scipy import stats
+from sklearn.base import clone
 from sklearn.linear_model import LogisticRegression
 from lifelines import CoxPHFitter
 from causal_bench.estimators.base import BaseEstimator
@@ -11,10 +12,34 @@ from causal_bench.super_learner import SuperLearner
 from causal_bench.crossfit import make_folds
 
 
+def _q_predict(model, X):
+    """P(Y=1|X) from a fitted classifier, or clipped predictions from a regressor."""
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X)[:, 1]
+    return np.clip(model.predict(X), 0.0, 1.0)
+
+
+def _fit_q(proto, X, y, sample_weight):
+    """Clone-and-fit the outcome learner, passing IPCW weights when supported.
+
+    Learners without a sample_weight kwarg (LTB/HAR) are fit unweighted; the
+    IPCW correction then enters only through the clever covariate / targeting
+    step, which keeps the estimator doubly-robust-valid at the cost of a
+    non-IPCW-weighted initial fit.
+    """
+    m = clone(proto)
+    try:
+        m.fit(X, y, sample_weight=sample_weight)
+    except TypeError:
+        m.fit(X, y)
+    return m
+
+
 class TMLEIPCWEstimator(BaseEstimator):
 
     def __init__(self, use_compliance: bool = False, n_folds: int = 5,
-                 random_state: int = 42, fold_mode: str = "iid"):
+                 random_state: int = 42, fold_mode: str = "iid",
+                 g_learner=None, q_learner=None):
         """
         fold_mode:
             "iid" (default) — current behavior, ignores any provenance
@@ -22,11 +47,21 @@ class TMLEIPCWEstimator(BaseEstimator):
             kept in the same cross-fitting fold (sklearn GroupKFold), for use
             with causal_bench.dgp.augmentation.generate_augmented_data, where
             synthetic units are not independent of their real parent.
+        g_learner, q_learner:
+            Optional sklearn-protocol learners for the propensity (g) and
+            outcome (Q) nuisances. Default None preserves the current
+            behavior exactly: g via the default SuperLearner ensemble, Q via
+            IPCW-weighted logistic. When supplied (e.g. LTB/HAR from phase-2
+            wiring), g is fit as a single-candidate SuperLearner (reusing its
+            OOF machinery) and Q via _fit_q. The censoring model G (Cox) is
+            unchanged in both cases.
         """
         self.use_compliance = use_compliance
         self.n_folds = n_folds
         self.random_state = random_state
         self.fold_mode = fold_mode
+        self.g_learner = g_learner
+        self.q_learner = q_learner
 
     @property
     def name(self) -> str:
@@ -65,25 +100,34 @@ class TMLEIPCWEstimator(BaseEstimator):
         ipcw = np.where(Delta == 1, 1.0 / G, np.where(admin_censored, 1.0, 0.0))
 
         # ── Step 2: Propensity model ──
-        sl_g = SuperLearner(task="classification", n_folds=self.n_folds,
-                            random_state=self.random_state, fold_mode=self.fold_mode)
+        # Default (g_learner is None): the full SuperLearner ensemble, as before.
+        # Custom g_learner: a single-candidate SuperLearner, reusing its OOF /
+        # cross-fitting machinery (oof_predictions_) unchanged.
+        g_candidates = None if self.g_learner is None else [clone(self.g_learner)]
+        sl_g = SuperLearner(candidates=g_candidates, task="classification",
+                            n_folds=self.n_folds, random_state=self.random_state,
+                            fold_mode=self.fold_mode)
         sl_g.fit(W, A, groups=groups)
         g = sl_g.predict_proba(W)
         # OOF g: SuperLearner stores genuine out-of-fold predictions during fit.
         g_oof = sl_g.oof_predictions_
 
-        # ── Step 3: Outcome model (IPCW-weighted logistic) ──
+        # ── Step 3: Outcome model (IPCW-weighted, logistic by default) ──
         AW = np.column_stack([A, W])
         AW1 = np.column_stack([np.ones(n), W])
         AW0 = np.column_stack([np.zeros(n), W])
 
         sample_weights = ipcw / max(ipcw.mean(), 1e-10)
-        q_model = LogisticRegression(max_iter=1000, C=1.0)
-        q_model.fit(AW, Y, sample_weight=sample_weights)
+        # Default (q_learner is None): IPCW-weighted logistic, as before.
+        # _q_predict(LogisticRegression, X) == expit(decision_function(X)), so
+        # the default path is numerically unchanged.
+        q_proto = (self.q_learner if self.q_learner is not None
+                   else LogisticRegression(max_iter=1000, C=1.0))
+        q_model = _fit_q(q_proto, AW, Y, sample_weights)
 
-        Q_AW = np.clip(expit(q_model.decision_function(AW)), 1e-5, 1 - 1e-5)
-        Q_1W = np.clip(expit(q_model.decision_function(AW1)), 1e-5, 1 - 1e-5)
-        Q_0W = np.clip(expit(q_model.decision_function(AW0)), 1e-5, 1 - 1e-5)
+        Q_AW = np.clip(_q_predict(q_model, AW), 1e-5, 1 - 1e-5)
+        Q_1W = np.clip(_q_predict(q_model, AW1), 1e-5, 1 - 1e-5)
+        Q_0W = np.clip(_q_predict(q_model, AW0), 1e-5, 1 - 1e-5)
 
         # OOF Q: cross-fitted predictions for unbiased IC variance. Uses the
         # same fold_mode/groups as the propensity model above, so a real unit
@@ -94,10 +138,9 @@ class TMLEIPCWEstimator(BaseEstimator):
         for tr, val in make_folds(AW, n_folds=self.n_folds, mode=self.fold_mode,
                                    groups=groups, random_state=self.random_state):
             sw_tr = sample_weights[tr] / max(sample_weights[tr].mean(), 1e-10)
-            qc = LogisticRegression(max_iter=1000, C=1.0)
-            qc.fit(AW[tr], Y[tr], sample_weight=sw_tr)
-            Q_1W_oof[val] = np.clip(expit(qc.decision_function(AW1[val])), 1e-5, 1-1e-5)
-            Q_0W_oof[val] = np.clip(expit(qc.decision_function(AW0[val])), 1e-5, 1-1e-5)
+            qc = _fit_q(q_proto, AW[tr], Y[tr], sw_tr)
+            Q_1W_oof[val] = np.clip(_q_predict(qc, AW1[val]), 1e-5, 1-1e-5)
+            Q_0W_oof[val] = np.clip(_q_predict(qc, AW0[val]), 1e-5, 1-1e-5)
 
         # ── Steps 4-5: Targeting + EIF SE ──
         results = []
