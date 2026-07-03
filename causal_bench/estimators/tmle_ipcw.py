@@ -5,6 +5,7 @@ from scipy.special import expit, logit
 from scipy import stats
 from sklearn.base import clone
 from sklearn.linear_model import LogisticRegression
+from sklearn.utils.validation import has_fit_parameter
 from lifelines import CoxPHFitter
 from causal_bench.estimators.base import BaseEstimator
 from causal_bench.metrics import EstimatorResult
@@ -26,11 +27,16 @@ def _fit_q(proto, X, y, sample_weight):
     IPCW correction then enters only through the clever covariate / targeting
     step, which keeps the estimator doubly-robust-valid at the cost of a
     non-IPCW-weighted initial fit.
+
+    Support is decided by inspecting the fit signature (has_fit_parameter),
+    NOT by catching TypeError from fit() — a broad except would silently
+    swallow a genuine TypeError raised inside a weight-accepting learner's fit
+    and drop the IPCW weights, masking the bug.
     """
     m = clone(proto)
-    try:
+    if has_fit_parameter(m, "sample_weight"):
         m.fit(X, y, sample_weight=sample_weight)
-    except TypeError:
+    else:
         m.fit(X, y)
     return m
 

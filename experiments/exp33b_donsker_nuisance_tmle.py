@@ -42,8 +42,9 @@ def _estimators():
     }
 
 
-def run(n_sims: int = 50, seed: int = 20260703, arms=None) -> pd.DataFrame:
-    cfg = get_scenario(SCENARIO)
+def run(n_sims: int = 50, seed: int = 20260703, arms=None,
+        scenario: str = SCENARIO) -> pd.DataFrame:
+    cfg = get_scenario(scenario)
     tau0 = compute_true_effects(cfg)["ATE"]
     factories = _estimators()
     if arms is not None:
@@ -89,10 +90,13 @@ def main():
     ap.add_argument("--seed", type=int, default=20260703)
     ap.add_argument("--arms", nargs="+", default=None,
                     help="subset of {default, ltb, har_q}")
+    ap.add_argument("--scenario", type=str, default=SCENARIO,
+                    help="any causal_bench.dgp.scenarios key (e.g. edwards_realistic)")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    raw, tau0 = run(n_sims=args.n_sims, seed=args.seed, arms=args.arms)
+    raw, tau0 = run(n_sims=args.n_sims, seed=args.seed, arms=args.arms,
+                    scenario=args.scenario)
     raw.to_csv(OUT_DIR / "raw.csv", index=False)
     summ = summarize(raw, tau0)
     summ.to_csv(OUT_DIR / "summary.csv", index=False)
