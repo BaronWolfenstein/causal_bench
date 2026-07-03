@@ -132,7 +132,7 @@ def run_cell(learner: str, crossfit: bool, surface: str, n: int,
         g_rmse = float(np.sqrt(np.mean((nf.g - true_g(W, surface)) ** 2)))
         q_rmse = float(np.sqrt(np.mean(
             (nf.Q1 - true_Q(1, W, surface)) ** 2
-            + (nf.Q0 - true_Q(0, W, surface)) ** 2) / np.sqrt(2)))
+            + (nf.Q0 - true_Q(0, W, surface)) ** 2) / 2.0))
         sqrtn_ep, remainder = ep_and_remainder(nf, df, surface)
 
         for est_name, est in (("aipw", point_aipw), ("tmle", point_tmle)):

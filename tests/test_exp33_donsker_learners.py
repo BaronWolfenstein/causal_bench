@@ -42,3 +42,10 @@ def test_summarize_aggregates():
     assert (summ["rmse"] >= abs(summ["bias"]) - 1e-12).all()
     assert summ["coverage"].between(0, 1).all()
     assert np.isfinite(tau0)
+
+
+def test_oracle_cell_has_zero_nuisance_rmse():
+    out = run_cell("oracle", crossfit=False, surface="smooth",
+                   n=200, n_sims=1, base_seed=3)
+    assert (out["g_rmse"] == 0).all()
+    assert (out["q_rmse"] == 0).all()
