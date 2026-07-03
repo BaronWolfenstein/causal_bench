@@ -1,11 +1,30 @@
 import numpy as np
 
-from causal_bench.dgp.point_treatment import draw_point_treatment, true_tau
-from causal_bench.estimators.point import oracle_nuisances
+from causal_bench.dgp.point_treatment import (
+    draw_point_treatment, true_Q, true_g, true_tau)
+from causal_bench.estimators.point import NuisanceFits, oracle_nuisances
 from experiments.exp33_donsker_learners import (
-    ep_and_remainder, run_cell, summarize)
+    ep_and_remainder, nuisance_rmse, run_cell, summarize)
 
 W_COLS = ["W1", "W2", "W3", "W4"]
+
+
+def test_q_rmse_is_pooled_rmse_identity():
+    # Constant offsets +a on Q1, -b on Q0, zero g error -> q_rmse must equal
+    # the pooled RMSE sqrt((a^2+b^2)/2). This pins the /2.0 normalization:
+    # the old /sqrt(2) formula gives sqrt((a^2+b^2)/sqrt(2)) and would fail.
+    df = draw_point_treatment(n=500, surface="smooth", seed=1)
+    W = df[W_COLS].values
+    a, b = 0.10, 0.04
+    nf = NuisanceFits(
+        true_g(W, "smooth"),
+        true_Q(1, W, "smooth") + a,
+        true_Q(0, W, "smooth") - b,
+        models=[],
+    )
+    g_rmse, q_rmse = nuisance_rmse(nf, W, "smooth")
+    assert abs(g_rmse) < 1e-12
+    assert np.isclose(q_rmse, np.sqrt((a**2 + b**2) / 2.0))
 
 
 def test_oracle_ep_and_remainder_are_zero():
