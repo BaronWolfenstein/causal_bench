@@ -8,8 +8,13 @@ SuperLearner nuisances against LTB and HAR nuisances.
 
 Arms:
 - default : g via the default SuperLearner ensemble, Q via IPCW-weighted logistic.
+- cv      : same, but the CV-TMLE variant (cross-fitted censoring model G).
 - ltb     : LTBClassifier for g, LTBRegressor for Q.
+- cv_ltb  : LTB nuisances under CV-TMLE.
 - har_q   : HARRegressor for Q (squared-error only, no classifier), default g.
+
+The cv / cv_ltb arms are the spec §8.3 comparison against the existing
+tmle_ipcw_cv rows and the documented se_ratio gap.
 
 This is a research comparison, not a unit test: the default n_sims is small so
 the script is runnable interactively; raise --n-sims for a real read. Metrics
@@ -29,12 +34,22 @@ SCENARIO = "edwards_realistic"
 
 
 def _estimators():
-    """Arm name -> factory (fresh estimator per sim; learners are cloned inside)."""
+    """Arm name -> factory (fresh estimator per sim; learners are cloned inside).
+
+    The cv arms use TMLEIPCWCVEstimator (cross-fitted censoring model G) so the
+    run compares against the existing tmle_ipcw AND tmle_ipcw_cv rows (spec
+    §8.3). TMLEIPCWCVEstimator inherits g_learner/q_learner from its parent.
+    """
     from causal_bench.har import HARRegressor
     from causal_bench.ltb import LTBClassifier, LTBRegressor
+    from causal_bench.estimators.tmle_ipcw_cv import TMLEIPCWCVEstimator
     return {
         "default": lambda: TMLEIPCWEstimator(random_state=42),
+        "cv": lambda: TMLEIPCWCVEstimator(random_state=42),
         "ltb": lambda: TMLEIPCWEstimator(
+            random_state=42, g_learner=LTBClassifier(random_state=0),
+            q_learner=LTBRegressor(random_state=0)),
+        "cv_ltb": lambda: TMLEIPCWCVEstimator(
             random_state=42, g_learner=LTBClassifier(random_state=0),
             q_learner=LTBRegressor(random_state=0)),
         "har_q": lambda: TMLEIPCWEstimator(
@@ -89,7 +104,7 @@ def main():
     ap.add_argument("--n-sims", type=int, default=50)
     ap.add_argument("--seed", type=int, default=20260703)
     ap.add_argument("--arms", nargs="+", default=None,
-                    help="subset of {default, ltb, har_q}")
+                    help="subset of {default, cv, ltb, cv_ltb, har_q}")
     ap.add_argument("--scenario", type=str, default=SCENARIO,
                     help="any causal_bench.dgp.scenarios key (e.g. edwards_realistic)")
     args = ap.parse_args()
