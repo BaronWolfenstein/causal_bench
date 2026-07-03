@@ -72,8 +72,7 @@ def _rc_system(df: pd.DataFrame, w1_obs: np.ndarray, sigma_x: float):
     var_w1_true = max(P[:, 0].var() - sigma_x**2, 1e-6)
     c = np.empty(P.shape[1])
     c[0] = var_w1_true                                  # cov(W1_true, W1_obs)
-    for j in range(1, P.shape[1]):                      # cov(W1_true, Z_j)
-        c[j] = np.cov(w1_obs, P[:, j], ddof=0)[0, 1]
+    c[1:] = Sigma[0, 1:]                                 # cov(W1_true, Z)=cov(W1_obs, Z)
     coef = np.linalg.solve(Sigma + 1e-9 * np.eye(len(c)), c)
     return P, mu, coef, c, var_w1_true
 
