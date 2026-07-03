@@ -27,8 +27,23 @@ dev = ["pytest>=7", "pytest-cov"]
 r = ["rpy2>=3.5"]
 storage = ["pyarrow>=12"]
 notebook = ["Pillow>=10", "jupyter>=1.0", "jupyter-cache>=0.6", "nbformat>=5.9"]
-bayes = ["bambi>=0.13", "pymc>=5.0", "arviz>=1.0"]
-all = ["rpy2>=3.5", "pyarrow>=12", "Pillow>=10", "bambi>=0.13", "pymc>=5.0", "arviz>=1.0"]
+# The bayes stack (arviz>=1.0, which the CLMM estimator's az.hdi(prob=) 1.x API
+# needs) requires Python >=3.12; requires-python is >=3.10. Gate it with an
+# environment marker so `uv` can resolve across the whole declared range —
+# without it, resolution is unsatisfiable repo-wide. On 3.10/3.11 the bayes
+# extra installs nothing and the CLMM tests skip (they already guard on the
+# bambi import).
+bayes = [
+    "bambi>=0.13; python_version >= '3.12'",
+    "pymc>=5.0; python_version >= '3.12'",
+    "arviz>=1.0; python_version >= '3.12'",
+]
+all = [
+    "rpy2>=3.5", "pyarrow>=12", "Pillow>=10",
+    "bambi>=0.13; python_version >= '3.12'",
+    "pymc>=5.0; python_version >= '3.12'",
+    "arviz>=1.0; python_version >= '3.12'",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
