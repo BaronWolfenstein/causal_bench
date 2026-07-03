@@ -42,6 +42,7 @@ import pandas as pd
 
 from causal_bench.dgp.survival import DGPConfig, generate_data
 from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
+from causal_bench.measurement_error import regression_calibrate
 
 OUT_DIR = Path("results/exp32_clever_covariate_me")
 _Z_COLS = ["W2", "W3", "W4", "A"]     # error-free covariates RC conditions on
@@ -59,29 +60,10 @@ def simulate_me_survival(sigma_x: float, n: int = 1500, seed: int = 0,
     return df, df["W1"].to_numpy().copy(), w1_obs
 
 
-def _rc_system(df: pd.DataFrame, w1_obs: np.ndarray, sigma_x: float):
-    """Normal-equation pieces for E[W1_true | W1_obs, Z] under classical error.
-
-    Uses observed moments plus the reliability-study σ_x²: cov(W1_true, W1_obs)
-    = var(W1_obs) − σ_x²; cov(W1_true, Z) = cov(W1_obs, Z) for the error-free Z
-    (error ⟂ Z). Returns (P, mu, coef, c, var_w1_true)."""
-    Z = df[_Z_COLS].to_numpy(float)
-    P = np.column_stack([w1_obs, Z])
-    mu = P.mean(0)
-    Sigma = np.cov(P, rowvar=False, ddof=0)
-    var_w1_true = max(P[:, 0].var() - sigma_x**2, 1e-6)
-    c = np.empty(P.shape[1])
-    c[0] = var_w1_true                                  # cov(W1_true, W1_obs)
-    c[1:] = Sigma[0, 1:]                                 # cov(W1_true, Z)=cov(W1_obs, Z)
-    coef = np.linalg.solve(Sigma + 1e-9 * np.eye(len(c)), c)
-    return P, mu, coef, c, var_w1_true
-
-
 def regression_calibrate_w1(df: pd.DataFrame, w1_obs: np.ndarray,
                             sigma_x: float) -> np.ndarray:
     """E[W1_true | W1_obs, W2, W3, W4, A] — the RC-corrected confounder."""
-    P, mu, coef, _, _ = _rc_system(df, w1_obs, sigma_x)
-    return mu[0] + (P - mu) @ coef                      # mean(W1_true)=mean(W1_obs)
+    return regression_calibrate(w1_obs, df[_Z_COLS].to_numpy(float), sigma_x)
 
 
 def rc_residual_variance(df: pd.DataFrame, w1_obs: np.ndarray,
@@ -95,8 +77,9 @@ def rc_residual_variance(df: pd.DataFrame, w1_obs: np.ndarray,
     variance unadjusted; the corrected arm's residual bias is bounded by the
     confounding strength times τ²_resid, which the report below shows is
     dominated by the CI half-width."""
-    _, _, coef, c, var_w1_true = _rc_system(df, w1_obs, sigma_x)
-    return float(var_w1_true - c @ coef)                # var − cᵀΣ⁻¹c
+    _, tau2 = regression_calibrate(w1_obs, df[_Z_COLS].to_numpy(float), sigma_x,
+                                   return_residual_variance=True)
+    return tau2
 
 
 def arm_frame(df: pd.DataFrame, arm: str, w1_true: np.ndarray,

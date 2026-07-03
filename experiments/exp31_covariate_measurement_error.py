@@ -42,6 +42,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from causal_bench.measurement_error import regression_calibrate
+
 OUT_DIR = Path("results/exp31_covariate_me")
 
 TAU_TRUE = 1.0     # true treatment effect on Y
@@ -80,21 +82,9 @@ def _ols_effect(y: np.ndarray, cols: list[np.ndarray]) -> tuple[float, float]:
 def _regression_calibration(df: pd.DataFrame, sigma_x: float) -> np.ndarray:
     """E[X_true | X_obs, A] under classical additive error and known σ_x².
 
-    Uses observed moments plus the reliability-study σ_x²:
-    var(X_true) = var(X_obs) − σ_x²; cov(X_true, X_obs) = var(X_true);
-    cov(X_true, A) = cov(X_obs, A) (error ⟂ A). Solve the normal equations for
-    the linear predictor of X_true from (X_obs, A). This is the standard
-    regression-calibration correction (Carroll et al.).
-    """
-    w, a = df["X_obs"].to_numpy(), df["A"].to_numpy()
-    mw, ma = w.mean(), a.mean()
-    vW, vA = w.var(), a.var()
-    cWA = np.cov(w, a, ddof=0)[0, 1]
-    vX = max(vW - sigma_x**2, 1e-6)           # var(X_true), floored
-    b = np.array([vX, cWA])                    # [cov(X,W), cov(X,A)]
-    Sigma = np.array([[vW, cWA], [cWA, vA]])
-    coefs = np.linalg.solve(Sigma, b)
-    return mw + coefs[0] * (w - mw) + coefs[1] * (a - ma)
+    Conditions on the error-free treatment A (see the shared helper for the
+    normal-equations derivation)."""
+    return regression_calibrate(df["X_obs"].to_numpy(), df["A"].to_numpy(), sigma_x)
 
 
 def _corrected_point(df: pd.DataFrame, sigma_x: float) -> float:
