@@ -68,3 +68,20 @@ def test_oracle_cell_has_zero_nuisance_rmse():
                    n=200, n_sims=1, base_seed=3)
     assert (out["g_rmse"] == 0).all()
     assert (out["q_rmse"] == 0).all()
+
+
+def test_crossfit_on_ep_finite_oracle_exact():
+    from sklearn.linear_model import LogisticRegression
+    from causal_bench.estimators.point import fit_nuisances, oracle_nuisances
+    df = draw_point_treatment(n=500, surface="smooth", seed=0)
+    W = df[W_COLS].values
+    A = df["A"].values.astype(float)
+    Y = df["Y"].values.astype(float)
+    nf = fit_nuisances(W, A, Y, LogisticRegression(max_iter=1000),
+                       LogisticRegression(max_iter=1000), crossfit=True,
+                       random_state=0)
+    ep, _ = ep_and_remainder(nf, df, "smooth", mc_n=3000)
+    assert np.isfinite(ep)
+    # per-fold averaging keeps the oracle (single truth "fold") exact
+    ep0, _ = ep_and_remainder(oracle_nuisances(W, "smooth"), df, "smooth", mc_n=3000)
+    assert ep0 == 0.0

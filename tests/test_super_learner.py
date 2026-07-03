@@ -53,3 +53,16 @@ def test_raises_before_fit():
         assert False, "Should have raised"
     except (TypeError, AttributeError):
         pass  # expected — _fitted_candidates is None
+
+
+def test_donsker_optin_lists_extend_defaults():
+    from sklearn.base import clone
+    from causal_bench.super_learner import (
+        _default_classifiers, _default_regressors,
+        har_regressors, ltb_classifiers, ltb_regressors)
+    assert len(ltb_classifiers(0)) == len(_default_classifiers(0)) + 1
+    assert len(ltb_regressors(0)) == len(_default_regressors(0)) + 1
+    assert len(har_regressors(0)) == len(_default_regressors(0)) + 1
+    # the appended Donsker learner is clone-safe (drops into SuperLearner)
+    clone(ltb_classifiers(0)[-1])
+    clone(har_regressors(0)[-1])

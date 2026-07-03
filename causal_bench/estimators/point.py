@@ -64,6 +64,25 @@ class NuisanceFits:
             q0s.append(_predict_binary(q_m, X0))
         return (np.mean(gs, axis=0), np.mean(q1s, axis=0), np.mean(q0s, axis=0))
 
+    def predict_folds(self, W_new: np.ndarray) -> list[tuple]:
+        """Per-fold (g, Q1, Q0) predictions — one tuple per fold model.
+
+        predict() averages the fold models' predictions; that is convenient
+        but wrong for the empirical-process diagnostic, because the influence
+        function is nonlinear in g so eif0(mean_k f_k) != mean_k eif0(f_k)
+        (a Jensen gap). Callers that need the population term should evaluate
+        eif0 under each fold and average the results — predict_folds gives the
+        per-fold predictions to do so. For a single-model (crossfit=False) fit
+        this returns a one-element list, so the average is exact.
+        """
+        W_new = np.asarray(W_new, dtype=float)
+        n = len(W_new)
+        X1 = np.column_stack([np.ones(n), W_new])
+        X0 = np.column_stack([np.zeros(n), W_new])
+        return [(_predict_binary(g_m, W_new),
+                 _predict_binary(q_m, X1),
+                 _predict_binary(q_m, X0)) for g_m, q_m in self._models]
+
 
 class _OracleNuisanceFits(NuisanceFits):
     def __init__(self, W, surface):
@@ -78,6 +97,10 @@ class _OracleNuisanceFits(NuisanceFits):
         return (true_g(W_new, self._surface),
                 true_Q(1, W_new, self._surface),
                 true_Q(0, W_new, self._surface))
+
+    def predict_folds(self, W_new):
+        # Truth is a single "model"; the one-element list keeps eif0 exact.
+        return [self.predict(W_new)]
 
 
 def oracle_nuisances(W: np.ndarray, surface: str) -> NuisanceFits:
