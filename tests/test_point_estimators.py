@@ -56,3 +56,17 @@ def test_tmle_point_within_bounds():
     assert -1.0 <= r.point <= 1.0
     assert r.se > 0 and r.ci_lower < r.point < r.ci_upper
     assert abs(float(np.mean(r.ic))) < 1e-8    # IC centered
+
+
+def test_predict_folds_count_and_single_model_exact():
+    W, A, Y = _sim(0, n=400)
+    g_l = LogisticRegression(max_iter=1000)
+    q_l = LogisticRegression(max_iter=1000)
+    off = fit_nuisances(W, A, Y, g_l, q_l, crossfit=False, random_state=0)
+    on = fit_nuisances(W, A, Y, g_l, q_l, crossfit=True, random_state=0, n_folds=5)
+    assert len(off.predict_folds(W[:3])) == 1
+    assert len(on.predict_folds(W[:3])) == 5
+    # single-model predict_folds must equal predict (the exact, non-Jensen path)
+    g, Q1, Q0 = off.predict(W[:3])
+    (gf, Q1f, Q0f), = off.predict_folds(W[:3])
+    assert np.allclose(g, gf) and np.allclose(Q1, Q1f) and np.allclose(Q0, Q0f)

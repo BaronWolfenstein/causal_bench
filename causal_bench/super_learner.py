@@ -81,6 +81,38 @@ def hal_regressors(random_state=None):
     return _default_regressors(random_state) + [HALRegressor()]
 
 
+def ltb_classifiers(random_state=None):
+    """Return default classifiers augmented with LTBClassifier.
+
+    Lassoed Tree Boosting (arXiv:2205.10697) targets HAL's dimension-free
+    cadlag rate at gradient-boosting cost — the same doubly-robust-remainder
+    licence as HAL without glmnet's basis blow-up. Far cheaper than HAL but
+    still heavier than the default library (an xgboost fit plus an L1 path per
+    boosting block), so it is opt-in rather than default. Benchmarked in
+    experiments/exp33_donsker_learners.py.
+    """
+    from causal_bench.ltb import LTBClassifier
+    return _default_classifiers(random_state) + [LTBClassifier(random_state=random_state)]
+
+
+def ltb_regressors(random_state=None):
+    """Return default regressors augmented with LTBRegressor. See ltb_classifiers()."""
+    from causal_bench.ltb import LTBRegressor
+    return _default_regressors(random_state) + [LTBRegressor(random_state=random_state)]
+
+
+def har_regressors(random_state=None):
+    """Return default regressors augmented with HARRegressor.
+
+    Highly Adaptive Ridge (arXiv:2410.02680): HAL's rate via a closed-form
+    dominance kernel. Squared-error only (no classifier variant), and its
+    smoothness condition excludes jump discontinuities — see exp33's jumpy
+    surface. O(n^3) train, fine at trial scale; opt-in.
+    """
+    from causal_bench.har import HARRegressor
+    return _default_regressors(random_state) + [HARRegressor(random_state=random_state)]
+
+
 class SuperLearner:
     def __init__(self, candidates=None, n_folds=5, task="classification",
                  random_state=None, fold_mode="iid"):

@@ -19,14 +19,11 @@ non-Donsker control.
 
 Crossfit-OFF is the headline arm and is measured EXACTLY: the P_n and P
 parts use the same single fitted model, so (P_n - P) is an honest
-empirical-process term. Crossfit-ON is a reference arm only and its EP
-carries one extra approximation: the P_n part uses per-fold OOF
-nuisances, but the P part averages the fold models' predictions
-(NuisanceFits.predict) before forming eif0. Because eif0 is nonlinear in
-g, eif0(mean_k f_k) != mean_k eif0(f_k), so the crossfit-ON EP column has
-a Jensen-type discrepancy the crossfit-OFF column does not. Do not
-compare on-vs-off EP magnitudes quantitatively without accounting for it;
-a per-fold P evaluation would remove it (deferred, phase 2).
+empirical-process term. Crossfit-ON evaluates the P part per fold and
+averages the resulting eif0 values (mean_k eif0(f_k) via
+NuisanceFits.predict_folds), NOT eif0 of the averaged predictions —
+because eif0 is nonlinear in g those differ (a Jensen gap). Single-model
+fits return one fold, so crossfit-OFF and oracle stay exact.
 
 HAR cost note: HARRegressor.predict is O(n_eval * n_train) per call, so
 the P-part evaluation dominates runtime for the HAR arm at n_eval=1e5
@@ -115,8 +112,13 @@ def ep_and_remainder(nf, df_sim: pd.DataFrame, surface: str, mc_n: int = _MC_N):
     W_mc = mc[W_COLS].values
     A_mc = mc["A"].values.astype(float)
     Y_mc = mc["Y"].values.astype(float)
-    g_mc, Q1_mc, Q0_mc = nf.predict(W_mc)
-    eif_hat_mc = eif0_values(g_mc, Q1_mc, Q0_mc, A_mc, Y_mc)
+    # Population term per fold, then averaged: mean_k eif0(f_k), NOT
+    # eif0(mean_k f_k). Since eif0 is nonlinear in g the two differ (Jensen);
+    # per-fold averaging is the honest P-part. Single-model fits (crossfit-off,
+    # oracle) return one fold, so this is exact for the headline arm.
+    eif_hat_folds = [eif0_values(g_mc, Q1_mc, Q0_mc, A_mc, Y_mc)
+                     for g_mc, Q1_mc, Q0_mc in nf.predict_folds(W_mc)]
+    eif_hat_mc = np.mean(eif_hat_folds, axis=0)
     diff_mc = eif_hat_mc - eif0_values(
         true_g(W_mc, surface), true_Q(1, W_mc, surface),
         true_Q(0, W_mc, surface), A_mc, Y_mc)
