@@ -50,3 +50,13 @@ def test_classifier_proba_valid_and_beats_logistic_on_step():
     rmse_ltb = np.sqrt(np.mean((proba[:, 1] - pte) ** 2))
     rmse_lr = np.sqrt(np.mean((lr.predict_proba(Xte)[:, 1] - pte) ** 2))
     assert rmse_ltb < rmse_lr
+
+
+def test_fit_survives_nan_validation_error(monkeypatch):
+    from causal_bench import ltb as ltb_mod
+    monkeypatch.setattr(ltb_mod._LTBBase, "_val_error",
+                        lambda self, model, H, y: float("nan"))
+    X, y = _step_data(200, 5)
+    m = LTBRegressor(max_blocks=3, random_state=0).fit(X, y)
+    assert m.n_trees_ == m.block_size
+    assert m.predict(X[:5]).shape == (5,)

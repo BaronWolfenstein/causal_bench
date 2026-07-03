@@ -105,6 +105,8 @@ class _LTBBase(BaseEstimator):
                 if stale >= self.patience:   # paper: 3 validation increases
                     break
 
+        if best_k is None:      # every block's validation error was NaN/inf
+            best_k = self.block_size
         self.n_trees_ = best_k
         # Final L1 fit on the full data over the selected basis size.
         self.l1_model_ = self._fit_l1(self._tree_basis(X, self.n_trees_), y)
