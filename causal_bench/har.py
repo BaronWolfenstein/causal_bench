@@ -76,7 +76,7 @@ class _HARBase(BaseEstimator):
                 best_loo, best_lam = loo, lam
 
         self.lambda_ = float(best_lam)
-        self.alpha_ = V @ (Vty / (w + best_lam))
+        self.alpha_ = V @ (Vty / np.maximum(w + best_lam, 1e-12))
         if self._is_classifier:
             self.classes_ = np.array([0, 1])
         return self

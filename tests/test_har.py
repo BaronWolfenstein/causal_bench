@@ -42,3 +42,12 @@ def test_classifier_proba_clipped_and_shaped():
     assert np.allclose(proba.sum(axis=1), 1.0)
     assert list(m.classes_) == [0, 1]
     assert set(np.unique(m.predict(X))) <= {0, 1}
+
+
+def test_zero_jitter_zero_lambda_rank_deficient_is_finite():
+    # duplicate rows -> rank-deficient kernel; jitter=0 + lambda grid touching 0
+    X = np.tile(np.array([[0.5, -0.5, 1.0]]), (30, 1))
+    y = np.zeros(30)
+    m = HARRegressor(lambdas=[0.0, 1.0], jitter=0.0, random_state=0).fit(X, y)
+    assert np.all(np.isfinite(m.alpha_))
+    assert np.all(np.isfinite(m.predict(X[:3])))
