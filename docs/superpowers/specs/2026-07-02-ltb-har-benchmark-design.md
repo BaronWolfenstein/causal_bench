@@ -92,6 +92,8 @@ Headline deliverable: a table/figure showing √n·EP for crossfit-off across le
 
 **Phase 3 (future work, one paragraph, not scheduled):** an LTB discrete-time hazard model replacing Cox in `_fit_G`, which would make all three nuisances Donsker-class and complete the no-crossfit argument for the survival estimand.
 
+**Candidate exp34 (future work, not scheduled): pooled-Q subgroup event rates.** Qiu et al. (arXiv:2605.15483) show within-trial borrowing for subgroup effects in RCTs via pooled outcome regression (TMLE-PR) and adaptive working-model selection (A-TMLE). The treatment-effect machinery does not transfer to single-arm ENCIRCLE (no within-trial A contrast; the S×A bias term does not exist), but the pooling principle does: fit Q on all trial patients, target the subgroup-specific composite event rate against the performance goal. A candidate exp34 would benchmark pooled-Q vs subgroup-only TMLE for subgroup event rates, extending exp21; subgroups must be pre-specified (forest-selected subgroups invalidate the CIs without sample splitting). A-TMLE's working models are HAL-based, so the LTB/HAR learners built here are drop-in candidates there.
+
 ## 9. Tracking and delivery
 
 One GitHub issue covers both phases (created at implementation kickoff). One PR per phase; each PR body says "part of #N" — never a closing keyword, even negated — and the issue is closed manually after phase 2 lands. Nothing in this work gates on or references the `concrete` R package; the bridge is untouched.
