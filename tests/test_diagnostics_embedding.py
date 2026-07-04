@@ -37,6 +37,16 @@ def _make_overlapping(n_rare=80, n_common=200, d=16, seed=1):
     return rare, common
 
 
+def _make_cfg_landing_pass(rare, common, sep=3.0, seed=40):
+    """Held-out CFG-guided samples drawn like `rare` (same shift/scale as
+    _make_separated) -> Test B'' passes: low fidelity AUC vs real rare, high
+    drift AUC vs common."""
+    d = rare.shape[1]
+    rng = np.random.default_rng(seed)
+    rare_guided = rng.normal([sep] + [0.0] * (d - 1), 0.5, rare.shape)
+    return rare_guided, common
+
+
 def _l2_normalise(X):
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     return X / np.maximum(norms, 1e-12)
@@ -304,14 +314,25 @@ class TestRunDiagnostic:
 
     def test_test_b_pass_gives_diffuse_directly(self):
         rare, common = self._separated()
-        # Perfect reconstruction → Test B passes
+        # Perfect reconstruction → Test B passes; Test B'' (CFG landing) must
+        # also pass before the arch verdict is awarded (2026-07-02 diagram).
+        report = run_diagnostic(
+            rare, common,
+            recon_b=(rare.copy(), common.copy()),
+            cfg_landing=_make_cfg_landing_pass(rare, common, seed=40),
+            cv=3,
+        )
+        assert report.terminal == "diffuse_directly"
+        assert any(r.test == "B" for r in report.tests_run)
+
+    def test_test_b_pass_no_cfg_landing_gives_pending_check(self):
+        rare, common = self._separated()
         report = run_diagnostic(
             rare, common,
             recon_b=(rare.copy(), common.copy()),
             cv=3,
         )
-        assert report.terminal == "diffuse_directly"
-        assert any(r.test == "B" for r in report.tests_run)
+        assert report.terminal == "pending_cfg_landing_check"
 
     def test_test_b_fail_no_recon_bprime_gives_pending_bprime(self):
         rare, common = self._separated(seed=32)
@@ -332,11 +353,13 @@ class TestRunDiagnostic:
         rare, common = self._separated(seed=33)
         rng = np.random.default_rng(33)
         rare_collapsed = rng.normal(0.0, 0.5, rare.shape)
-        # B fails (collapsed), B' passes (perfect)
+        # B fails (collapsed), B' passes (perfect); B'' (CFG landing) must also
+        # pass before the arch verdict is awarded (2026-07-02 diagram).
         report = run_diagnostic(
             rare, common,
             recon_b=(rare_collapsed, common.copy()),
             recon_b_prime=(rare.copy(), common.copy()),
+            cfg_landing=_make_cfg_landing_pass(rare, common, seed=41),
             reconstruction_tol=0.05,
             auc_drop_tol=0.02,
             cv=3,
