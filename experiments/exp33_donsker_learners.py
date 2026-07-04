@@ -52,7 +52,7 @@ from causal_bench.estimators.point import (
 
 OUT_DIR = Path("results/exp33_donsker_learners")
 W_COLS = ["W1", "W2", "W3", "W4"]
-LEARNERS = ("logistic", "xgboost", "ltb", "har", "hal", "oracle")
+LEARNERS = ("logistic", "xgboost", "ltb", "ltb_scorestop", "har", "hal", "oracle")
 _MC_N = 100_000
 _MC_SEED = 424242
 
@@ -74,6 +74,13 @@ def make_learners(name: str, seed: int):
     if name == "ltb":
         from causal_bench.ltb import LTBClassifier
         return (LTBClassifier(random_state=seed), LTBClassifier(random_state=seed))
+    if name == "ltb_scorestop":
+        # LTB with the ScoreStop functional-score-test stopping rule (#79):
+        # the stop_rule axis vs plain "ltb" (patience) — does a principled
+        # stop fix LTB's conservative/biased SEs seen in exp33b?
+        from causal_bench.ltb import LTBClassifier
+        return (LTBClassifier(stop_rule="scorestop", random_state=seed),
+                LTBClassifier(stop_rule="scorestop", random_state=seed))
     if name == "har":
         from causal_bench.har import HARClassifier
         return (HARClassifier(random_state=seed), HARClassifier(random_state=seed))

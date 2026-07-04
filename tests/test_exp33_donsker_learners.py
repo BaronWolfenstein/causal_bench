@@ -85,3 +85,13 @@ def test_crossfit_on_ep_finite_oracle_exact():
     # per-fold averaging keeps the oracle (single truth "fold") exact
     ep0, _ = ep_and_remainder(oracle_nuisances(W, "smooth"), df, "smooth", mc_n=3000)
     assert ep0 == 0.0
+
+
+def test_ltb_scorestop_learner_wired():
+    from experiments.exp33_donsker_learners import LEARNERS, make_learners
+    assert "ltb_scorestop" in LEARNERS
+    g, q = make_learners("ltb_scorestop", seed=0)
+    assert g.stop_rule == "scorestop" and q.stop_rule == "scorestop"
+    # plain ltb stays on patience
+    g2, _ = make_learners("ltb", seed=0)
+    assert g2.stop_rule == "patience"
