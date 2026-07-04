@@ -49,14 +49,22 @@ class DiagnosticReport:
 
     Terminal values and their meanings
     -----------------------------------
-    diffuse_directly           Test B passed: diffuse on embeddings, no latent needed.
-    tail_aware                 Test B failed but B' passed: use importance-weighted training.
+    diffuse_directly           Test B passed AND Test B'' (CFG landing) passed: diffuse on
+                               embeddings, no latent needed.
+    tail_aware                 Test B' passed AND Test B'' passed: importance-weighted training.
+    smc_required               Reconstruction faithful (B or B' passed) but B'' failed — CFG
+                               cannot land in the rare region. Twisted-diffusion SMC resampler
+                               is the REQUIRED inference-time fix (not optional); diffuse_directly/
+                               tail_aware stay unreachable until CFG passes B'' or SMC-guided
+                               samples pass the check.
     separate_latent_justified  Tests B+B' failed, C passed: learned latent is warranted.
     spt_recommendation         Test A failed + pretraining influence: fix at encoder via SPT.
     bound_scope                Test A failed, no pretraining influence: encoder is the limit.
     escalate                   Tests B+B'+C all failed: no available fix; bound scope.
     pending_B                  Test A passed but B reconstructions not yet provided.
     pending_B_prime            Test B failed but B' reconstructions not yet provided.
+    pending_cfg_landing_check  Reconstruction passed (B or B') but the CFG generative-landing
+                               samples for Test B'' not yet provided.
     pending_C                  Tests B+B' failed but C reconstructions not yet provided.
     """
     terminal: str
@@ -307,6 +315,136 @@ def _reconstruction_test(
     return LocalizationResult(test=test_name, passed=passed, metrics=m, notes=notes)
 
 
+# ─── Test B'' : CFG generative landing ────────────────────────────────────────
+
+def _pairwise_separation_auc(emb_a: np.ndarray, emb_b: np.ndarray, cv: int = 5) -> float:
+    """CV logistic ROC-AUC separating emb_a (label 1) from emb_b (label 0).
+
+    Standalone twin of the nested separator in per_mode_reconstruction_metrics;
+    kept separate here to avoid touching that tested function. Unify when the
+    B'' characterization tests are added.
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.metrics import roc_auc_score
+    from sklearn.preprocessing import StandardScaler
+
+    X = np.vstack([emb_a, emb_b])
+    y = np.concatenate([np.ones(len(emb_a)), np.zeros(len(emb_b))])
+    n_a = len(emb_a)
+    cv_safe = max(2, min(cv, n_a // 2)) if n_a >= 4 else 2
+    skf = StratifiedKFold(n_splits=cv_safe, shuffle=True, random_state=0)
+    scaler = StandardScaler()
+    aucs = []
+    for tr, va in skf.split(X, y):
+        if len(np.unique(y[va])) < 2:
+            continue
+        Xtr = scaler.fit_transform(X[tr])
+        Xva = scaler.transform(X[va])
+        lr = LogisticRegression(max_iter=500, random_state=0)
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            lr.fit(Xtr, y[tr])
+        aucs.append(roc_auc_score(y[va], lr.predict_proba(Xva)[:, 1]))
+    return float(np.mean(aucs)) if aucs else 0.5
+
+
+def test_b_double_prime(
+    rare_guided: np.ndarray,
+    real_rare: np.ndarray,
+    common_ref: np.ndarray,
+    cv: int = 5,
+    fidelity_tol: float = 0.65,
+    drift_tol: float = 0.70,
+) -> LocalizationResult:
+    """Test B'' — CFG generative landing (2026-07-02 diagram).
+
+    Reconstruction (Test B) tests denoising near existing points; this tests
+    GENERATION from noise under rare-cohort classifier-free guidance (CFG, after
+    ELF). `rare_guided` are held-out generated samples (NOT round-tripped). Two
+    metrics, never collapsed:
+
+    - Fidelity AUC = separation(rare_guided vs real_rare) — LOWER better. High
+      ⟹ generated tail is distinguishable from real ⟹ poor score in the tail.
+    - Drift AUC    = separation(rare_guided vs common_ref) — HIGHER better. Low
+      ⟹ conditioning too weak, generation collapsed to the bulk.
+
+    Pass = fidelity_auc ≤ fidelity_tol AND drift_auc ≥ drift_tol.
+    """
+    fidelity_auc = _pairwise_separation_auc(rare_guided, real_rare, cv=cv)
+    drift_auc = _pairwise_separation_auc(rare_guided, common_ref, cv=cv)
+
+    fidelity_ok = fidelity_auc <= fidelity_tol
+    drift_ok = drift_auc >= drift_tol
+    passed = fidelity_ok and drift_ok
+
+    metrics = {"fidelity_auc": fidelity_auc, "drift_auc": drift_auc}
+    if passed:
+        notes = (
+            f"Test B'': fidelity AUC={fidelity_auc:.3f} ≤ {fidelity_tol} (guided ≈ real rare) "
+            f"and drift AUC={drift_auc:.3f} ≥ {drift_tol} (guided ≠ common). CFG lands in R."
+        )
+    else:
+        reasons = []
+        if not fidelity_ok:
+            reasons.append(f"fidelity AUC={fidelity_auc:.3f} > {fidelity_tol} (poor score in tail)")
+        if not drift_ok:
+            reasons.append(f"drift AUC={drift_auc:.3f} < {drift_tol} (collapsed to bulk)")
+        notes = "Test B'' FAILED: " + "; ".join(reasons) + " — CFG cannot land in R."
+
+    return LocalizationResult(test="B_double_prime", passed=passed, metrics=metrics, notes=notes)
+
+
+def _cfg_landing_gate(cfg_landing, arch_terminal, rare_emb, common_emb, tests_run,
+                      pretraining_influence, cv, fidelity_tol, drift_tol, via):
+    """Route a reconstruction-passing branch through Test B'' (CFG landing).
+
+    cfg_landing None -> pending_cfg_landing_check (await generated samples). Else
+    run Test B'': pass -> the pending production arch (arch_terminal); fail ->
+    smc_required (CFG faithful reconstruction but cannot land in R).
+    """
+    if cfg_landing is None:
+        return DiagnosticReport(
+            terminal="pending_cfg_landing_check",
+            tests_run=tests_run,
+            pretraining_influence=pretraining_influence,
+            summary=(
+                f"Reconstruction passed (via Test {via}). Proceed to Test B'': generate "
+                "held-out samples from noise under rare-cohort CFG and pass "
+                "(rare_guided, common_ref) as `cfg_landing`. The production arch is awarded "
+                "only after CFG landing clears."
+            ),
+        )
+    result_bpp = test_b_double_prime(
+        cfg_landing[0], rare_emb, cfg_landing[1],
+        cv=cv, fidelity_tol=fidelity_tol, drift_tol=drift_tol,
+    )
+    tests_run.append(result_bpp)
+    if result_bpp.passed:
+        return DiagnosticReport(
+            terminal=arch_terminal,
+            tests_run=tests_run,
+            pretraining_influence=pretraining_influence,
+            summary=(
+                f"Reconstruction passed (via Test {via}) and Test B'' passed "
+                f"(fidelity AUC={result_bpp.metrics['fidelity_auc']:.3f}, "
+                f"drift AUC={result_bpp.metrics['drift_auc']:.3f}). CFG generation lands in "
+                f"the rare region. ARCH: {arch_terminal}."
+            ),
+        )
+    return DiagnosticReport(
+        terminal="smc_required",
+        tests_run=tests_run,
+        pretraining_influence=pretraining_influence,
+        summary=(
+            f"Reconstruction passed (via Test {via}) but Test B'' FAILED ({result_bpp.notes}). "
+            "Twisted-diffusion SMC resampler is the REQUIRED inference-time fix "
+            f"(asymptotically unbiased, not optional); {arch_terminal} stays unreachable until "
+            "CFG passes B'' or SMC-guided samples pass the check."
+        ),
+    )
+
+
 # ─── Full decision procedure ──────────────────────────────────────────────────
 
 def run_diagnostic(
@@ -316,10 +454,13 @@ def run_diagnostic(
     recon_b: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     recon_b_prime: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     recon_c: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    cfg_landing: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     cv: int = 5,
     auc_threshold: float = 0.70,
     reconstruction_tol: float = 0.20,
     auc_drop_tol: float = 0.05,
+    fidelity_tol: float = 0.65,
+    drift_tol: float = 0.70,
 ) -> DiagnosticReport:
     """Run the three-test decision procedure.
 
@@ -338,9 +479,14 @@ def run_diagnostic(
     recon_b        : (rare_recon, common_recon) from standard-trained diffusion.
     recon_b_prime  : (rare_recon, common_recon) from tail-aware diffusion.
     recon_c        : (rare_recon, common_recon) from separate-latent diffusion.
+    cfg_landing    : (rare_guided, common_ref) held-out CFG-generated samples for
+        Test B''. When Test B/B' reconstruction passes and this is None, the
+        procedure stops at `pending_cfg_landing_check`.
     auc_threshold      : Test A pass threshold on logistic ROC-AUC.
     reconstruction_tol : Test B/B'/C pass threshold: rare_l2 ≤ common_l2 × (1 + tol).
     auc_drop_tol       : Test B/B'/C pass threshold: AUC drop ≤ tol.
+    fidelity_tol       : Test B'' pass threshold: fidelity AUC ≤ tol (guided ≈ real rare).
+    drift_tol          : Test B'' pass threshold: drift AUC ≥ tol (guided ≠ common).
 
     Returns
     -------
@@ -410,17 +556,11 @@ def run_diagnostic(
     tests_run.append(result_b)
 
     if result_b.passed:
-        return DiagnosticReport(
-            terminal="diffuse_directly",
-            tests_run=tests_run,
-            pretraining_influence=pretraining_influence,
-            summary=(
-                f"Test A PASSED. Test B PASSED "
-                f"(L2 ratio={result_b.metrics['l2_ratio']:.2f}, "
-                f"AUC drop={result_b.metrics['auc_drop']:.3f}). "
-                "Direct diffusion on ZCA-whitened embeddings is faithful to both modes. "
-                "No separate latent needed. Diffuse directly on embeddings."
-            ),
+        # Reconstruction faithful — but the arch is awarded only after Test B''
+        # (CFG generative landing). Route through the gate.
+        return _cfg_landing_gate(
+            cfg_landing, "diffuse_directly", rare_emb, common_emb, tests_run,
+            pretraining_influence, cv, fidelity_tol, drift_tol, via="B",
         )
 
     # ── Test B' ───────────────────────────────────────────────────────────────
@@ -447,18 +587,10 @@ def run_diagnostic(
     tests_run.append(result_bp)
 
     if result_bp.passed:
-        return DiagnosticReport(
-            terminal="tail_aware",
-            tests_run=tests_run,
-            pretraining_influence=pretraining_influence,
-            summary=(
-                f"Test A PASSED. Test B FAILED. Test B' PASSED "
-                f"(L2 ratio={result_bp.metrics['l2_ratio']:.2f}, "
-                f"AUC drop={result_bp.metrics['auc_drop']:.3f}). "
-                "Tail-aware training (importance-weighted denoising loss) recovers "
-                "rare-mode fidelity. Use tail-aware diffusion directly on embeddings — "
-                "no separate latent needed."
-            ),
+        # Tail-aware reconstruction faithful — arch awarded only after Test B''.
+        return _cfg_landing_gate(
+            cfg_landing, "tail_aware", rare_emb, common_emb, tests_run,
+            pretraining_influence, cv, fidelity_tol, drift_tol, via="B'",
         )
 
     # ── Test C ────────────────────────────────────────────────────────────────
