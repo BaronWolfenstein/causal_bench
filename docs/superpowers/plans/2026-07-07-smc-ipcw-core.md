@@ -407,11 +407,16 @@ def test_trigger_rate_in_unit_interval():
     r = resample_trigger_rate(_toy_run(200))
     assert 0.0 <= r <= 1.0
 
-def test_per_particle_cost_scales_roughly_linearly():
-    scaling = per_particle_scaling(lambda n: _toy_run(n), ns=[50, 100, 200])
-    # cost/particle should be roughly flat (linear total), not growing with N
-    per = [scaling[n] / n for n in (50, 100, 200)]
-    assert max(per) / min(per) < 3.0
+def test_per_particle_cost_is_not_superlinear():
+    # Guards the real risk: an accidental O(N^2) Python loop. A wall-clock
+    # cost/particle "flatness" test is unreliable at sub-ms runtimes (fixed
+    # overhead dominates). Assert total cost is not super-linear at N large
+    # enough for O(N) work to matter: size ratio 16x -> O(N) ~16x, O(N^2) ~256x.
+    ns = [200, 800, 3200]
+    _toy_run(ns[0])                       # warm up before timing
+    scaling = per_particle_scaling(lambda n: _toy_run(n), ns=ns)
+    ratio = scaling[ns[-1]] / scaling[ns[0]]
+    assert ratio < (ns[-1] / ns[0]) * 4   # 64x bound; catches O(N^2), passes O(N)+overhead
 
 def test_lineage_multiplicity_sums_to_n():
     r = _toy_run(100)
