@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from causal_bench.diagnostics.localization import (
+    cfg_landing_test,
     per_mode_reconstruction_metrics,
     run_diagnostic,
 )
@@ -40,6 +41,20 @@ def _collapsed_recon(rare, common):
     rare_recon = rng.standard_normal(rare.shape)          # unshifted ~ common
     common_recon = common + 1e-3 * rng.standard_normal(common.shape)
     return rare_recon, common_recon
+
+
+def _good_landing(seed=3, n_guided=40, shift=3.0):
+    """CFG-guided samples that land in R: near REAL rare (fidelity low) and far
+    from common (drift high)."""
+    rng = np.random.default_rng(seed)
+    return rng.standard_normal((n_guided, D)) + shift
+
+
+def _drifted_landing(seed=4, n_guided=40):
+    """CFG-guided samples that collapsed toward the bulk: distinguishable from
+    real rare (fidelity high) AND indistinguishable from common (drift low)."""
+    rng = np.random.default_rng(seed)
+    return rng.standard_normal((n_guided, D))             # unshifted ~ common
 
 
 # ── Test A ────────────────────────────────────────────────────────────────────
@@ -105,11 +120,39 @@ def test_run_diagnostic_pending_b_when_recon_missing():
     assert rep.terminal == "pending_B"
 
 
-def test_run_diagnostic_diffuse_directly_on_faithful_b():
+def test_run_diagnostic_faithful_b_without_landing_is_pending():
+    # Faithful reconstruction alone no longer earns diffuse_directly — it must
+    # clear the Test B″ CFG-landing gate first.
     rare, common = _separable()
     rep = run_diagnostic(rare, common, recon_b=_faithful_recon(rare, common))
-    assert rep.terminal == "diffuse_directly"
+    assert rep.terminal == "pending_cfg_landing_check"
     assert [t.test for t in rep.tests_run] == ["A", "B"]
+
+
+def test_run_diagnostic_diffuse_directly_when_b_and_landing_pass():
+    rare, common = _separable()
+    rep = run_diagnostic(
+        rare, common,
+        recon_b=_faithful_recon(rare, common),
+        rare_guided=_good_landing(),
+        common_ref=common,
+    )
+    assert rep.terminal == "diffuse_directly"
+    assert [t.test for t in rep.tests_run] == ["A", "B", "B_double_prime"]
+
+
+def test_run_diagnostic_smc_required_when_landing_fails():
+    # Reconstruction faithful, but CFG-guided generation drifts to the bulk.
+    rare, common = _separable()
+    rep = run_diagnostic(
+        rare, common,
+        recon_b=_faithful_recon(rare, common),
+        rare_guided=_drifted_landing(),
+        common_ref=common,
+    )
+    assert rep.terminal == "smc_required"
+    assert rep.tests_run[-1].test == "B_double_prime"
+    assert rep.tests_run[-1].passed is False
 
 
 def test_run_diagnostic_pending_b_prime_when_b_fails_and_bprime_missing():
@@ -118,14 +161,17 @@ def test_run_diagnostic_pending_b_prime_when_b_fails_and_bprime_missing():
     assert rep.terminal == "pending_B_prime"
 
 
-def test_run_diagnostic_tail_aware_when_bprime_faithful():
+def test_run_diagnostic_tail_aware_when_bprime_faithful_and_landing_passes():
     rare, common = _separable()
     rep = run_diagnostic(
         rare, common,
         recon_b=_collapsed_recon(rare, common),
         recon_b_prime=_faithful_recon(rare, common),
+        rare_guided=_good_landing(),
+        common_ref=common,
     )
     assert rep.terminal == "tail_aware"
+    assert [t.test for t in rep.tests_run] == ["A", "B", "B_prime", "B_double_prime"]
 
 
 def test_run_diagnostic_pending_c_when_b_and_bprime_fail():
@@ -159,3 +205,50 @@ def test_run_diagnostic_escalate_when_all_recon_fail():
     )
     assert rep.terminal == "escalate"
     assert [t.test for t in rep.tests_run] == ["A", "B", "B_prime", "C"]
+
+
+# ── Test B″ CFG landing (unit) ────────────────────────────────────────────────
+
+def test_cfg_landing_pass_when_guided_matches_rare_and_avoids_common():
+    rare, common = _separable()
+    r = cfg_landing_test(_good_landing(), rare, common)
+    assert r.test == "B_double_prime" and r.passed is True
+    assert r.metrics["fidelity_auc"] <= 0.65     # indistinguishable from real rare
+    assert r.metrics["drift_auc"] >= 0.70        # held in R, distinct from common
+
+
+def test_cfg_landing_fails_when_guided_drifts_to_bulk():
+    rare, common = _separable()
+    r = cfg_landing_test(_drifted_landing(), rare, common)
+    assert r.passed is False
+    # drifted samples are distinguishable from real rare (fidelity high) — a fail
+    assert r.metrics["fidelity_auc"] > 0.65
+
+
+# ── Metric-hacking guard (decoupled E_eval, #88) ──────────────────────────────
+
+def test_metric_hacking_flag_when_gen_passes_but_eval_fails():
+    # Round-trip looks faithful in the generation space but the rare mode has
+    # collapsed under the decoupled encoder E_eval -> Test B gates on E_eval and
+    # fails, raising the metric_hacking flag.
+    rare, common = _separable(seed=0)
+    rare_eval, common_eval = _separable(seed=5)          # same patients in E_eval space
+    rep = run_diagnostic(
+        rare, common,
+        recon_b=_faithful_recon(rare, common),           # gen space: faithful
+        emb_eval=(rare_eval, common_eval),
+        recon_b_eval=_collapsed_recon(rare_eval, common_eval),   # E_eval: collapsed
+    )
+    result_b = [t for t in rep.tests_run if t.test == "B"][0]
+    assert result_b.passed is False                      # gated on the decoupled space
+    assert result_b.metrics["metric_hacking_flag"] is True
+    assert "gen_l2_ratio" in result_b.metrics            # gen-space metrics retained
+    # gen-space passed but decoupled space did not, so B is treated as a failure:
+    assert rep.terminal in ("pending_B_prime", "smc_required", "tail_aware", "separate_latent_justified", "escalate", "pending_C")
+
+
+def test_no_metric_hacking_flag_without_eval_inputs():
+    rare, common = _separable()
+    rep = run_diagnostic(rare, common, recon_b=_faithful_recon(rare, common))
+    result_b = [t for t in rep.tests_run if t.test == "B"][0]
+    assert result_b.metrics["metric_hacking_flag"] is False

@@ -304,14 +304,21 @@ class TestRunDiagnostic:
 
     def test_test_b_pass_gives_diffuse_directly(self):
         rare, common = self._separated()
-        # Perfect reconstruction → Test B passes
+        # Perfect reconstruction → Test B passes; guided samples land in R → B″ passes.
         report = run_diagnostic(
             rare, common,
             recon_b=(rare.copy(), common.copy()),
+            rare_guided=rare.copy(), common_ref=common.copy(),
             cv=3,
         )
         assert report.terminal == "diffuse_directly"
         assert any(r.test == "B" for r in report.tests_run)
+
+    def test_test_b_pass_without_landing_is_pending(self):
+        rare, common = self._separated()
+        # Faithful recon alone no longer earns a terminal — B″ landing is required.
+        report = run_diagnostic(rare, common, recon_b=(rare.copy(), common.copy()), cv=3)
+        assert report.terminal == "pending_cfg_landing_check"
 
     def test_test_b_fail_no_recon_bprime_gives_pending_bprime(self):
         rare, common = self._separated(seed=32)
@@ -337,6 +344,7 @@ class TestRunDiagnostic:
             rare, common,
             recon_b=(rare_collapsed, common.copy()),
             recon_b_prime=(rare.copy(), common.copy()),
+            rare_guided=rare.copy(), common_ref=common.copy(),
             reconstruction_tol=0.05,
             auc_drop_tol=0.02,
             cv=3,
