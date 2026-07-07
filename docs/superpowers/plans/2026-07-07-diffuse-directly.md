@@ -531,6 +531,8 @@ Torch is lazy-imported; the test `pytest.importorskip("torch")` so CPU-only inst
 
 **Device handling:** `resolve_device("auto")` picks cuda → mps → cpu; `make_torch_score_fn`/`train_score` move the model and every tensor to the resolved device, and `score_fn` always returns numpy (the SDE loop in `vpsde.py`/`guidance.py` stays device-agnostic). Callers pass `device="cuda"` on the A100 box, `"cpu"`/`"auto"` elsewhere — the same code runs on all three job targets' hardware.
 
+**Performance (score net — "maximize FLOPs"):** a small MLP at small batch is latency/memory-bound (low arithmetic intensity, per the roofline model), so on the A100: (a) train under **bf16 autocast** (`torch.autocast("cuda", dtype=torch.bfloat16)`) — Tensor Cores only engage on bf16/fp16/tf32; (b) use a **large batch** so the matmuls become compute-bound rather than launch/latency-bound; (c) wrap the model in **`torch.compile`** for operator fusion (fuses SiLU + linears, cuts kernel launches). These are A100-box settings behind the `device`/dtype args — the CPU-torch correctness test (`importorskip`) runs fp32 and is unaffected. Contrast with the SMC resampling gather, which is memory-BW-bound and instead wants *minimized data movement* (island resampling / index indirection) — opposite side of the roofline.
+
 - [ ] **Step 1: Add `[gpu]` extra** to `pyproject.toml`:
 
 ```toml

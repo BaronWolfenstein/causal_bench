@@ -690,7 +690,18 @@ git commit -m "feat(sampling): CPU/GPU array-namespace backend seam + run_smc(de
 
 ## Deferred sub-plan: multi-GPU SMC (torch.distributed) — own plan, A100-gated
 
-Structured but not built here (no torch in this env, and absolute comms cost is uninformative off-A100). Its scope, from the deployment diagram: `all_reduce(Σw, Σw²)` for Kish ESS; `all_gather` weights; identical systematic indices from shared seed (Task 6 is the numpy oracle it must match); `all_to_all` particle redistribution; island/local resampling as the comms-reducing variant. **Correctness** (distributed == serial at 2 ranks) transfers from Task 6; only **timing** (all-reduce O(1), all-gather O(N), all-to-all O(N·dim) over NVLink) needs the box. Do this plan on the Lambda 8×A100.
+Structured but not built here (no torch in this env, and absolute comms cost is uninformative off-A100). Its scope, from the deployment diagram: `all_reduce(Σw, Σw²)` for Kish ESS; `all_gather` weights; identical systematic indices from shared seed (Task 6 is the numpy oracle it must match); `all_to_all` particle redistribution. **Correctness** (distributed == serial at 2 ranks) transfers from Task 6; only **timing** (all-reduce O(1), all-gather O(N), all-to-all O(N·dim) over NVLink) needs the box. Do this plan on the Lambda 8×A100.
+
+**Stay at the collective layer — no custom kernels.** The synchronization barrier is `dist.all_reduce`; NCCL owns all device-side sync, stream ordering, and memory fencing. Do NOT hand-write CUDA kernels, cooperative-groups grid syncs, or CPU memory fences (membarrier): systematic resampling is `cupy.cumsum` + `cupy.searchsorted` (CUB `DeviceScan`, already optimal and self-synchronizing), and ranks communicate only through NCCL collectives — never lock-free shared CPU memory. Reaching below this layer means reimplementing NCCL/CUB.
+
+**`cuda_available_devices` gating flag (required).** The distributed path activates only when GPUs are actually present and pinned:
+- A module-level gate `cuda_available_devices() -> list[int]` reads `CUDA_VISIBLE_DEVICES` (falls back to `torch.cuda.device_count()`); returns the visible device ids or `[]`.
+- `run_smc_distributed(..., device_ids=None)`: if `device_ids is None`, default to `cuda_available_devices()`. If the result is empty → **fall back to the single-process CPU `run_smc`** (never crash on a CPU box; the correctness path stays runnable everywhere). If non-empty → initialize the process group over exactly those devices, `nproc_per_node = len(device_ids)`.
+- Respect the shared-box discipline from the GPU build spec: pin to free, **NVLink-adjacent** ids (`nvidia-smi topo -m`), set `CUDA_VISIBLE_DEVICES` before `torchrun`. The flag makes "how many ranks" a function of what's actually free, not a hardcoded 8.
+
+**Minimize data movement at the barrier (roofline: the gather is memory-BW-bound, ≈0 arithmetic intensity):**
+- **Island / local resampling** — each rank resamples its own sub-population, with only occasional global exchange; removes the `all_to_all` at a small bias/variance cost. Make it the default variant; global exact resampling is opt-in.
+- **Ancestor-index indirection** — keep the int32 ancestor vector (Task 3's `lineage`) and defer the physical state gather until states are next written, avoiding redundant copies when one survivor is duplicated massively (the rare-event degeneracy regime). The index vector is cheap and is already the localization diagnostic's input.
 
 ## Self-Review
 
