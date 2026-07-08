@@ -48,9 +48,10 @@ def smc_step(state: SMCState, log_incr: np.ndarray, rng, ess_frac: float = 0.5):
 def run_smc(x0, propagate, log_weight_fn, n_steps, rng, ess_frac: float = 0.5,
             device: str = "cpu"):
     from .weights import kish_ess
-    from .backend import asarray, to_numpy
-    x0 = asarray(x0, device)
-    state = SMCState(x0, np.zeros(len(x0)), np.arange(len(x0)))
+    from .backend import array_namespace, to_numpy
+    xp = array_namespace(device)
+    x0 = xp.asarray(x0, dtype=float)          # float coercion, on-device
+    state = SMCState(x0, xp.zeros(len(x0)), xp.arange(len(x0)))
     ess, resample_steps, lineage = [], [], []
     for step in range(1, n_steps):
         state = SMCState(propagate(state.particles, step),

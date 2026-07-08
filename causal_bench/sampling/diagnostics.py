@@ -27,7 +27,10 @@ def per_particle_scaling(run_fn, ns) -> dict:
 def lineage_multiplicity(result) -> np.ndarray:
     """Histogram of how many descendants each particle index has at the last
     resample. Highly skewed under rare-event degeneracy (few survivors, huge
-    multiplicity) — that skew IS the diagnostic signal."""
+    multiplicity) — that skew IS the diagnostic signal. Returns a zero histogram
+    (one bin per particle) when no resample ever fired."""
+    if not result.lineage:
+        return np.zeros(len(result.state.particles), dtype=int)
     last = result.lineage[-1]
     n = len(last)
     return np.bincount(last, minlength=n)

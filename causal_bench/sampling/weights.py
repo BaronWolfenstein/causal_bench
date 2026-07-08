@@ -8,6 +8,15 @@ def normalize_log_weights(log_w: np.ndarray) -> tuple[np.ndarray, float]:
     """Return (normalized weights, log normalizer). Subtract the max before
     exponentiating so weights never under/overflow."""
     m = np.max(log_w)
+    if not np.isfinite(m):
+        # all -inf (total weight collapse / positivity failure) or a +inf leaked
+        # in — surface it loudly rather than returning silent nan weights.
+        raise ValueError(
+            "normalize_log_weights: non-finite max log-weight "
+            f"({m}) — total weight collapse (every particle out of support). "
+            "This is a positivity failure; fix upstream (twist earlier), do not "
+            "reweight."
+        )
     shifted = np.exp(log_w - m)
     total = shifted.sum()
     log_norm = m + np.log(total)

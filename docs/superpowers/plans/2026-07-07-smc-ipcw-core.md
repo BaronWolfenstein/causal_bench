@@ -682,7 +682,7 @@ def to_numpy(x):
     return np.asarray(x)
 ```
 
-- [ ] **Step 4: Add `device` to `run_smc`.** In `causal_bench/sampling/smc.py`, change the signature to `run_smc(x0, propagate, log_weight_fn, n_steps, rng, ess_frac=0.5, device="cpu")`; at the top convert `x0 = asarray(x0, device)` (import from `.backend`); before returning, set `state = SMCState(to_numpy(state.particles), to_numpy(state.log_weights), to_numpy(state.ancestry))`. The per-step math is unchanged (numpy or cupy both satisfy it).
+- [ ] **Step 4: Add `device` to `run_smc`.** In `causal_bench/sampling/smc.py`, change the signature to `run_smc(x0, propagate, log_weight_fn, n_steps, rng, ess_frac=0.5, device="cpu")`; build the initial state with `xp = array_namespace(device)` (`xp.asarray(x0, dtype=float)`, `xp.zeros`, `xp.arange`); before returning, `to_numpy(...)` the final state. **Honest scope:** this establishes the seam and keeps the CPU path byte-identical; the hot loop (`smc_step`'s resample branch, `normalize_log_weights`, `systematic_resample`) still calls `np.*`, so `device="cuda"` is NOT a validated end-to-end path — porting the hot loop to `xp` and validating it belongs to the deferred multi-GPU plan, on the box.
 
 - [ ] **Step 5: Run to verify it passes + commit.** Run: `pytest tests/test_smc_backend.py tests/test_smc_loop.py -q` — Expected: PASS (the loop test still green — CPU path unchanged).
 

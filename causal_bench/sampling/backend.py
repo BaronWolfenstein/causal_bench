@@ -1,7 +1,13 @@
 """Array-namespace backend seam. numpy on CPU (the reference path every test
-uses), cupy on CUDA for the A100 box. The SMC hot path can run on either by
-selecting `xp = array_namespace(device)`; GPU is a namespace swap, not a rewrite.
-Absolute GPU throughput is validated on the box — correctness is device-agnostic."""
+uses), cupy on CUDA for the A100 box.
+
+Scope (be honest about it): this establishes the seam and the CPU reference path.
+`run_smc(device=...)` converts the initial state and returns host numpy via these
+helpers, but the SMC *hot loop* (`smc_step`'s resample branch, `normalize_log_weights`,
+`systematic_resample`) still calls `np.*` directly, so `device="cuda"` is NOT yet a
+validated end-to-end path — porting the hot loop to `xp = array_namespace(device)`
+and validating it (distributed == serial, then throughput) belongs to the deferred
+multi-GPU plan, on the box. Do not rely on the cuda path until then."""
 from __future__ import annotations
 
 import numpy as np
