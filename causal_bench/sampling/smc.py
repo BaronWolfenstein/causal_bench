@@ -45,10 +45,12 @@ def smc_step(state: SMCState, log_incr: np.ndarray, rng, ess_frac: float = 0.5):
     return SMCState(state.particles, log_w, state.ancestry), False
 
 
-def run_smc(x0, propagate, log_weight_fn, n_steps, rng, ess_frac: float = 0.5):
+def run_smc(x0, propagate, log_weight_fn, n_steps, rng, ess_frac: float = 0.5,
+            device: str = "cpu"):
     from .weights import kish_ess
-    state = SMCState(np.asarray(x0, float), np.zeros(len(x0)),
-                     np.arange(len(x0)))
+    from .backend import asarray, to_numpy
+    x0 = asarray(x0, device)
+    state = SMCState(x0, np.zeros(len(x0)), np.arange(len(x0)))
     ess, resample_steps, lineage = [], [], []
     for step in range(1, n_steps):
         state = SMCState(propagate(state.particles, step),
@@ -58,5 +60,8 @@ def run_smc(x0, propagate, log_weight_fn, n_steps, rng, ess_frac: float = 0.5):
         ess.append(kish_ess(state.log_weights))
         if did:
             resample_steps.append(step)
-            lineage.append(state.ancestry.astype(np.int32))
-    return SMCResult(state, np.asarray(ess), resample_steps, lineage)
+            lineage.append(to_numpy(state.ancestry).astype(np.int32))
+    # hand host numpy back to callers regardless of device (CPU path unchanged)
+    final = SMCState(to_numpy(state.particles), to_numpy(state.log_weights),
+                     to_numpy(state.ancestry))
+    return SMCResult(final, np.asarray(ess), resample_steps, lineage)
