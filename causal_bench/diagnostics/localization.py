@@ -667,3 +667,22 @@ def run_diagnostic(
         "may be geometrically fragile to diffusion noise schedules). Bound scope "
         "for this rare subpopulation, or escalate to encoder-level investigation.",
     )
+
+
+# ─── Lineage-collapse (consumes the SMC sampler's ancestor multiplicity) ──────
+
+def lineage_collapse_score(multiplicity) -> float:
+    """Normalized Gini of ancestor multiplicity: 0 = every particle survives
+    equally, ->1 = a handful of survivors dominate (rare-event degeneracy).
+
+    Consumes `causal_bench.sampling.diagnostics.lineage_multiplicity(result)` —
+    the histogram of how many descendants each particle has at the last resample.
+    A high score is the sampler-side signature of the same rare-mode collapse the
+    reconstruction tests detect on the generative side.
+    """
+    m = np.sort(np.asarray(multiplicity, dtype=float))
+    n = len(m)
+    if n == 0 or m.sum() == 0:
+        return 0.0
+    cum = np.cumsum(m)
+    return float((n + 1 - 2 * (cum / cum[-1]).sum()) / n)

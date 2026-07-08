@@ -252,3 +252,14 @@ def test_no_metric_hacking_flag_without_eval_inputs():
     rep = run_diagnostic(rare, common, recon_b=_faithful_recon(rare, common))
     result_b = [t for t in rep.tests_run if t.test == "B"][0]
     assert result_b.metrics["metric_hacking_flag"] is False
+
+
+# ── lineage-collapse score (SMC ancestor multiplicity → degeneracy signal) ────
+
+def test_lineage_collapse_score_uniform_vs_collapsed():
+    from causal_bench.diagnostics.localization import lineage_collapse_score
+    assert lineage_collapse_score(np.ones(10)) < 1e-9          # uniform survival -> 0
+    collapsed = np.zeros(10); collapsed[0] = 10.0
+    assert lineage_collapse_score(collapsed) > 0.8             # near-total collapse -> ~1
+    assert lineage_collapse_score([]) == 0.0                   # empty -> 0
+    assert lineage_collapse_score(np.zeros(5)) == 0.0          # no survivors -> 0
