@@ -19,6 +19,11 @@ CI test for X ⫫ Y | Z (residualized form — high power, fast):
 Returns a `CITestResult` whose fields (verdict / test / effective_n) map 1:1 onto
 SGA's `EmpiricalCIResult` — wiring a verdict onto a KG claim edge is a plain
 field copy. No torch, no GPU.
+
+Extension: a torch neural-velocity backend (for high-dim / embedding-space CI)
+drops into `velocity_factory` with no API change — specced in
+docs/superpowers/specs/2026-07-08-zero-flow-torch-extension.md, deferred until a
+high-dim × large-n regime warrants it.
 """
 from __future__ import annotations
 
