@@ -14,20 +14,30 @@ from __future__ import annotations
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import cross_val_predict
 
 from .guidance import generate_guided
 
 
-def landing_auc(guided: np.ndarray, real_rare: np.ndarray) -> float:
+def landing_auc(guided: np.ndarray, real_rare: np.ndarray, *, cv: int = 5) -> float:
     """Separation AUC between guided samples and real rare samples, symmetrized
     to [0.5, 1]. 0.5 ⟺ indistinguishable (guided landed in R); 1.0 ⟺ fully
     separable (guided missed/overshot R). Same signal as the diagnostic's B″
-    landing fidelity check, computed locally."""
+    landing fidelity check, computed locally.
+
+    Uses out-of-fold (cross-validated) probabilities rather than in-sample fit —
+    in-sample AUC is optimistically biased toward 1.0 right at the landing/overshoot
+    boundary, which is exactly where the calibration decision is made."""
     guided = np.asarray(guided, float)
     real_rare = np.asarray(real_rare, float)
     X = np.vstack([guided, real_rare])
     y = np.r_[np.ones(len(guided)), np.zeros(len(real_rare))]
-    proba = LogisticRegression(max_iter=1000).fit(X, y).predict_proba(X)[:, 1]
+    k = int(min(cv, len(guided), len(real_rare)))         # cv can't exceed a class size
+    if k < 2:
+        proba = LogisticRegression(max_iter=1000).fit(X, y).predict_proba(X)[:, 1]
+    else:
+        proba = cross_val_predict(LogisticRegression(max_iter=1000), X, y, cv=k,
+                                  method="predict_proba")[:, 1]
     auc = roc_auc_score(y, proba)
     return float(max(auc, 1.0 - auc))
 
