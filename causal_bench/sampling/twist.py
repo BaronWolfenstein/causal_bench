@@ -34,14 +34,20 @@ def make_twist(score_fn, reward_fn, alphas_bar, *, lam: float = 1.0, bound=None)
     well-defined at every noise level (reconstruction-guidance twisting).
 
     ``lam`` is the **temperature** on the twist (β): larger sharpens toward the
-    rare mode, smaller softens.
+    rare mode, smaller softens. It may be a scalar OR a **schedule** ``lam(step)
+    -> float`` — annealing ``β_t`` with the noise level (weak/soft early, when the
+    Tweedie estimate ``x0_hat`` is unreliable and a sharp twist would spike weight
+    variance → ESS floor; strong/sharp late, when ``x0_hat`` is trustworthy). This
+    defers conditioning fidelity to when it can be trusted rather than losing it.
+    See `linear_anneal`.
 
-    ``bound`` is a **variance-control** knob. When ``None`` (default) the potential
-    is the raw ``lam * reward`` (unbounded). When set to ``b > 0`` the reward is
-    squashed through a saturating transform ``lam·b·tanh(reward/b)``, capping the
-    per-step potential to ``[-lam·b, lam·b]`` so no single particle's weight can
-    blow up — a cheap guard against ESS collapse. It is ``≈ lam·reward`` in the
-    small-reward (linear) regime and preserves reward ordering.
+    ``bound`` is a **variance-control** knob (also scalar OR ``bound(step)``). When
+    ``None`` (default) the potential is the raw ``lam * reward`` (unbounded). When
+    set to ``b > 0`` the reward is squashed through a saturating transform
+    ``lam·b·tanh(reward/b)``, capping the per-step potential to ``[-lam·b, lam·b]``
+    so no single particle's weight can blow up — a cheap guard against ESS
+    collapse. It is ``≈ lam·reward`` in the small-reward (linear) regime and
+    preserves reward ordering.
 
     Two consumers:
     - `run_smc(..., log_weight_fn=make_twist(...))` — accumulate mode. Note this
@@ -55,13 +61,30 @@ def make_twist(score_fn, reward_fn, alphas_bar, *, lam: float = 1.0, bound=None)
       valid ``potential_fn`` there since it already returns ``φ_t(x_t)``.
     """
     def twist_potential(particles, step):
+        lam_t = lam(step) if callable(lam) else lam          # anneal β_t if scheduled
+        bound_t = bound(step) if callable(bound) else bound
         x0_hat = tweedie_x0(particles, step, score_fn, alphas_bar)
         r = np.asarray(reward_fn(x0_hat), dtype=float)
-        if bound is None:
-            return lam * r
-        return lam * bound * np.tanh(r / bound)     # saturating cap at ±lam·bound
+        if bound_t is None:
+            return lam_t * r
+        return lam_t * bound_t * np.tanh(r / bound_t)        # saturating cap ±lam·bound
 
     return twist_potential
+
+
+def linear_anneal(lo: float, hi: float, n_steps: int):
+    """A schedule callable ``step -> value`` interpolating ``lo → hi`` linearly
+    over ``[0, n_steps-1]`` (clamped outside). Use as
+    ``make_twist(..., lam=linear_anneal(lo, hi, n_steps))`` to ramp the twist
+    temperature β_t with the noise level. Set ``lo``/``hi`` to match your loop's
+    noise convention (e.g. weak → strong as denoising progresses)."""
+    span = max(n_steps - 1, 1)
+
+    def sched(step):
+        f = min(max(step / span, 0.0), 1.0)
+        return lo + f * (hi - lo)
+
+    return sched
 
 
 def run_twisted_smc(x0, propagate, potential_fn, n_steps, rng, ess_frac: float = 0.5):

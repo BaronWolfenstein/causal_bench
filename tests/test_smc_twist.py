@@ -107,3 +107,42 @@ def test_bounded_twist_preserves_reward_ordering():
     tw = make_twist(score_fn, reward_fn, ab, lam=1.0, bound=1.0)
     out = tw(np.zeros((3, 1)), 5)
     assert out[0] > out[1] > out[2]                           # monotone in reward
+
+
+# ---- annealed twist: beta_t schedule (lam / bound as callables of step) ----
+
+def test_lam_as_schedule_callable_varies_with_step():
+    ab = _abar(50)
+
+    def score_fn(x, t):
+        return np.zeros_like(x)
+
+    def reward_fn(x0):
+        return np.array([1.0])
+
+    tw = make_twist(score_fn, reward_fn, ab, lam=lambda step: 0.1 * step)
+    assert np.isclose(tw(np.zeros((1, 1)), 3)[0], 0.3)     # lam(3)*reward
+    assert np.isclose(tw(np.zeros((1, 1)), 10)[0], 1.0)    # lam(10)*reward
+
+
+def test_bound_as_schedule_callable_caps_per_step():
+    ab = _abar(50)
+
+    def score_fn(x, t):
+        return np.zeros_like(x)
+
+    def reward_fn(x0):
+        return np.array([1000.0])                          # saturates the cap
+
+    tw = make_twist(score_fn, reward_fn, ab, lam=1.0, bound=lambda step: float(step))
+    assert np.isclose(tw(np.zeros((1, 1)), 4)[0], 4.0, atol=1e-6)   # cap = lam*bound(4)
+    assert np.isclose(tw(np.zeros((1, 1)), 9)[0], 9.0, atol=1e-6)
+
+
+def test_linear_anneal_ramps_over_step_range():
+    from causal_bench.sampling.twist import linear_anneal
+    sched = linear_anneal(0.2, 2.0, n_steps=11)            # over steps 0..10
+    assert np.isclose(sched(0), 0.2)
+    assert np.isclose(sched(10), 2.0)
+    assert np.isclose(sched(5), 1.1)                       # midpoint
+    assert np.isclose(sched(-3), 0.2) and np.isclose(sched(999), 2.0)   # clamped
