@@ -2,7 +2,7 @@
 
 Monte Carlo benchmarking of causal estimators for clinical trials with survival outcomes.
 
-Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 22 experiments.
+Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 36 experiments.
 
 The core finding: the "right" estimator depends entirely on what's wrong with your data. This framework makes that concrete.
 
@@ -103,7 +103,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 ---
 
-## Experiments (22)
+## Experiments (36)
 
 | Script | Swept parameter | Key story | Estimators |
 |--------|-----------------|-----------|------------|
@@ -134,8 +134,41 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp20_tipping_point_borrowing.py` | Tipping-point sweep × borrowing strength |
 | `exp21_hte_subgroup.py` | HTE subgroup benchmark — EffectXShift CV-TMLE vs BCF/BART posterior tree |
 | `exp24_site_clustering.py` | Site clustering in registry comparator — undercoverage demonstration |
+| `exp25_ordinal_pro.py` | Win ratio vs Bayesian CLMM on ordinal PROs — efficiency & coverage under PO violation |
+| `exp26_user_sim_detection.py` | Exogenous-shock detection in a user simulator |
+| `exp27_dialogue_mnar.py` | MNAR turn-missingness in dialogue (exp13 sibling) |
+| `exp28_q2_adaptation.py` | Q2 three-arm adaptation contrast |
+| `exp29_balance_diagnostics.py` | Baseline balance + region-R overlap diagnostics for a weighted SCA |
+| `exp30_registry_balance.py` | Registry-path balance table with HAL propensity, R-as-output |
+| `exp31_covariate_measurement_error.py` | Covariate measurement-error sensitivity (Σ_x) — residual confounding |
+| `exp32_clever_covariate_me.py` | Σ_x measurement error propagated into the TMLE clever covariate |
+| `exp33_donsker_learners.py` | Do Donsker-class learners license AIPW/TMLE without cross-fitting? |
+| `exp33b_donsker_nuisance_tmle.py` | TMLE+IPCW with Donsker-class nuisance learners (phase-2 wiring) |
+| `exp37_compounding_shift.py` | Compounding covariate shift — unmeasured confounding × enrollment drift |
+| `exp38_frozen_model_shift.py` | Positivity/propensity under train-vs-deploy covariate shift |
+| `exp39_zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery |
+| `exp39_ci_calibration.py` | Type-I / power calibration of the zero-flow CI test |
 
-exp25 — the win-ratio-vs-CLMM ordinal-PRO benchmark — is planned and gated on `concrete#36`.
+## Other components
+
+Beyond the estimator/experiment suite, the package includes supporting subsystems:
+
+| Module / script | What it is |
+|-----------------|-----------|
+| `causal_bench/diagnostics/localization.py` | Rare-detail localization decision procedure (Tests A/B/B′/B″/C) for the synthetic-control-arm architecture; CPU-only. Demo: `experiments/demo_localization.py` |
+| `causal_bench/sampling/` | Twisted-diffusion SMC core with IPCW survival-weight bookkeeping (numpy, CPU-first; multi-GPU port specced in the A100 deployment spec). Demo: `experiments/demo_smc_ipcw.py` |
+| `causal_bench/detectors/zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery (numpy/sklearn, no torch) |
+
+**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 35 distinct numbers → 36 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
+
+| Number | Status |
+|--------|--------|
+| exp22 | Immortal-time-bias honest-null — design-level, unbuilt (#21) |
+| exp23 | Unassigned gap |
+| exp34 | Pooled-Q subgroup event rates for single-arm ENCIRCLE — candidate, unbuilt (#77) |
+| exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
+| exp36 | Released — #73 was renamed off this slot (z_anatomy embedding-diagnostics substrate) |
+| exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |
 
 ---
 
