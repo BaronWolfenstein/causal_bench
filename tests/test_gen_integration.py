@@ -1,6 +1,6 @@
 """Integration test — end-to-end diffuse_directly -> localization terminal.
 
-Wires the generative pieces (whiten, vpsde, roundtrip, guidance) into
+Wires the generative pieces (vpsde, roundtrip, guidance) into
 run_diagnostic end-to-end, asserts the diagnostic returns the expected
 terminal (diffuse_directly or smc_required) when fed faithful reconstructions
 + landing guided samples.

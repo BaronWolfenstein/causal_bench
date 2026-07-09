@@ -52,7 +52,7 @@ def ddpm_reverse(x_T, score_fn, sch, rng):
     """Ancestral reverse using the score. Posterior mean at step t:
     (1/sqrt(alpha_t)) (x_t + beta_t * score); add sqrt(beta_t) noise except at t=0."""
     x = np.array(x_T, float)
-    betas, ab = sch.betas, sch.alphas_bar
+    betas = sch.betas
     for t in range(sch.n_steps - 1, -1, -1):
         alpha_t = 1.0 - betas[t]
         s = score_fn(x, t)

@@ -5,7 +5,8 @@ guidance arrays using the generative package (vpsde, roundtrip, guidance),
 then runs `run_diagnostic` to close the loop. Demonstrates how the full
 pipeline (Train diffusion on embedding space → encode patients → reconstruct
 via round-trip → generate CFG-guided samples → diagnostic → terminal)
-produces the expected terminal when assumptions hold.
+operates. With guidance_scale=3.0, CFG overshoots, so the expected terminal
+is smc_required (the SMC reranker fixes overshoot). This is correct, documented behavior.
 
     PYTHONPATH=. python experiments/demo_diffuse_directly.py
 """
