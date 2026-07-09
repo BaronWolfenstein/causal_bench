@@ -9,7 +9,42 @@ import numpy as np
 
 
 def inverse_density_weights(X, n_components: int = 5,
-                            clip: Optional[float] = None) -> np.ndarray:
+                            clip: Optional[float] = None,
+                            cap_percentile: float = 99.5,
+                            cap_multiplier: Optional[float] = 5.0) -> np.ndarray:
+    """Compute per-sample 1/p(z) importance weights from a GMM density fit to X.
+
+    Rare / low-density points receive a higher weight than common / high-density
+    points; the resulting vector is normalized to mean 1. By default, an outlier
+    cap is applied to the raw 1/p(z) weights before normalization to control
+    importance-weight variance (standard IPW practice): this trades a small
+    amount of extreme-tail per-point fidelity (see cap_percentile/cap_multiplier
+    below) for training stability in downstream consumers. Separately, and
+    unconditionally regardless of the cap setting, an inf/nan safety guard is
+    always applied so a single degenerate (near-zero-density) point can never
+    corrupt the vector.
+
+    Args:
+        X: (n_samples, n_features) array of embeddings to fit the density on
+            and to score.
+        n_components: number of GMM mixture components used to estimate p(z).
+        clip: optional opt-in additional truncation applied to the normalized
+            weights (bias-for-variance truncation, last resort). Independent
+            of the default outlier cap below; None (default) disables it.
+        cap_percentile: percentile of the raw 1/p(z) weight distribution used
+            as the base of the default outlier cap. Only used when
+            cap_multiplier is not None.
+        cap_multiplier: multiplier applied to the cap_percentile value to form
+            the default outlier cap threshold (cap = percentile(w, cap_percentile)
+            * cap_multiplier). Raw weights above this threshold are truncated
+            to it before mean-normalization. Set to None to disable the default
+            cap entirely (weights are then only bounded by the unconditional
+            inf/nan guard and, if requested, the opt-in `clip`). Defaults to
+            5.0, reproducing the historical always-on behavior.
+
+    Returns:
+        1-D array of weights, same length as X, normalized to mean 1.
+    """
     from sklearn.mixture import GaussianMixture
     # n_init=5 keeps the best-of-5 EM fit (by lower-bound), guarding against
     # a single unlucky initialization producing a degenerate density estimate.
@@ -37,11 +72,16 @@ def inverse_density_weights(X, n_components: int = 5,
     # Default sane cap: even without an explicit `clip`, a single extreme-tail
     # point's weight can be orders of magnitude larger than the rest of the
     # vector and dominate mean-based aggregates downstream. Cap at a robust
-    # multiple of the 99.5th percentile so genuine rare-vs-common separation
-    # (which lives well below this threshold) is preserved while pathological
-    # outliers are truncated. This is independent of the opt-in `clip` below.
-    default_cap = np.percentile(w, 99.5) * 5.0
-    w = np.minimum(w, default_cap)
+    # multiple of the cap_percentile so the *aggregate* rare-vs-common ordering
+    # (mean rare weight > mean common weight) is preserved. Note this does NOT
+    # guarantee every individual rare-tail point is left untouched: in a
+    # minority of cases (~10% of seeds in the multi-seed sweep below) the
+    # single most-extreme rare point sits above the cap and gets truncated to
+    # it; the aggregate ordering invariant still holds. This is independent of
+    # the opt-in `clip` below. Set cap_multiplier=None to disable this cap.
+    if cap_multiplier is not None:
+        default_cap = np.percentile(w, cap_percentile) * cap_multiplier
+        w = np.minimum(w, default_cap)
 
     w = w / w.mean()                        # normalize to mean 1 (stabilized)
     if clip is not None:
