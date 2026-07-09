@@ -21,6 +21,19 @@ def test_tweedie_x0_recovers_target_from_noised_mean():
     assert abs(tweedie_x0(x, step, score_fn, ab)[0, 0] - R) < 1e-6
 
 
+def test_tweedie_x0_uses_the_score_term():
+    # x is OFF the noised mean with a NONZERO score, so the (1-a)*score term is
+    # actually exercised (a sign/factor error there would be caught here).
+    ab = _abar(50); step = 8; a = ab[step]
+
+    def score_fn(x, t):
+        return np.full_like(x, 0.5)              # constant nonzero score
+
+    x = np.array([[2.0]])
+    expected = (2.0 + (1 - a) * 0.5) / np.sqrt(a)
+    assert np.isclose(tweedie_x0(x, step, score_fn, ab)[0, 0], expected)
+
+
 def test_twist_upweights_particles_heading_into_R():
     ab = _abar(50); step = 10; a = ab[step]; R = 4.0
 

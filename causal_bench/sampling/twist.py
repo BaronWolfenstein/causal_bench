@@ -34,11 +34,19 @@ def make_twist(score_fn, reward_fn, alphas_bar, *, lam: float = 1.0):
     twisting — the reward is evaluated at the denoised estimate, not the noisy
     particle, so guidance is well-defined at every noise level.
 
-    Note on accumulation: `run_smc` adds this increment to the particle weights
-    each step and resets to uniform on resample, so between resamples the weights
-    accumulate the per-step potentials. A strict telescoping-potential twist
-    (Δφ across steps) would need the previous state; that is a documented
-    refinement, not required for steering toward R.
+    Note on weight accumulation (matters for tuning ``lam``): `run_smc` ADDS this
+    increment to the particle weights every step and resets to uniform only on
+    resample. Because this returns an ABSOLUTE per-step potential (not a
+    telescoping Δφ between steps), the *effective* twist strength between two
+    resamples is ``lam × (number of un-resampled steps)`` — so ``lam``'s meaning
+    is coupled to the (adaptive, data-dependent) resample cadence, and a large
+    ``lam`` with infrequent resampling can accelerate weight degeneracy / ESS
+    collapse. The steering DIRECTION is still correct (particles whose ``x0_hat``
+    heads into R accumulate more weight); only the magnitude couples to cadence.
+    Tune ``lam`` with the resample cadence in mind (or resample frequently). A
+    strict telescoping-potential twist (TDS-style Δφ) is a documented follow-up:
+    it needs the previous step's potential tracked across ancestry, i.e. a
+    resample hook in `run_smc`.
     """
     def log_weight_fn(particles, step):
         x0_hat = tweedie_x0(particles, step, score_fn, alphas_bar)
