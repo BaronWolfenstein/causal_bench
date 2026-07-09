@@ -1,7 +1,9 @@
 """Torch MLP score net. Same score_fn(x_t, t) contract as the analytic path, so
 it drops into vpsde/roundtrip/guidance unchanged. Trains by denoising score
-matching on ZCA-whitened stand-in embeddings; per-sample tail-aware weights
-(Task 4) reweight the loss toward the rare region (Test B'). Lazy torch import."""
+matching on ZCA-whitened stand-in embeddings with an INDEPENDENT timestep per
+sample (standard DSM — every minibatch sees the whole noise schedule, not one
+level per step); per-sample tail-aware weights (Task 4) reweight the loss toward
+the rare region (Test B'). Lazy torch import."""
 from __future__ import annotations
 
 from typing import Callable, Optional
@@ -24,12 +26,13 @@ def resolve_device(device: str = "auto"):
 
 
 def _time_embedding(t_frac, dim, torch):
-    # sinusoidal embedding of the (scalar) timestep fraction, built on t_frac's device
+    # sinusoidal embedding of a PER-SAMPLE timestep fraction. t_frac is (B,);
+    # returns (B, dim). Built on t_frac's device.
     half = dim // 2
     freqs = torch.exp(torch.arange(half, device=t_frac.device)
                       * -(np.log(10000.0) / max(half - 1, 1)))
-    ang = t_frac * freqs
-    return torch.cat([torch.sin(ang), torch.cos(ang)])
+    ang = t_frac[:, None] * freqs[None, :]            # (B, half)
+    return torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)   # (B, dim)
 
 
 def ScoreMLP(dim: int, hidden: int = 128):
@@ -47,8 +50,8 @@ def ScoreMLP(dim: int, hidden: int = 128):
             )
 
         def forward(self, x, t_frac):
+            # t_frac is per-sample (B,) -> te is (B, temb); no expand needed
             te = _time_embedding(t_frac, self.temb, torch).to(x)
-            te = te.expand(x.shape[0], -1)
             return self.net(torch.cat([x, te], dim=1))
 
     return _Net()
@@ -63,7 +66,10 @@ def make_torch_score_fn(model, sch, device: str = "auto") -> Callable[[np.ndarra
         model.eval()
         with torch.no_grad():
             xt = torch.as_tensor(np.asarray(x_t), dtype=torch.float32, device=dev)
-            t_frac = torch.tensor(float(t) / sch.n_steps, device=dev)
+            # inference: every particle is at the same step t -> per-sample t_frac
+            # vector of shape (B,), matching the batched time embedding
+            t_frac = torch.full((xt.shape[0],), float(t) / sch.n_steps,
+                                dtype=torch.float32, device=dev)
             eps = model(xt, t_frac)                       # eps-prediction
             a = float(sch.alphas_bar[t])
             score = -eps / np.sqrt(1 - a)                 # score = -eps/sqrt(1-abar)
@@ -85,11 +91,14 @@ def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
     ab = torch.as_tensor(sch.alphas_bar, dtype=torch.float32, device=dev)
     for _ in range(epochs):
         model.train()
-        t = int(rng.integers(1, sch.n_steps))
-        a = ab[t]
+        # independent timestep per sample (standard DSM), shape (B,)
+        t = rng.integers(1, sch.n_steps, size=len(X))
+        t_idx = torch.as_tensor(t, dtype=torch.long, device=dev)
+        a = ab[t_idx]                                     # (B,)
         eps = torch.randn_like(X)
-        xt = torch.sqrt(a) * X + torch.sqrt(1 - a) * eps
-        pred = model(xt, torch.tensor(float(t) / sch.n_steps, device=dev))
+        xt = torch.sqrt(a)[:, None] * X + torch.sqrt(1 - a)[:, None] * eps
+        t_frac = torch.as_tensor(t / sch.n_steps, dtype=torch.float32, device=dev)
+        pred = model(xt, t_frac)
         loss = (w * ((pred - eps) ** 2).mean(dim=1)).mean()   # tail-aware weighted
         opt.zero_grad(); loss.backward(); opt.step()
         if _loss_log is not None:
