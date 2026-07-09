@@ -13,7 +13,7 @@ The CPU estimator computes the zero-flow statistic as the rectified-flow velocit
 1. **High-dimensional** X / Y / Z — e.g., conditional independence between *learned embeddings* (patient-trajectory embeddings, hundreds of dims), where sklearn RF/linear velocities scale and generalize poorly; and
 2. **large n** — enough data that a neural velocity's variance is controlled.
 
-It is **not** warranted for tabular low-dim CI (the sklearn path is simpler, faster, CPU, and links cleanly into SGA), and it does **not** fix Type-I calibration (that's permutation count / conditional-permutation quality — a separate axis).
+It is **not** warranted for tabular low-dim CI (the sklearn path is simpler, faster, CPU, and links cleanly into SGA), and it does **not** fix Type-I calibration (that's driven by residualization quality + the permutation null — a separate axis; `n_perm` only sets the p-value's Monte-Carlo precision, not the test's size).
 
 ## Interface — drops into the existing hook (no API break)
 
@@ -48,4 +48,4 @@ Per the A100 deployment spec: GPU only for the high-dim × large-n regime; the n
 
 - Default stays **numpy/sklearn** (this PR). Torch is opt-in via `velocity_factory`.
 - Trigger to build: a real **embedding-space CI** need (e.g. testing independence between patient-trajectory embeddings — ties to the diffuse_directly / localization embedding work, and to SGA only if claims ever acquire embedding-derived data).
-- Non-triggers: tabular CI, nonlinear-but-low-dim (use an sklearn RF/GB velocity), or Type-I calibration concerns (tune permutations instead).
+- Non-triggers: tabular CI, nonlinear-but-low-dim (use an sklearn RF/GB velocity), or Type-I calibration concerns (fix via residualization quality / the permutation null and more data — `n_perm` only sharpens MC precision, not size).
