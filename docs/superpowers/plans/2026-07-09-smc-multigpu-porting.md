@@ -554,9 +554,17 @@ def test_island_resample_conserves_count_and_stays_local():
 def test_islands_are_independent_not_shared_seed():
     # two islands with identical local weights must NOT produce identical local
     # draws (independent per-rank RNG), else islands are correlated.
-    w = np.concatenate([np.full(10, 0.05), np.full(10, 0.05)]); w /= w.sum()
-    idx = island_resample(w, k=2, seed=0)
+    # Use skewed weights that are sensitive to seed variation
+    # NOTE: uniform weights map to the identity permutation under systematic
+    # resampling regardless of seed — skewed weights are required to actually
+    # exercise per-island RNG independence.
+    left_weights = np.array([0.01, 0.01, 0.01, 0.01, 0.01, 0.45, 0.45, 0.01, 0.01, 0.01])
+    right_weights = left_weights.copy()  # identical to left
+    w = np.concatenate([left_weights, right_weights]); w /= w.sum()
+    idx = island_resample(w, k=2, seed=1)
     left, right = idx[:10], idx[10:] - 10
+    # With independent seeds (seed + rank), islands get different RNG states
+    # rank 0 uses seed=1, rank 1 uses seed=2, producing different resampling results
     assert not np.array_equal(left, right)
 ```
 
@@ -660,18 +668,31 @@ def main() -> None:
     # equal to the single-rank oracle. This is the decisive invariant.
     idx = systematic_resample(w, np.random.default_rng(args.seed))
     oracle = sharded_systematic_resample(w, k=world, seed=args.seed)
+
+    assert args.n % world == 0, (
+        f"--n ({args.n}) must be divisible by world size ({world}) so all_gather "
+        f"buffers are equal-sized; pick n divisible by nproc_per_node."
+    )
+
     # Each rank owns a contiguous slice; concatenation across ranks == oracle.
     my_slice = np.array_split(idx, world)[rank]
+
+    # NOTE: every rank must call every collective (all_gather, all_reduce)
+    # unconditionally and in the same order; a collective inside `if rank == 0:`
+    # deadlocks.
     gathered = [torch.empty(len(my_slice), dtype=torch.int64, device="cuda")
                 for _ in range(world)]
     dist.all_gather(gathered, torch.as_tensor(my_slice, device="cuda"))
+
+    # weight-finiteness fused into the ESS reduce (spec §1b)
+    ess_num = torch.tensor(float(w.sum() ** 2), device="cuda")
+    ess_den = torch.tensor(float((w ** 2).sum()), device="cuda")
+    dist.all_reduce(ess_num)
+    dist.all_reduce(ess_den)
+
     if rank == 0:
         full = torch.cat(gathered).cpu().numpy()
         assert np.array_equal(full, oracle), "distributed indices != numpy oracle"
-        # weight-finiteness fused into the ESS reduce (spec §1b)
-        ess_num = torch.tensor(float(w.sum() ** 2), device="cuda")
-        ess_den = torch.tensor(float((w ** 2).sum()), device="cuda")
-        dist.all_reduce(ess_num); dist.all_reduce(ess_den)
         assert torch.isfinite(ess_num) and torch.isfinite(ess_den)
         print(f"[rank0] world={world} n={args.n}: distributed==oracle OK")
 

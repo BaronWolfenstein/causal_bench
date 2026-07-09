@@ -5,7 +5,12 @@ Prereqs (spec §0): `nvidia-smi` (note idle GPUs), `nvidia-smi topo -m`
 `tmux`, keep data on the box's local NVMe (Tailscale is control-plane only).
 
 ## Ladder (stop at the first failure)
-1. **2 ranks — decisive.** Exercises all_reduce + all_gather + (next) all_to_all.
+1. **2 ranks — collective plumbing + shared-seed index invariant.** Validates
+   that all_reduce and all_gather participate correctly across ranks and that
+   the shared-seed systematic-index result matches the single-rank numpy
+   oracle byte-for-byte. This is NOT a full distributed-vs-serial SMC numeric
+   equivalence check — that requires all_to_all particle redistribution and
+   is deferred (see script docstring).
    ```
    CUDA_VISIBLE_DEVICES=<2 free NVLink-adjacent ids> \
    torchrun --nproc_per_node=2 scripts/smc_distributed_validate.py --seed 7
