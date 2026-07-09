@@ -7,7 +7,7 @@ through E_eval should raise metric_hacking_flag in run_diagnostic across all gat
 import numpy as np
 import pytest
 from causal_bench.generative.encoder import make_encoder_pair
-from causal_bench.generative.render import CodebookRenderer, render_and_reencode
+from causal_bench.generative.render import CodebookRenderer, render_and_reencode, eval_space_inputs
 from causal_bench.diagnostics.localization import run_diagnostic
 
 
@@ -180,4 +180,82 @@ def test_render_reencode_surfaces_metric_hacking_cfg_landing():
     # The landing should fail due to collapsed guided samples in E_eval
     assert not result_landing.passed, (
         "B'' landing should fail in E_eval when guided samples are collapsed via render->re-encode"
+    )
+    # The B'' landing gate's own metric-hacking guard should fire: guided
+    # samples land in R in the generation space but collapse under E_eval.
+    assert result_landing.metrics["metric_hacking_flag"] is True, (
+        "B'' landing should have metric_hacking_flag=True when CFG lands in "
+        "E_gen but collapses under decoupled E_eval"
+    )
+
+
+def test_eval_space_inputs_exercises_render_and_reencode_end_to_end():
+    """`eval_space_inputs` must actually render->re-encode the GENERATION-space
+    reconstruction/guided arrays (not silently hand back faithful originals),
+    and feeding its outputs into `run_diagnostic` must surface the B'' landing
+    metric-hacking flag — the guard this helper exists to serve.
+    """
+    rng = np.random.default_rng(3)
+    in_dim, out_dim = 8, 6
+    e_gen, e_eval = make_encoder_pair(in_dim, out_dim)
+
+    raw_rare = rng.standard_normal((40, in_dim)) + 3.0
+    raw_common = rng.standard_normal((200, in_dim))
+
+    rare = e_gen(raw_rare)
+    common = e_gen(raw_common)
+
+    # Codebook = common raw features only (rare detail NOT representable)
+    renderer = CodebookRenderer(codebook_raw=raw_common)
+
+    # Faithful reconstruction and CFG landing in E_gen space.
+    recon_b = (rare.copy(), common.copy())
+    rare_guided = rare.copy() + 0.01 * rng.standard_normal(rare.shape)
+    common_ref = common.copy()
+
+    # Exercise eval_space_inputs end-to-end. recon_b is intentionally NOT
+    # passed in: this renderer collapses everything toward the common codebook,
+    # so rendering recon_b through it would also fail Test B's reconstruction
+    # gate in E_eval and the B'' landing gate would never run. Leaving recon_b
+    # out (as an unsupplied gen-space array) is itself part of the contract
+    # under test: eval_space_inputs must return None for arrays it wasn't given
+    # rather than fabricating something, so Test B gates on E_gen alone while
+    # the B'' landing gate — fed rare_guided/common_ref — gates on E_eval.
+    emb_eval, recon_b_eval, recon_b_prime_eval, recon_c_eval, guided_eval = eval_space_inputs(
+        raw_rare, raw_common, renderer, e_eval,
+        rare_guided=rare_guided,
+        common_ref=common_ref,
+    )
+    rare_guided_eval, common_ref_eval = guided_eval
+
+    # It must have actually gone through render->re-encode: the eval-space
+    # guided array should differ from a plain re-encode of the raw rare
+    # features (which is what the old dead-code path returned).
+    plain_reencode_rare = e_eval(raw_rare)
+    assert not np.allclose(rare_guided_eval, plain_reencode_rare), (
+        "rare_guided_eval should be the render->re-encode of the GEN-space "
+        "guided samples, not a plain re-encode of the raw rare features"
+    )
+    # Cross-check against calling render_and_reencode directly.
+    assert np.allclose(rare_guided_eval, render_and_reencode(rare_guided, renderer, e_eval))
+
+    # recon_b / recon_b_prime / recon_c were not supplied — must come back None.
+    assert recon_b_eval is None
+    assert recon_b_prime_eval is None
+    assert recon_c_eval is None
+
+    rep = run_diagnostic(
+        rare, common,
+        recon_b=recon_b,
+        rare_guided=rare_guided,
+        common_ref=common_ref,
+        emb_eval=emb_eval,
+        rare_guided_eval=rare_guided_eval,
+        common_ref_eval=common_ref_eval,
+    )
+
+    result_landing = [t for t in rep.tests_run if t.test == "B_double_prime"][0]
+    assert result_landing.metrics["metric_hacking_flag"] is True, (
+        "eval_space_inputs' render->re-encode outputs should surface the B'' "
+        "metric-hacking guard end-to-end"
     )

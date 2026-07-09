@@ -349,6 +349,65 @@ def cfg_landing_test(
     return LocalizationResult(test="B_double_prime", passed=passed, metrics=metrics, notes=notes)
 
 
+# ─── Test B'' shared logic (gen-vs-eval metric-hacking guard) ────────────────
+
+def _landing_test(
+    rare_guided: np.ndarray,
+    real_rare: np.ndarray,
+    common_ref: np.ndarray,
+    cv: int,
+    fidelity_tol: float,
+    drift_threshold: float,
+    eval_inputs: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+) -> LocalizationResult:
+    """Run Test B'' CFG landing and classify pass/fail.
+
+    Mirrors `_reconstruction_test`'s metric-hacking guard: computes the gen-space
+    landing verdict AND, when `eval_inputs` = (rare_guided_eval, real_rare_eval,
+    common_ref_eval) is supplied, the eval-space verdict. The terminal gates on
+    the *decoupled* E_eval space and the generation-space metrics are retained
+    under `gen_*` keys with a `metric_hacking_flag` (True ⟺ CFG lands in R in
+    the generation space but fails to land under E_eval) — the Van Assel et al.
+    2026 guard (causal_bench#88), applied to the landing gate.
+    """
+    result_gen = cfg_landing_test(
+        rare_guided, real_rare, common_ref, cv=cv,
+        fidelity_tol=fidelity_tol, drift_threshold=drift_threshold,
+    )
+    gen_pass = result_gen.passed
+
+    if eval_inputs is not None:
+        rare_guided_eval, real_rare_eval, common_ref_eval = eval_inputs
+        result_eval = cfg_landing_test(
+            rare_guided_eval, real_rare_eval, common_ref_eval, cv=cv,
+            fidelity_tol=fidelity_tol, drift_threshold=drift_threshold,
+        )
+        eval_pass = result_eval.passed
+        passed = eval_pass                       # gate on the DECOUPLED space
+        metric_hacking = gen_pass and not eval_pass
+        metrics = dict(result_eval.metrics)
+        metrics.update({f"gen_{k}": v for k, v in result_gen.metrics.items()})
+        metrics["metric_hacking_flag"] = metric_hacking
+        if metric_hacking:
+            notes = (
+                "Test B″ METRIC-HACKING: CFG-guided generation lands in R in the "
+                f"generation space (gen fidelity AUC={result_gen.metrics['fidelity_auc']:.3f}, "
+                f"gen drift AUC={result_gen.metrics['drift_auc']:.3f}) but FAILS to land "
+                f"under decoupled E_eval (fidelity AUC={result_eval.metrics['fidelity_auc']:.3f}, "
+                f"drift AUC={result_eval.metrics['drift_auc']:.3f}). "
+                "CFG landing is gamed in E_gen's own geometry — treat as FAIL."
+            )
+        else:
+            notes = result_eval.notes
+    else:
+        passed = gen_pass
+        metrics = dict(result_gen.metrics)
+        metrics["metric_hacking_flag"] = False
+        notes = result_gen.notes
+
+    return LocalizationResult(test="B_double_prime", passed=passed, metrics=metrics, notes=notes)
+
+
 # ─── Test B / B' / C shared logic ─────────────────────────────────────────────
 
 def _recon_notes(test_name, m, reconstruction_tol, auc_drop_tol, passed, space) -> str:
@@ -519,14 +578,15 @@ def run_diagnostic(
             )
         use_eval = (rare_guided_eval is not None and common_ref_eval is not None
                     and emb_eval is not None)
-        rg = rare_guided_eval if use_eval else rare_guided
-        cr = common_ref_eval if use_eval else common_ref
-        real_rare = emb_eval[0] if use_eval else rare_emb
         space = "decoupled E_eval" if use_eval else "generation space"
 
-        result_land = cfg_landing_test(
-            rg, real_rare, cr, cv=cv,
-            fidelity_tol=fidelity_tol, drift_threshold=drift_threshold,
+        eval_inputs = (
+            (rare_guided_eval, emb_eval[0], common_ref_eval) if use_eval else None
+        )
+        result_land = _landing_test(
+            rare_guided, rare_emb, common_ref,
+            cv=cv, fidelity_tol=fidelity_tol, drift_threshold=drift_threshold,
+            eval_inputs=eval_inputs,
         )
         tests_run.append(result_land)
 
