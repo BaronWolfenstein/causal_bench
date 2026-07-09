@@ -1,6 +1,5 @@
 import sys
 import types
-import pytest
 
 
 def test_cuda_visible_devices_parsed_in_order(monkeypatch):

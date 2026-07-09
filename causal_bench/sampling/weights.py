@@ -1,8 +1,6 @@
 """Log-space weight normalization and Kish effective sample size."""
 from __future__ import annotations
 
-import numpy as np
-
 from .backend import get_namespace
 
 

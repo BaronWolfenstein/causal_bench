@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov"]
+dev = ["pytest>=7", "pytest-cov", "tomli; python_version < '3.11'"]
 r = ["rpy2>=3.5"]
 storage = ["pyarrow>=12"]
 notebook = ["Pillow>=10", "jupyter>=1.0", "jupyter-cache>=0.6", "nbformat>=5.9"]

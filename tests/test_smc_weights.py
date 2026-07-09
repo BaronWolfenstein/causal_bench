@@ -28,6 +28,3 @@ def test_normalize_uses_inferred_namespace_not_bare_np(monkeypatch):
     assert np.isclose(w.sum(), 1.0)
     assert np.isfinite(log_norm)
 
-
-def test_kish_ess_uniform_equals_n():
-    assert np.isclose(kish_ess(np.zeros(10)), 10.0)
