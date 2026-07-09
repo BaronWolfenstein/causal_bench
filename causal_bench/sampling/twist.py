@@ -25,34 +25,43 @@ def tweedie_x0(particles, step, score_fn, alphas_bar):
     return (np.asarray(particles, dtype=float) + (1.0 - a) * s) / np.sqrt(a)
 
 
-def make_twist(score_fn, reward_fn, alphas_bar, *, lam: float = 1.0):
-    """Build the SMC twist ``log_weight_fn(particles, step)``.
+def make_twist(score_fn, reward_fn, alphas_bar, *, lam: float = 1.0, bound=None):
+    """Build the SMC twist potential ``φ_t(x_t) = twist(reward_fn(x0_hat))``.
 
     Upweights particles whose Tweedie-denoised estimate ``x0_hat`` scores high
-    under ``reward_fn`` (i.e. heads into the rare region R): the per-step twist
-    potential is ``lam * reward_fn(x0_hat)``. This is reconstruction-guidance
-    twisting — the reward is evaluated at the denoised estimate, not the noisy
-    particle, so guidance is well-defined at every noise level.
+    under ``reward_fn`` (i.e. heads into the rare region R). The reward is
+    evaluated at the denoised estimate, not the noisy particle, so guidance is
+    well-defined at every noise level (reconstruction-guidance twisting).
 
-    Note on weight accumulation (matters for tuning ``lam``): `run_smc` ADDS this
-    increment to the particle weights every step and resets to uniform only on
-    resample. Because this returns an ABSOLUTE per-step potential (not a
-    telescoping Δφ between steps), the *effective* twist strength between two
-    resamples is ``lam × (number of un-resampled steps)`` — so ``lam``'s meaning
-    is coupled to the (adaptive, data-dependent) resample cadence, and a large
-    ``lam`` with infrequent resampling can accelerate weight degeneracy / ESS
-    collapse. The steering DIRECTION is still correct (particles whose ``x0_hat``
-    heads into R accumulate more weight); only the magnitude couples to cadence.
-    Tune ``lam`` with the resample cadence in mind (or resample frequently). A
-    strict telescoping-potential twist (TDS-style Δφ) is a documented follow-up:
-    it needs the previous step's potential tracked across ancestry, i.e. a
-    resample hook in `run_smc`.
+    ``lam`` is the **temperature** on the twist (β): larger sharpens toward the
+    rare mode, smaller softens.
+
+    ``bound`` is a **variance-control** knob. When ``None`` (default) the potential
+    is the raw ``lam * reward`` (unbounded). When set to ``b > 0`` the reward is
+    squashed through a saturating transform ``lam·b·tanh(reward/b)``, capping the
+    per-step potential to ``[-lam·b, lam·b]`` so no single particle's weight can
+    blow up — a cheap guard against ESS collapse. It is ``≈ lam·reward`` in the
+    small-reward (linear) regime and preserves reward ordering.
+
+    Two consumers:
+    - `run_smc(..., log_weight_fn=make_twist(...))` — accumulate mode. Note this
+      returns an ABSOLUTE per-step potential, so between resamples the effective
+      strength is ``lam × (un-resampled steps)`` (couples to the adaptive resample
+      cadence). ``bound`` and frequent resampling both mitigate the resulting
+      weight degeneracy.
+    - `run_twisted_smc(..., potential_fn=make_twist(...))` — the TDS-style
+      telescoping loop, which emits the ratio ``φ_t − φ_{t−1}`` and is
+      cadence-independent (the principled fix). ``make_twist``'s output is a
+      valid ``potential_fn`` there since it already returns ``φ_t(x_t)``.
     """
-    def log_weight_fn(particles, step):
+    def twist_potential(particles, step):
         x0_hat = tweedie_x0(particles, step, score_fn, alphas_bar)
-        return lam * np.asarray(reward_fn(x0_hat), dtype=float)
+        r = np.asarray(reward_fn(x0_hat), dtype=float)
+        if bound is None:
+            return lam * r
+        return lam * bound * np.tanh(r / bound)     # saturating cap at ±lam·bound
 
-    return log_weight_fn
+    return twist_potential
 
 
 def run_twisted_smc(x0, propagate, potential_fn, n_steps, rng, ess_frac: float = 0.5):

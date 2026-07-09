@@ -64,3 +64,46 @@ def test_twist_gate_accepts_any_score_fn_contract():
     tw = make_twist(learned_score, reward_fn, ab)
     out = tw(np.random.default_rng(0).standard_normal((7, 3)), 5)
     assert out.shape == (7,) and np.isfinite(out).all()
+
+
+# ---- tempered / bounded twist knob (variance control) ----
+
+def test_unbounded_twist_is_linear_in_reward():
+    ab = _abar(50)
+
+    def score_fn(x, t):
+        return np.zeros_like(x)
+
+    def reward_fn(x0):
+        return np.array([0.3, -0.7])
+
+    tw = make_twist(score_fn, reward_fn, ab, lam=2.0)          # bound=None default
+    assert np.allclose(tw(np.zeros((2, 1)), 5), 2.0 * np.array([0.3, -0.7]))
+
+
+def test_bounded_twist_caps_magnitude_at_lam_times_bound():
+    ab = _abar(50)
+
+    def score_fn(x, t):
+        return np.zeros_like(x)
+
+    def reward_fn(x0):
+        return np.array([1000.0, -1000.0, 0.0])               # extreme rewards
+
+    tw = make_twist(score_fn, reward_fn, ab, lam=2.0, bound=1.0)
+    out = tw(np.zeros((3, 1)), 5)
+    assert np.all(np.abs(out) <= 2.0 * 1.0 + 1e-9)            # capped at lam*bound
+
+
+def test_bounded_twist_preserves_reward_ordering():
+    ab = _abar(50)
+
+    def score_fn(x, t):
+        return np.zeros_like(x)
+
+    def reward_fn(x0):
+        return np.array([2.0, 0.5, -3.0])
+
+    tw = make_twist(score_fn, reward_fn, ab, lam=1.0, bound=1.0)
+    out = tw(np.zeros((3, 1)), 5)
+    assert out[0] > out[1] > out[2]                           # monotone in reward
