@@ -53,3 +53,36 @@ def make_twist(score_fn, reward_fn, alphas_bar, *, lam: float = 1.0):
         return lam * np.asarray(reward_fn(x0_hat), dtype=float)
 
     return log_weight_fn
+
+
+def run_twisted_smc(x0, propagate, potential_fn, n_steps, rng, ess_frac: float = 0.5):
+    """Twisted-SMC with a TDS-style **telescoping** twist potential.
+
+    Unlike `make_twist` (which emits the ABSOLUTE per-step potential and lets
+    `run_smc` accumulate it — coupling the effective strength to the resample
+    cadence), this drives the loop itself so the incremental log-weight is the
+    twist RATIO ``Δ = φ_t(x_t) − φ_{t−1}(x_{t−1})``. Over a resample-free run the
+    weights telescope to ``φ_final − φ_initial`` (bounded, cadence-independent);
+    across a resample the previous potential is reindexed by ancestry so it
+    follows the survivors (the "resample hook" the plain `log_weight_fn`
+    interface can't provide).
+
+    ``potential_fn(particles, step) -> (N,)`` returns the twist potential φ_t
+    (e.g. ``lam * reward(tweedie_x0(...))`` — build it however you like). Returns
+    the final `SMCState`.
+    """
+    from .smc import SMCState, smc_step
+
+    x = np.asarray(x0, dtype=float)
+    n = len(x)
+    state = SMCState(x, np.zeros(n), np.arange(n))
+    prev_phi = np.asarray(potential_fn(x, 0), dtype=float)   # φ_0
+    for step in range(1, n_steps):
+        x = propagate(state.particles, step)
+        phi = np.asarray(potential_fn(x, step), dtype=float)  # φ_t(x_t)
+        log_incr = phi - prev_phi                             # the twist ratio Δ
+        state = SMCState(x, state.log_weights, state.ancestry)
+        state, did = smc_step(state, log_incr, rng, ess_frac)
+        # carry φ_t forward; after a resample it must follow the survivors
+        prev_phi = phi[state.ancestry] if did else phi
+    return state
