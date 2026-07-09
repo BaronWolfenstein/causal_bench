@@ -159,6 +159,17 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | `causal_bench/sampling/` | Twisted-diffusion SMC core with IPCW survival-weight bookkeeping (numpy, CPU-first; multi-GPU port specced in the A100 deployment spec). Demo: `experiments/demo_smc_ipcw.py` |
 | `causal_bench/detectors/zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery (numpy/sklearn, no torch) |
 
+**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 35 distinct numbers → 36 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
+
+| Number | Status |
+|--------|--------|
+| exp22 | Immortal-time-bias honest-null — design-level, unbuilt (#21) |
+| exp23 | Unassigned gap |
+| exp34 | Pooled-Q subgroup event rates for single-arm ENCIRCLE — candidate, unbuilt (#77) |
+| exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
+| exp36 | Released — #73 was renamed off this slot (z_anatomy embedding-diagnostics substrate) |
+| exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |
+
 ---
 
 ## Key findings
