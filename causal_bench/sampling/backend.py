@@ -31,3 +31,15 @@ def to_numpy(x):
     if type(x).__module__.startswith("cupy"):
         return x.get()
     return np.asarray(x)
+
+
+def get_namespace(*arrays):
+    """Infer the array namespace (numpy or cupy) from the arrays themselves,
+    so hot-loop functions stay device-agnostic without threading a `device`
+    string through their signatures. Mirrors `to_numpy`'s module sniff.
+    Satisfies spec §1a ('route through xp = array_namespace(device)')."""
+    for a in arrays:
+        if type(a).__module__.startswith("cupy"):
+            import cupy as cp            # lazy: only on the GPU box
+            return cp
+    return np
