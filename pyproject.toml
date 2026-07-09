@@ -27,6 +27,7 @@ dev = ["pytest>=7", "pytest-cov"]
 r = ["rpy2>=3.5"]
 storage = ["pyarrow>=12"]
 notebook = ["Pillow>=10", "jupyter>=1.0", "jupyter-cache>=0.6", "nbformat>=5.9"]
+gpu = ["cupy-cuda12x>=12"]
 # The bayes stack (arviz>=1.0, which the CLMM estimator's az.hdi(prob=) 1.x API
 # needs) requires Python >=3.12; requires-python is >=3.10. Gate it with an
 # environment marker so `uv` can resolve across the whole declared range —
