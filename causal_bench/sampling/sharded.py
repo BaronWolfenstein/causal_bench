@@ -27,3 +27,23 @@ def sharded_systematic_resample(w: np.ndarray, k: int, seed: int) -> np.ndarray:
             assert np.array_equal(full, idx), "ranks disagree — seed not shared"
     # each rank keeps the slice it owns; concatenation reconstructs the whole
     return np.concatenate([full[b] for b in shard_bounds])
+
+
+def island_resample(w: np.ndarray, k: int, seed: int) -> np.ndarray:
+    """Island / local resampling (spec §1d): each of k ranks resamples ONLY its
+    own contiguous sub-population from its locally renormalized weights — no
+    all-to-all particle exchange. Returns GLOBAL ancestor indices (each mapped
+    back into the full array), so no index ever crosses an island boundary.
+    Per-island RNGs are seeded independently (seed + rank) to avoid correlating
+    islands. This is the low-communication default; the small bias/variance cost
+    is characterized on-box against the global sharded oracle."""
+    n = len(w)
+    bounds = np.array_split(np.arange(n), k)
+    out = []
+    for rank, b in enumerate(bounds):
+        local_w = w[b]
+        local_w = local_w / local_w.sum()               # renormalize within island
+        rng = np.random.default_rng(seed + rank)        # independent per island
+        local_idx = systematic_resample(local_w, rng)   # indices into the local slice
+        out.append(b[local_idx])                         # map local -> global
+    return np.concatenate(out)
