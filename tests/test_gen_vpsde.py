@@ -25,3 +25,29 @@ def test_ddpm_reverse_recovers_far_target():
     score_fn = lambda x, t: gaussian_score(x, t, mu, cov, sch)
     x0 = ddpm_reverse(xT, score_fn, sch, rng)
     assert abs(x0.mean() - 4.0) < 0.5                 # generation lands on the target
+
+def test_gaussian_score_matches_finite_difference_nonisotropic():
+    # Non-isotropic cov ensures a*cov + (1-a)*I does NOT collapse to I for any a,
+    # so this exercises the a*cov weighting term that eye(1) covariance masks.
+    from scipy.stats import multivariate_normal
+    sch = Schedule(n_steps=100)
+    mu = np.array([1.0, -2.0])
+    cov = np.diag([4.0, 0.25])           # non-isotropic: exercises the a*cov term
+    t = 30
+    a = alpha_bar(sch, t)
+    x = np.array([[0.5, 0.3]])
+    mean_t = np.sqrt(a) * mu
+    cov_t = a * cov + (1 - a) * np.eye(2)
+
+    def logp(z):
+        return multivariate_normal(mean=mean_t, cov=cov_t).logpdf(z)
+
+    eps = 1e-5
+    fd = np.zeros(2)
+    for i in range(2):
+        dp = x[0].copy(); dp[i] += eps
+        dm = x[0].copy(); dm[i] -= eps
+        fd[i] = (logp(dp) - logp(dm)) / (2 * eps)
+
+    s = gaussian_score(x, t, mu, cov, sch)
+    assert np.allclose(np.ravel(s), fd, atol=1e-4)
