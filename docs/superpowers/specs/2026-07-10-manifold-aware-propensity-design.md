@@ -48,6 +48,20 @@ If defined under different metrics, the two `R`s diverge.
    the potential — **metric-agnostic, reused unchanged**. So the *only* generation
    change at the twist layer is swapping the Euclidean reward for a geodesic one.
 
+> **Continuous embeddings throughout — no discrete-latent relaxations (terminology
+> guard).** "Discrete OT" above means the transport is represented as an
+> *empirical/discrete plan over sample points* (an N×M coupling matrix) — that is
+> what suffers the curse of dimensionality — **not** discrete latent variables. The
+> embeddings stay **continuous end-to-end**; nothing in this note reintroduces
+> token/categorical latents, **Gumbel-softmax, or Concrete** relaxations. That is
+> precisely the ELF / `diffuse_directly` bet (diffuse on continuous embeddings;
+> CFG/guidance is clean there *because* the space is continuous). RNOT's continuous
+> transport **map** is *more* aligned with the continuous-embedding philosophy than
+> a discrete plan — it removes a discretization, it does not add one. The only
+> discretization anywhere in the pipeline remains the **optional ELF final-step
+> token projection** for human-legible MEDS output (the #88 render path), which is
+> off the estimator path and unchanged by this note.
+
 ## Propensity side — manifold-aware
 
 - **Propensity** `e(X) = P(T | X)` estimated respecting `g`: heat-kernel / geodesic
