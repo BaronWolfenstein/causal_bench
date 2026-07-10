@@ -26,10 +26,22 @@ If defined under different metrics, the two `R`s diverge.
 
 ## Generation side — Riemannian TDS (three components, adopted together)
 
-1. **Riemannian SDE.** Reverse VP-SDE driven by Brownian motion on `(M, g)` with
-   geodesic drift and a *manifold* score (Riemannian score-based diffusion is the
-   base machinery). The forward marginal and Tweedie estimate become the
-   Riemannian (Fréchet/Karcher) mean under `g`, not the Euclidean mean.
+**Framing — SDE vs TDS (do not conflate).** Our *built* conditional sampler for the
+`smc_required` terminal already **is a TDS**: `run_twisted_smc` + `make_twist`
+(twisted-SMC layered over the VP-SDE). "Riemannian TDS" means running that **same**
+twisted-SMC on a Riemannian base diffusion. So of the three components below, (1) is
+the **base diffusion the TDS wraps** — *not* TDS itself — (2) is its transport /
+proposal, and (3) — the twist — is the **TDS-specific** piece. A Riemannian *SDE
+alone* is unconditional diffusion; it does no steering into `R` until the twist (3) is
+applied. The metric `g` (see "The metric `g`" below) must be identical across all
+three.
+
+1. **Riemannian base diffusion (VP-SDE on the manifold).** The reverse VP-SDE is
+   driven by Brownian motion on `(M, g)` with geodesic drift and a *manifold* score
+   (Riemannian score-based diffusion, De Bortoli et al. 2022 — the base machinery).
+   The forward marginal and the Tweedie estimate become the Riemannian
+   (Fréchet/Karcher) mean under `g`, not the Euclidean mean. This is the base the
+   twisted-SMC sits on; by itself it is not TDS.
 
 2. **Geodesic transport.** Particles propagate along **geodesics** of `g`, not
    Euclidean straight lines. **Riemannian Neural OT** (Micheli, Cao, Monod, Bhatt,
@@ -47,6 +59,23 @@ If defined under different metrics, the two `R`s diverge.
    how `reward_fn` is computed, and the annealed `β_t` temperature is a scalar on
    the potential — **metric-agnostic, reused unchanged**. So the *only* generation
    change at the twist layer is swapping the Euclidean reward for a geodesic one.
+
+### The metric `g` — where it comes from (must be specified; same on both sides)
+
+The design hinges on a metric `g`, but `g` is not free — it must be chosen and then
+used *identically* by generation and propensity. Candidates:
+
+- **Pullback metric from the frozen encoder** — `g = J_φᵀ J_φ` from the encoder's
+  Jacobian, i.e. the data-manifold metric the encoder already induces (no new model).
+- **Diffusion / heat-kernel metric** — induced by the graph/heat kernel on the
+  embedding. This is the most self-consistent choice: the *same* kernel then defines
+  `g` for transport, the geodesic twist reward, **and** the propensity's heat-kernel
+  features — and it reuses `heat_kernel_cost` (SGA). Preferred.
+- **Learned metric** — only if the diagnostic warrants the extra machinery.
+
+Whichever is chosen, it is **one `g`** used by all three generation components *and*
+the propensity; a different `g` on either side reintroduces the inconsistency this
+note exists to prevent.
 
 > **Continuous embeddings throughout — no discrete-latent relaxations (terminology
 > guard).** "Discrete OT" above means the transport is represented as an
@@ -66,8 +95,9 @@ If defined under different metrics, the two `R`s diverge.
 
 - **Propensity** `e(X) = P(T | X)` estimated respecting `g`: heat-kernel / geodesic
   features of the embedding manifold rather than raw-coordinate features. This ties
-  directly to the SGA spectral **heat-kernel** machinery (`heat_kernel_cost`) and
-  the cuGraph backend (SGA issue #15) — the same diffusion-geometry on both repos.
+  directly to the SGA spectral **heat-kernel** machinery (`heat_kernel_cost`, now with
+  a CuPy/cuGraph GPU backend merged on SGA main) — the same diffusion-geometry on both
+  repos, and (per "The metric `g`" above) the natural source of `g`.
 - **Positivity region `R`** defined by **geodesic-neighborhood overlap** (manifold
   positivity), with the positivity-ESS (Kish on the causal weights) computed on
   manifold-consistent weights.
@@ -90,8 +120,10 @@ If defined under different metrics, the two `R`s diverge.
   isotropy; it is cheaper and avoids all of the above.
 - **Trigger (any of):** persistent #88 `metric_hacking_flag` firing; reconstruction
   faithful only in `E_gen`'s own space; measured curvature/anisotropy the flat
-  approximation cannot absorb; or discrete-OT curse-of-dimensionality symptoms on
-  the patient embedding (the RNOT premise).
+  approximation cannot absorb; or discrete-OT scaling pathology on the patient
+  embedding (the RNOT premise — this signals high-dimensional *manifold structure*
+  that motivates a continuous transport map; it is a softer, orthogonal signal to
+  curvature per se).
 - **If triggered:** adopt **all three** generation components **and** the manifold
   propensity **together**, on the **same `g`**. Adopting one side alone reintroduces
   the inconsistency this note exists to prevent.
@@ -102,8 +134,9 @@ If defined under different metrics, the two `R`s diverge.
   between geodesic and Euclidean distances, heat-kernel vs Euclidean-kernel
   discrepancy.
 - **#88 flag rate** as the operational trigger.
-- Whether the SGA discrete Sinkhorn/GW shows scaling pathology on the patient
-  embedding — if so, that alone argues for the continuous RNOT map regardless of the
+- Whether the discrete **point-cloud** Sinkhorn (`sinkhorn_divergence`; GW is
+  graph-to-graph, a different object) shows scaling pathology on the patient
+  embedding — if so, that alone argues for a continuous RNOT map regardless of the
   causal question.
 
 ## On the two references (honest scope)
@@ -183,11 +216,13 @@ or continuous sheets joined by event-driven discrete jumps?*
   multimodality (which a flexible continuous score handles fine).
 
 - **S2 — Spectral component count (reuses `spectral.spectral_gap`; needs only `Z`).**
-  Build a k-NN graph on `Z`, take the Laplacian spectrum, count near-zero eigenvalues
-  below the largest spectral gap → `n_strata` = number of near-disconnected sheets.
-  `n_strata = 1` ⇒ single connected support (flat OK); `> 1` with a clear gap ⇒
-  multiple strata. (Literally the spectral layer we already built, used as a
-  stratification meter.)
+  Build a k-NN (or ε-)graph on `Z`, take the Laplacian spectrum, and apply the
+  **eigengap heuristic**: `n_strata` = the number of eigenvalues *before the largest
+  gap* `λ_{m+1} − λ_m`. Fully-disconnected sheets sit at eigenvalue ~0, but sheets
+  joined by sparse bridges (the realistic case) give **small-but-nonzero**
+  eigenvalues — so the *gap*, not a zero-threshold, sets the count. `n_strata = 1` ⇒
+  single connected support (flat OK); `> 1` with a clear gap ⇒ multiple strata.
+  (Literally the spectral layer we already built, used as a stratification meter.)
 
 - **S3 — Local-intrinsic-dimension heterogeneity (needs only `Z`).** Estimate local
   intrinsic dimension per point (TwoNN / MLE-kNN); a single smooth manifold has
@@ -291,6 +326,7 @@ discrete-rendered — `E_eval` must respect it).
 ## Cross-repo synergy
 
 The manifold metric via the heat kernel is the *same* diffusion-geometry the SGA
-spectral + GW/OT layer already uses (issue #15, cuGraph backend). A Riemannian move
-here and a continuous-OT move in SGA are the same underlying upgrade — worth
-sequencing together if the triggers fire.
+spectral + GW/OT layer already uses (CuPy/cuGraph backends merged on SGA main;
+large-graph sparse-eigsh scaling is SGA issue #18). A Riemannian move here and a
+continuous-OT (RNOT) move in SGA are the same underlying upgrade — worth sequencing
+together if the triggers fire.
