@@ -211,6 +211,34 @@ Bimodality alone is not stratification — the **event alignment** is the discri
 STRUCT-S decides case (b) only; case (a) (direct raw-event generation) is a
 *requirements* question about the estimand, not a measurement.
 
+### Intercurrent events ARE the regime shifts (ENCIRCLE-specific)
+
+The "events" that S1 aligns jumps to are not generic — they are the **intercurrent
+events (ICEs)** of the ICH E9(R1) estimand framework: death, treatment
+discontinuation, rescue medication / crossover, and (for ENCIRCLE) the composite
+endpoint events **death + HF rehospitalization**. These are precisely the clinical
+**regime shifts** a jump-diffusion would model. This makes case (b) *concrete rather
+than hypothetical* for ENCIRCLE — the jump markers already exist, named and
+timestamped in the protocol/SAP.
+
+It also adds a **consistency constraint that mirrors the geometry principle**: if the
+generator models ICE-driven jumps, the jump handling must match the **primary
+estimand's ICE strategy** (treatment-policy / hypothetical / composite /
+while-on-treatment / principal-stratum). A generator that treats an ICE as
+"just another jump" while the estimand folds it in via, say, a *composite* strategy
+(death absorbed into the endpoint) would emit synthetic patients whose event
+structure is inconsistent with the estimand — a silent-bias generator, the same
+failure mode as mixing geometries. **So: one consistent treatment of ICEs on both
+the generative and estimand sides.**
+
+This is not new machinery from scratch — the **estimator side already handles a
+subclass of ICEs**: IPCW (`ipcw.py`, `tmle_ipcw_*`) reweights for informative
+censoring/dropout, and the censoring discriminated-union design types event kinds.
+So a jump-diffusion generator, *if* STRUCT-S S1 licenses it, must be wired to the
+**same** ICE typing/strategy the IPCW/estimand layer already uses — not invent its
+own. The jump term is warranted only when S1 shows the ICEs actually induce embedding
+regime shifts (they plausibly do, but it is testable, not assumed).
+
 ## Non-goals / honesty
 
 - Not implementing. Large complexity jump; benefit unproven for the frozen EHR
