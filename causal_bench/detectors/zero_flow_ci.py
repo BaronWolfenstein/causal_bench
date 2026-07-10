@@ -135,7 +135,27 @@ def zero_flow_ci_test(X, Y, Z, *, n_perm: int = 100, alpha: float = 0.05,
 def markov_blanket(target: int, data: np.ndarray, *, alpha: float = 0.05,
                    n_perm: int = 60, rng: Optional[np.random.Generator] = None) -> list:
     """Recover the Markov blanket of column `target`: variables NOT conditionally
-    independent of it given all the others. O(p) CI tests."""
+    independent of it given all the others. O(p) CI tests.
+
+    COLLIDER CAVEAT (do not use this as a causal adjustment set). The MB is a
+    *prediction* object: parents ∪ children ∪ **spouses** (co-parents of the
+    target's children). The spouses are present *only because of colliders* —
+    ``target → C ← spouse`` — since conditioning on the shared child C (a child, so
+    in the MB) opens that collider and induces target–spouse dependence. So this
+    returns collider-induced variables by construction. Consequences:
+      • MB ≠ backdoor adjustment set. Adjusting a causal estimand for the MB
+        conditions on children/descendants and spouses (colliders), *introducing*
+        collider / M-bias. Use a backdoor-/FCI-valid set (colliders and their
+        descendants EXCLUDED), restricted to pre-treatment covariates.
+      • This routine finds the *blanket*, not the *orientation*: it does not tell
+        you which members are spouses (colliders) vs confounders. To orient a
+        v-structure use the two-test signature — ``X ⟂ Y`` marginally but
+        ``X ⟂̸ Y | C`` — with ``zero_flow_ci_test`` directly.
+      • As a CI oracle this test is also *fooled* by colliders: putting a collider
+        (or its descendant) in the conditioning set ``Z`` opens the path and yields
+        spurious "refutes" (dependence) — that spurious dependence *is* collider /
+        selection bias surfacing inside the test.
+    """
     rng = rng or np.random.default_rng(0)
     data = np.asarray(data, dtype=float)
     p = data.shape[1]
