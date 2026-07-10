@@ -119,6 +119,51 @@ If defined under different metrics, the two `R`s diverge.
   the annealed `β_t`), but does **not** address manifold geometry — it informs the
   diffusion/inference framing, **not** the Riemannian question.
 
+## The discrete/categorical axis — do we need a continuous × discrete hybrid?
+
+Same decision framework as the geometry axis, and mostly the same answer: **not by
+default.** The frozen encoder **already absorbs EHR's discreteness** (ICD/RxNorm/CPT
+codes + mixed-type labs/vitals) into a **continuous** embedding; we diffuse there
+(the `diffuse_directly`/ELF bet), and discreteness re-enters only at the optional
+ELF final-step token projection — human-legible MEDS output, **off the estimator
+path**. So a continuous × discrete-categorical hybrid at the *diffusion* level is not
+needed while we operate on embeddings.
+
+A hybrid (continuous manifold × discrete-categorical **jump-diffusion**) is warranted
+only if:
+
+- **(a) Direct raw-event generation for the estimand.** If synthetic patients must be
+  generated as raw MEDS events (not embeddings) *and consumed by the estimator*, the
+  categorical codes need **discrete diffusion** (a CTMC jump process) alongside
+  continuous diffusion for labs/vitals — a genuine mixed-type generative model. (This
+  is beyond the current ELF-render, which is output-only.)
+- **(b) A stratified embedding.** If clinical trajectories live on continuous
+  physiological strata joined by **discrete jumps at events** (regime shifts), flat
+  continuous diffusion mishandles the jumps, and a jump-diffusion (continuous SDE
+  within a sheet + discrete transitions between sheets) is more faithful.
+
+**Detector:** the Stage-0 STRUCT / localization compositional-structure screen is the
+instrument that would signal stratification, exactly as the curvature / `E_eval`
+detectors signal the geometry need. Gate on it; don't assume it.
+
+**Discrete-diffusion theory (arXiv:2607.05381, "What Does a Discrete Diffusion Model
+Learn?", Casado Noguerales, Schölkopf, Hofmann, Raoufi).** If the discrete half is
+ever built, this characterizes it: the negative ELBO decomposes as *data entropy +
+path-KL(oracle ‖ learned)*, the optimal reverse is the **conditional expectation of
+the true reverse jump rate** given the noisy state, and — the load-bearing bit for us
+— discrete diffusion admits a **score parameterization** (alongside denoiser/cavity).
+That matters because our twist/TDS machinery is **score-based** (`make_twist` over any
+`score_fn`): the same abstraction would carry over to a discrete-diffusion component
+via its discrete score, so `score_fn` unifies analytic / learned / continuous **and**
+discrete. It is theory to *use if we build*, not evidence that we *need* to.
+
+**The maximal model** — curved manifold × discrete jumps = a **stratified Riemannian
+jump-diffusion** (geometry on both sides *and* discrete regime jumps). Reserve for
+strong, converging evidence from **both** the curvature detectors **and** the STRUCT
+stratification screen; adopt each component only as its own trigger fires, never
+speculatively — and, per the load-bearing principle above, keep generation and
+propensity on the *same* (now possibly stratified, curved) state space.
+
 ## Non-goals / honesty
 
 - Not implementing. Large complexity jump; benefit unproven for the frozen EHR
