@@ -164,6 +164,53 @@ stratification screen; adopt each component only as its own trigger fires, never
 speculatively — and, per the load-bearing principle above, keep generation and
 propensity on the *same* (now possibly stratified, curved) state space.
 
+### Stratification detector (STRUCT-S) — what it concretely measures
+
+A small CPU-computable battery on the embeddings `Z ∈ ℝ^{n×d}` (plus, for S1,
+temporal trajectories with event markers), mirroring the localization diagnostic's
+test-battery style. It decides case (b) — *is the embedding a single smooth manifold,
+or continuous sheets joined by event-driven discrete jumps?*
+
+- **S1 — Displacement bimodality + event alignment (the decisive test; needs
+  trajectories).** Along each patient trajectory compute step displacements
+  `δ_t = ‖z(t+1) − z(t)‖`. (i) Test the `{δ_t}` distribution for **bimodality**
+  (2-vs-1-component GMM by BIC, or Hartigan's dip test) — a small "within-sheet drift"
+  mode plus a large "jump" mode. (ii) **Event alignment:** test whether the large-δ
+  mode is *enriched for coded clinical events* — the separation AUC of `δ_t` predicting
+  "an event occurred at t+1" (`jump_event_auc`), or a rank-sum of δ at event vs
+  non-event steps. **Pass ⟺ bimodal AND `jump_event_auc ≳ 0.7`.** This is load-bearing
+  because it distinguishes *event-driven discrete jumps* (→ jump-diffusion) from mere
+  multimodality (which a flexible continuous score handles fine).
+
+- **S2 — Spectral component count (reuses `spectral.spectral_gap`; needs only `Z`).**
+  Build a k-NN graph on `Z`, take the Laplacian spectrum, count near-zero eigenvalues
+  below the largest spectral gap → `n_strata` = number of near-disconnected sheets.
+  `n_strata = 1` ⇒ single connected support (flat OK); `> 1` with a clear gap ⇒
+  multiple strata. (Literally the spectral layer we already built, used as a
+  stratification meter.)
+
+- **S3 — Local-intrinsic-dimension heterogeneity (needs only `Z`).** Estimate local
+  intrinsic dimension per point (TwoNN / MLE-kNN); a single smooth manifold has
+  roughly *constant* local ID, so high dispersion (`CV`/`IQR` of local ID, or a
+  clustering of it) signals strata of differing dimension.
+
+- **S4 — Density-gap / support connectedness (needs only `Z`).** Test for low-density
+  *separators* between high-density regions (single-linkage / DBSCAN gap, or a gap
+  statistic) — a mixture-with-gaps vs a connected support.
+
+**Decision.** **Stratified (hybrid jump-diffusion warranted) ⟺ S1 passes** — bimodal,
+event-aligned jumps directly evidence event-driven discreteness. S2–S4 corroborate
+(multiple strata / heterogeneous dimension / density gaps) and can run without
+trajectories, but S1 is what licenses the *jump* term specifically. **Flat-continuous
+sufficient ⟺ S1 fails and S2 shows `n_strata = 1`.**
+
+**Honesty.** S1 needs *real* temporal MEDS trajectories with event timestamps
+(on-box; the stand-in random encoder can't produce meaningful jumps), so S1 is
+on-box-gated; S2–S4 run on any embeddings but only *mean* something on real ones.
+Bimodality alone is not stratification — the **event alignment** is the discriminator.
+STRUCT-S decides case (b) only; case (a) (direct raw-event generation) is a
+*requirements* question about the estimand, not a measurement.
+
 ## Non-goals / honesty
 
 - Not implementing. Large complexity jump; benefit unproven for the frozen EHR
