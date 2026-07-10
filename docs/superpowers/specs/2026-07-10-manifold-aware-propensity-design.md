@@ -91,6 +91,56 @@ note exists to prevent.
 > token projection** for human-legible MEDS output (the #88 render path), which is
 > off the estimator path and unchanged by this note.
 
+### Injecting the inductive bias — the *how*, in three layers (and who owns each)
+
+The three components above say *what* a Riemannian generator is; this says *how* the
+geometry is forced to be the optimizer's path of least resistance. An unconstrained
+MLP dropped into a sparse high-dimensional embedding will either memorize isolated
+points (the OT curse) or draw straight Euclidean lines across the empty gaps — so the
+bias must be engineered, not hoped for. **Crucially, not all three layers are ours:**
+
+- **Layer 1 — architectural geometry (the projection): owned by the FROZEN encoder,
+  not us.** Hierarchical bottlenecks / joint-embedding structure / equivariance to
+  known invariants (age & time-since-diagnosis scale ~linearly; sex is a discrete
+  flip) live inside `E_gen` (SMB JEPA / MOTOR), which is *frozen* — we do not retrain
+  it. We can only **screen** whether it produced usable geometry: the Stage-0 STRUCT
+  gate (compositional / phase-transition structure), localization Test A (encoder
+  capacity), and the curvature detectors. So the "hierarchical phase transition" is an
+  *encoder property we test for*, not a layer we build.
+- **Layer 2 — the loss landscape (the score training): ours, gated.**
+  - **Tangent-space penalty.** Standard DSM matches the predicted noise in the
+    *ambient* space, which teaches a flat bias. A Riemannian bias projects the score
+    onto the local tangent space `T_xM` (under `g`) and penalizes the off-manifold
+    component — the loss spikes when the net predicts a vector pointing off the
+    manifold. Requires `g` (above).
+  - **The twist as a macro-bias (reframes the annealed β_t we built).** At high
+    temperature (early reverse steps), the analytic twist hands the network the
+    *macroscopic* trajectory toward the rare positivity region `R`; the net is then
+    only responsible for the *micro-curvature* to get there. This is a stronger
+    reading of `linear_anneal`'s β_t than "variance control": weak-early is *macro
+    guidance first, micro-detail later*.
+- **Layer 3 — geometrically-aware noise (the forward process): ours, gated.** Isotropic
+  Gaussian corruption teaches "the space is flat, wander anywhere" (exactly what we do
+  today, deliberately). **Laplace–Beltrami corruption** — the manifold heat-kernel
+  forward process, anisotropic and squashed/stretched by local curvature — forces the
+  net to learn where the phase boundary between *plausible* and *impossible* patient
+  states lies. This is **not a new object**: the Laplace–Beltrami / heat-kernel forward
+  process *is* "Riemannian base diffusion" (component 1), and its generator is the
+  **same heat-kernel `g`** preferred above. Layer 3 and the metric choice are one
+  decision.
+
+**The statistician's caveat — strong bias is double-edged for a causal estimand.** An
+unconstrained net that has the wrong geometry fails *visibly* (garbage samples, obvious
+drift). A geometrically-constrained net with a **misspecified `g`** fails *invisibly*:
+it confidently generates smooth, plausible synthetic patients on the *wrong* manifold.
+For a synthetic-control-arm feeding an estimand, **confident-and-wrong is worse than
+obviously-wrong** — a silent-bias generator with a *smaller* error bar. Therefore the
+Layer-2/3 biases are gated not merely on "curvature exists" but on `g` being
+**validated**, and the **#88 `E_eval` guard is the load-bearing check** that the
+baked-in geometry did not distort the samples (faithful in `E_gen` but collapsing in a
+decoupled `E_eval` = the bias steered off the true manifold). Bias without a validated
+metric is how the optimizer's path of least resistance becomes a confident wrong answer.
+
 ## Propensity side — manifold-aware
 
 - **Propensity** `e(X) = P(T | X)` estimated respecting `g`: heat-kernel / geodesic
