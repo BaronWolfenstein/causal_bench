@@ -239,6 +239,47 @@ So a jump-diffusion generator, *if* STRUCT-S S1 licenses it, must be wired to th
 own. The jump term is warranted only when S1 shows the ICEs actually induce embedding
 regime shifts (they plausibly do, but it is testable, not assumed).
 
+### Three "two-space" structures — and where the hybrid intersects ELF
+
+"Two spaces" is overloaded across this design; the hybrid (continuous × discrete)
+touches one of them and must not be conflated with the others. There are **three**,
+at **three different pipeline locations**:
+
+1. **ELF continuous ↔ discrete (OUTPUT boundary).** Diffusion dynamics live in a
+   *continuous* embedding; discreteness enters *only* at the `t=0` weight-tied
+   final-step projection to MEDS tokens. It is a **map at the output**, not two
+   spaces the dynamics inhabit at once.
+2. **Transport-geometry / #88 (EVALUATION).** "Generate in reconstruction space,
+   **match/score in a semantic space**" — `E_gen` vs the decoupled `E_eval`. **Both
+   continuous**; the split is about *where you evaluate*, orthogonal to
+   continuous-vs-discrete.
+3. **The hybrid (DYNAMICS).** A stratified state space: continuous *within* sheets,
+   discrete *jumps* (ICEs) *between* them — discreteness **inside the trajectory**.
+
+**Where they intersect:**
+
+- **ELF (1) ∩ #88 (2) is already LIVE and built.** The #88 guard's render step *is*
+  ELF's continuous→discrete map: it renders generated samples to MEDS via the ELF
+  final-step, then re-encodes in `E_eval`. So ELF's output two-space is the bridge
+  *inside* the evaluation two-space today — not hypothetical.
+- **ELF (1) ∩ hybrid (3): same boundary, different location — they compose.** ELF's
+  discreteness is at the *output render*; the hybrid's is in the *dynamics*. A
+  jump-diffusion trajectory in continuous embedding space, ELF-projected to tokens at
+  output, is fully consistent — the hybrid does not fight ELF, it moves a copy of the
+  same continuous↔discrete boundary *upstream* into the trajectory.
+- **The deeper (speculative) synthesis.** If the hybrid factorizes as *(continuous
+  within-sheet coordinate) × (discrete sheet/regime label evolving as a CTMC)*, then
+  ELF's discrete token space could **serve as that discrete factor** — the regime
+  label ↔ ELF tokens — governed by discrete-diffusion theory (2607.05381, whose
+  *score* parameterization lets the score-based twist carry over). That would promote
+  ELF's map from output-only into the dynamics. **Flagged as synthesis, not
+  established** — and gated on STRUCT-S like the rest.
+
+Net: the hybrid **extends** ELF's continuous↔discrete boundary from the output into
+the dynamics; it intersects the transport/#88 two-space only through the shared
+consistency principle (whatever space generation uses — curved, stratified,
+discrete-rendered — `E_eval` must respect it).
+
 ## Non-goals / honesty
 
 - Not implementing. Large complexity jump; benefit unproven for the frozen EHR
