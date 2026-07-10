@@ -24,6 +24,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn")
 from causal_bench.generative.vpsde import Schedule, gaussian_score
 from causal_bench.generative.roundtrip import per_mode_roundtrip
 from causal_bench.generative.guidance import generate_guided
+from causal_bench.generative.calibrate import calibrate_guidance
 from causal_bench.sampling.twist import linear_anneal
 from causal_bench.diagnostics.localization import run_diagnostic
 
@@ -77,6 +78,21 @@ def main():
                                   rare_guided=rare_guided_annealed, common_ref=common)
     print(f"  Annealed terminal: {rep_annealed.terminal} "
           f"(vs constant-scale below)")
+
+    # ── Calibrated scale: sweep guidance_scale, pick the one that LANDS in R ──────
+    # landing AUC ~0.5 = guided indistinguishable from real rare (in R); ~1.0 = miss.
+    cal = calibrate_guidance(40, cond, bulk, sch, rare,
+                             scales=(0.5, 1.0, 1.5, 2.0, 3.0), seed=0)
+    print("\nCalibrating guidance_scale (landing AUC → 0.5 means guided lands in R):")
+    for s, a in sorted(cal["table"].items()):
+        print(f"    scale={s:>4}:  landing AUC={a:.2f}")
+    print(f"  Best guidance_scale={cal['best_scale']} (AUC={cal['best_auc']:.2f})")
+    rare_guided_cal = generate_guided(40, cond, bulk, sch, np.random.default_rng(2),
+                                      guidance_scale=cal["best_scale"])
+    rep_cal = run_diagnostic(rare, common, recon_b=recon_b,
+                             rare_guided=rare_guided_cal, common_ref=common)
+    print(f"  Calibrated-scale terminal: {rep_cal.terminal} "
+          f"(mean={rare_guided_cal.mean():.2f}, R≈{rare.mean():.2f})")
 
     # ── Diagnostic: Test A (encoder capacity) + Test B + Test B″ (CFG landing) ───
     print("\nRunning diagnostic decision procedure...")
