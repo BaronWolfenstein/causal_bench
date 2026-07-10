@@ -141,6 +141,50 @@ baked-in geometry did not distort the samples (faithful in `E_gen` but collapsin
 decoupled `E_eval` = the bias steered off the true manifold). Bias without a validated
 metric is how the optimizer's path of least resistance becomes a confident wrong answer.
 
+### Tangent-space-penalty DSM — concrete design (the one Layer-2 piece that is ours)
+
+Of everything above, the tangent-space penalty is the single component that is
+(a) ours to build, (b) CPU-prototypable, and (c) doesn't strictly need a closed-form
+`g` — the tangent space can be estimated empirically. Concretely:
+
+- **Estimate the tangent projector `P_x` by local PCA.** For each point, take its `k`
+  nearest neighbours, center, SVD; the top `d'` right singular vectors span `T_xM`.
+  `P_x = V V^T` (a `d×d` rank-`d'` orthogonal projector); `I − P_x` is the normal
+  (off-manifold) projector. `d'` = the intrinsic dimension from **S3**. No explicit
+  metric needed — local PCA gives the tangent empirically. (If a heat-kernel `g` is
+  adopted, its diffusion map supplies the same basis — one object, two routes.)
+- **The loss.** Standard DSM constrains the score only *where data is*; in the empty
+  gaps the unconstrained net draws Euclidean lines. Add a regularizer evaluated at
+  **off-support "gap" points** `x̃` (sampled by interpolating between non-adjacent data
+  points, or by heavy corruption that lands in low-density regions), each projected to
+  the manifold as `x̃_proj` (its local-PCA reconstruction from the nearest neighbourhood):
+
+  `L = L_DSM  +  λ · E_gap [ || (I − P_{x̃}) · ( s_θ(x̃, t) + (x̃ − x̃_proj)/σ_reg² ) ||² ]`
+
+  The regularizer forces the score's **normal component to be an inward restoring
+  force** (off-manifold points pulled back to `M`) *everywhere near `M`, including the
+  gaps* — supplying exactly the constraint DSM lacks there, so "stay on the manifold"
+  becomes the low-loss path. `λ`, `σ_reg` trade on-manifold adherence vs data fit.
+- **CPU prototype / validation.** A synthetic curved manifold with a *known* on/off
+  test (Swiss roll, a sphere `S²⊂ℝᵈ`, or a curved sheet). Train a small score net
+  with and without the penalty; metric = **fraction of generated (and
+  gap-interpolated) samples within `ε` of `M`**, plus rare-region (gap) coverage. Pass
+  ⟺ the penalty keeps samples on-manifold and *improves* gap coverage **without**
+  inflating off-manifold mass. The local-PCA tangent estimate and an analytic-score
+  sanity check run on CPU; the trained-net leg uses the torch score net (`importorskip`,
+  skips off-box) — same numpy-first pattern as the rest of `generative/`.
+
+**The honest tension (load-bearing).** Local-PCA tangent estimation **degrades in low
+density** — i.e. *exactly the sparse rare region `R`* the SCA exists to serve. So the
+tangent constraint is least reliable where it matters most, and a *bad* tangent bakes
+in *wrong* geometry (the confident-bias failure above). Mitigations, in preference
+order: (1) use the **frozen encoder's Jacobian** for the tangent (density-independent,
+if the encoder exposes it) rather than local PCA; (2) borrow the tangent from denser
+adjacent regions with an uncertainty flag; (3) accept wider tangent uncertainty in `R`
+and lean on the twist/SMC steering instead of a hard penalty there. In all cases this
+stays gated on the curvature detectors firing **and** on the #88 `E_eval` guard
+confirming the penalty did not distort the samples.
+
 ## Propensity side — manifold-aware
 
 - **Propensity** `e(X) = P(T | X)` estimated respecting `g`: heat-kernel / geodesic
