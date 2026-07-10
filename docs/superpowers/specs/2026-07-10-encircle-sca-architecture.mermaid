@@ -153,6 +153,10 @@ flowchart TD
     ESSNOTE["ESS ≠ ESS ≠ ESS (3 objects, same name):\nKish particle/positivity ESS (here); Morita-Thall-Müller prior-ESS (borrowing);\nMCMC bulk/tail-ESS (3-level OC fits — tail-ESS load-bearing, Type I = tail event)."]
     ESS_SMC -.-> ESSNOTE
 
+    %% Adjustment-set collider caveat (zero_flow_ci / Markov-blanket)
+    SNOTE["COLLIDER CAVEAT on S: adjustment set S ≠ Markov blanket.\nA CI oracle (zero_flow_ci) DETECTS colliders (v-structure: X⟂Y, X⟂̸Y|C)\nand is FOOLED by them (collider/descendant in Z opens the path → spurious\ndependence). MB includes collider-induced spouses by construction. So S is\nchosen by FCI backdoor-validity (colliders + descendants EXCLUDED) restricted\nto PRE-TREATMENT covariates (ICH E9(R1)); MB feeds discovery, never selection.\nM-bias (adjust-and-still-open) carried as sensitivity: exp22."]
+    FCI -.-> SNOTE
+
     %% Measurement-error hand-offs (encoder repo → causal_bench)
     JEPA -.-> SIGEPS
     SIGEPS -.->|"Σ_ε artifact"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε"]
@@ -191,5 +195,5 @@ flowchart TD
     class LOCGATE,SCOPE gate
     class SIGEPS encoderrepo
     class MESENS,COVME causalrepo
-    class ESSNOTE,AUGNOTE annotation
+    class ESSNOTE,AUGNOTE,SNOTE annotation
     class AXES gated
