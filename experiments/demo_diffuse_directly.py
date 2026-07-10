@@ -12,11 +12,19 @@ is smc_required (the SMC reranker fixes overshoot). This is correct, documented 
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
+
+# Benign, pre-existing: on this hardware sklearn's Accelerate-BLAS matmul emits
+# divide/overflow RuntimeWarnings on the extreme-valued overshoot logits (mean≈8);
+# the separation AUC still computes correctly. Silence them so the demo reads clean.
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn")
 
 from causal_bench.generative.vpsde import Schedule, gaussian_score
 from causal_bench.generative.roundtrip import per_mode_roundtrip
 from causal_bench.generative.guidance import generate_guided
+from causal_bench.sampling.twist import linear_anneal
 from causal_bench.diagnostics.localization import run_diagnostic
 
 
@@ -53,6 +61,22 @@ def main():
     print("\nGenerating CFG-guided samples (rare-cohort condition, guidance_scale=3.0)...")
     rare_guided = generate_guided(40, cond, bulk, sch, rng, guidance_scale=3.0)
     print(f"  Guided samples: mean={rare_guided.mean():.2f}, std={rare_guided.std():.2f}")
+
+    # ── Annealed β_t: weak guidance while noisy, sharpening as denoising finishes ──
+    # linear_anneal(v_at_t0, v_at_tmax, n_steps): the reverse loop runs t = T..0, so
+    # v_at_tmax (weak, 0.3) applies at high noise and v_at_t0 (2.0) as x0 sharpens.
+    # Softer early steps curb the early overshoot that pushes the constant run to R's
+    # exterior (→ smc_required).
+    anneal = linear_anneal(2.0, 0.3, sch.n_steps)
+    print("\nGenerating with ANNEALED β_t (linear_anneal 2.0→0.3 over the noise schedule)...")
+    rare_guided_annealed = generate_guided(40, cond, bulk, sch,
+                                           np.random.default_rng(1), guidance_scale=anneal)
+    print(f"  Annealed guided samples: mean={rare_guided_annealed.mean():.2f}, "
+          f"std={rare_guided_annealed.std():.2f}")
+    rep_annealed = run_diagnostic(rare, common, recon_b=recon_b,
+                                  rare_guided=rare_guided_annealed, common_ref=common)
+    print(f"  Annealed terminal: {rep_annealed.terminal} "
+          f"(vs constant-scale below)")
 
     # ── Diagnostic: Test A (encoder capacity) + Test B + Test B″ (CFG landing) ───
     print("\nRunning diagnostic decision procedure...")
