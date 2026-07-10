@@ -1,0 +1,51 @@
+%% Twisted-diffusion SMC — the BUILT inference-time reranker for the `smc_required`
+%% terminal. Reflects causal_bench/sampling/{twist,smc,weights,resample,sharded}.py
+%% (PRs #97 twist bridge + distributed LSE, #98 tempering/annealing). Green = built
+%% CPU-validated; purple = GPU / on-box (A100-gated); yellow = tuning knob.
+flowchart TD
+    classDef built fill:#d4edda,stroke:#28a745,color:#222
+    classDef gpu fill:#e2d4f0,stroke:#6f42c1,color:#222
+    classDef knob fill:#fff3cd,stroke:#d39e00,color:#222
+
+    IN["smc_required terminal\n(CFG failed the B'' landing check)\ninput particles x_T ~ N(0, I)"]:::built
+
+    subgraph TW["Twist construction — make_twist()"]
+      SF["score_fn(x_t, t) — the ANALYTIC-vs-LEARNED gate\ngaussian_score (analytic)  OR  score_net (learned)\nidentical contract, no branch"]:::built
+      TD["Tweedie x0_hat = (x + (1-a)*score) / sqrt(a)"]:::built
+      RW["reward_fn(x0_hat) — heads into rare region R\n(Euclidean now; geodesic if Riemannian — see axes doc)"]:::built
+      KN["temperature lam  +  bounded twist lam*b*tanh(reward/b)\n+ annealed beta_t (linear_anneal: weak@high-noise -> sharp@low-noise)"]:::knob
+      SF --> TD --> RW --> KN
+    end
+    IN --> SF
+
+    subgraph LP["SMC loop — per denoising step t"]
+      PR["propagate(particles, t)"]:::built
+      PH["twist potential phi_t = KN(x_t)"]:::built
+      MD{"increment mode"}
+      AB["run_smc: ABSOLUTE phi_t\n(effective lam scales with resample cadence)"]:::built
+      TL["run_twisted_smc: TELESCOPING  delta = phi_t - phi_{t-1}\nprev-phi reindexed by ancestry; cadence-independent"]:::built
+      RS["adaptive resample?  should_resample: ESS < ess_frac*N\nsystematic_resample (cumsum + searchsorted / CUB)"]:::built
+      PR --> PH --> MD
+      MD -->|accumulate| AB
+      MD -->|telescope| TL
+      AB --> RS
+      TL --> RS
+      RS -->|next t| PR
+    end
+    KN --> PH
+
+    subgraph NM["Weight normalization — safe softmax"]
+      SS["single-node: normalize_log_weights\nsubtract max before exp; loud all -inf guard"]:::built
+      DS["multi-GPU: sharded_logsumexp\ntwo-scalar reduce all_reduce(MAX) then all_reduce(SUM);\ntolerance-equal to serial; folds into the ESS barrier"]:::gpu
+    end
+    RS --> SS
+    RS --> DS
+
+    subgraph MG["Multi-GPU (A100, on-box — gated)"]
+      NC["NCCL collectives; island / local resampling;\ndistributed == serial index invariant (sharded oracle)"]:::gpu
+    end
+    DS --> NC
+
+    OUT["reranked particles land in R -> pass B'' landing\n-> diffuse_directly achievable / synthetic SCA patients"]:::built
+    RS --> OUT
+    NC --> OUT
