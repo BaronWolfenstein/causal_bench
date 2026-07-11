@@ -102,3 +102,125 @@ def phase_transition_scan(X: np.ndarray, coarse: np.ndarray, fine: np.ndarray,
         "t_coarse_star": estimate_transition_t(t_frac, acc_c, chance=chance_c),
         "t_fine_star": estimate_transition_t(t_frac, acc_f, chance=chance_f),
     }
+
+
+# ─── (2) multi-level depth counting ──────────────────────────────────────────
+def sample_multi_level_gaussian(*, depth: int = 3, branching: int = 2,
+                                per_leaf: int = 40, dim: int = 8,
+                                base_sep: float = 3.0, decay: float = 0.45,
+                                sigma_within: float = 0.22, seed: int = 0) -> dict:
+    """A depth-``depth`` Gaussian tree: each level ℓ offsets its parent by
+    magnitude ``base_sep·decay^(ℓ-1)`` (geometrically shrinking scales — a real
+    hierarchy). ``branching`` children per node; leaves get ``per_leaf`` points.
+    Returns ``X``, ``level_labels`` (coarse→fine ancestor label per point) and
+    ``level_means``."""
+    rng = np.random.default_rng(seed)
+    means = [np.zeros((1, dim))]
+    for ell in range(1, depth + 1):
+        parent, sep = means[ell - 1], base_sep * decay ** (ell - 1)
+        M = np.empty((branching ** ell, dim))
+        for j in range(branching ** ell):
+            o = rng.normal(size=dim)
+            M[j] = parent[j // branching] + sep * o / (np.linalg.norm(o) + 1e-12)
+        means.append(M)
+    leaf_means = means[depth]
+    X, labels = [], [[] for _ in range(depth + 1)]
+    for leaf in range(len(leaf_means)):
+        X.append(leaf_means[leaf] + sigma_within * rng.normal(size=(per_leaf, dim)))
+        for ell in range(depth + 1):
+            labels[ell].extend([leaf // (branching ** (depth - ell))] * per_leaf)
+    return {"X": np.vstack(X), "level_labels": [np.asarray(l) for l in labels],
+            "level_means": means, "depth": depth}
+
+
+def depth_scan(X: np.ndarray, *, sch: Schedule | None = None,
+               k_grid=(2, 3, 4, 6, 8, 12, 16, 24, 32), n_grid: int = 18,
+               rng: np.random.Generator | None = None, tol: float = 0.08,
+               n_avg: int = 3) -> dict:
+    """**Unlabeled** hierarchy-depth probe (the real-data form). Cluster ``X`` into
+    ``k`` groups (agglomerative) at each granularity, take the transition ``t*``
+    for that clustering (centroids as means), **averaged over ``n_avg`` noise draws**
+    to damp Monte-Carlo variance. A hierarchy gives a **staircase** ``t*(k)`` — a
+    LEVEL boundary is an *outsized* drop against the smooth within-level decline;
+    flat data declines smoothly (max drop ≈ median drop) ⇒ 1 level. NOTE: the
+    unlabeled count is a heuristic — the rigorous depth tool is
+    ``multi_level_transition_scan`` (labeled) and the ``t*`` per level it returns.
+    ``estimated_levels`` = 1 + #(drops exceeding both ``tol`` and 2.5× the median)."""
+    from scipy.cluster.hierarchy import linkage, fcluster
+    sch = sch or Schedule(n_steps=200)
+    rng = rng or np.random.default_rng(0)
+    X = np.asarray(X, float)
+    kk = [k for k in k_grid if k <= len(X)]
+    # One Ward linkage, cut at each granularity — O(n²) once, not once per k
+    # (was AgglomerativeClustering per k). For large n, HDBSCAN's condensed tree
+    # is the O(n log n) upgrade and gives the natural levels directly — see #122.
+    Z = linkage(X, method="ward")
+    labs, means = [], []
+    for k in kk:
+        raw = fcluster(Z, k, criterion="maxclust")     # 1..k, possibly non-contiguous
+        _, lab = np.unique(raw, return_inverse=True)    # → 0..k'-1 contiguous
+        labs.append(lab)
+        means.append(np.stack([X[lab == c].mean(0) for c in range(lab.max() + 1)]))
+    t_star = np.zeros(len(kk))
+    for _ in range(n_avg):
+        r_rng = np.random.default_rng(rng.integers(1_000_000_000))
+        for i, (lab, mu) in enumerate(zip(labs, means)):
+            t_star[i] += phase_transition_scan(X, lab, lab, mu, mu, sch=sch,
+                                               n_grid=n_grid, rng=r_rng)["t_coarse_star"]
+    t_star /= n_avg
+    # t*(k) always decreases with k (finer clusters ⇒ closer centroids). A tree
+    # LEVEL boundary is an *outsized* drop (large scale gap) against the smooth
+    # within-level decline — count drops exceeding both `tol` and 2.5× the median.
+    drops = -np.diff(t_star)
+    med = float(np.median(np.abs(drops))) if len(drops) else 0.0
+    large = (drops > max(tol, 2.5 * med)) if len(drops) else np.array([], bool)
+    return {"k_grid": np.asarray(kk), "t_star_of_k": t_star,
+            "estimated_levels": int(1 + int(np.sum(large)))}
+
+
+def multi_level_transition_scan(X: np.ndarray, level_labels, level_means, *,
+                                sch: Schedule | None = None, n_grid: int = 25,
+                                rng: np.random.Generator | None = None) -> dict:
+    """LABELED depth probe: given the ancestor label + means at each tree level
+    (coarse→fine, e.g. from `sample_multi_level_gaussian`), return the transition
+    ``t*`` per level. A genuine hierarchy gives **monotone** ``t*`` — coarser
+    levels survive to higher noise. Returns ``{t_star_per_level}`` (coarse→fine)."""
+    sch = sch or Schedule(n_steps=200)
+    rng = rng or np.random.default_rng(0)
+    t_stars = []
+    for lab, means in zip(level_labels, level_means):
+        lab = np.asarray(lab)
+        if len(np.unique(lab)) < 2:                    # trivial (single root) level
+            t_stars.append(1.0)
+            continue
+        r = phase_transition_scan(X, lab, lab, np.asarray(means), np.asarray(means),
+                                  sch=sch, n_grid=n_grid, rng=rng)
+        t_stars.append(r["t_coarse_star"])
+    return {"t_star_per_level": np.asarray(t_stars)}
+
+
+# ─── (7) BP / reconstruction-threshold prediction of t* ──────────────────────
+def bp_predict_transition(sep: float, n_classes: int, *, sigma_within: float,
+                          sch: Schedule | None = None, n_grid: int = 40) -> dict:
+    """Analytic **reconstruction-threshold** prediction of the transition ``t*``
+    for one tree level (``n_classes`` classes, pairwise separation ``sep``, within-
+    class ``σ``) — the belief-propagation / Kesten-Stigum logic for the Gaussian
+    tree: the class SNR ``√a·sep / √(a·σ² + (1−a))`` crosses a critical value (a
+    union-bound on the MAP error) at ``t*``. Predicts ``t*`` from tree geometry
+    **without** running the diffusion scan — the (test-verified) match with the
+    empirical scan is what licenses BP-on-a-learned-tree to predict ``t*`` on real
+    data. Returns ``{t_frac, acc_pred, t_star}``."""
+    from scipy.stats import norm
+    sch = sch or Schedule(n_steps=200)
+    steps = np.linspace(1, sch.n_steps - 1, n_grid).astype(int)
+    t_frac = steps / sch.n_steps
+    chance = 1.0 / n_classes
+    acc = []
+    for t in steps:
+        a = alpha_bar(sch, int(t))
+        d = np.sqrt(a) * sep
+        sigma_t = np.sqrt(a * sigma_within ** 2 + (1.0 - a))
+        acc.append(max(chance, 1.0 - (n_classes - 1) * float(norm.sf(d / (2.0 * sigma_t)))))
+    acc = np.asarray(acc)
+    return {"t_frac": t_frac, "acc_pred": acc,
+            "t_star": estimate_transition_t(t_frac, acc, chance=chance)}
