@@ -93,3 +93,66 @@ def finite_size_widths(branching: int, *, depths=(3, 6, 12),
         stars.append(r["eps_star"])
     return {"depths": np.asarray(depths), "widths": np.asarray(widths),
             "eps_stars": np.asarray(stars)}
+
+
+# ─── Canonical KS diagnostic: fixed point + linear stability ──────────────────
+def bp_fixed_point_magnetization(branching: int, epsilon: float, *, pop: int = 4000,
+                                 seed: int = 0, max_iter: int = 80, tol: float = 1e-3,
+                                 leaf_field: float = 16.0) -> float:
+    """The **canonical** reconstruction order parameter: iterate the BP density-
+    evolution recursion to its **fixed point** (depth → ∞) and return the
+    magnetization ``m*``. ``m* > 0`` ⟺ reconstruction possible; ``m* → 0`` ⟺ not.
+    Unlike the finite-depth susceptibility peak this has no depth bias — it lands
+    on the true transition."""
+    rng = np.random.default_rng(seed)
+    lam = 1.0 - 2.0 * epsilon
+    h = np.full(pop, leaf_field)
+    prev = 1.0
+    for it in range(max_iter):
+        acc = np.zeros(pop)
+        for _b in range(branching):
+            hc = h[rng.integers(0, pop, size=pop)].copy()
+            hc[rng.random(pop) < epsilon] *= -1.0
+            acc += np.arctanh(np.clip(lam * np.tanh(hc), -_CLIP, _CLIP))
+        h = acc
+        m = float(np.mean(np.tanh(h)))
+        if it > 8 and abs(m - prev) < tol:
+            break
+        prev = m
+    return max(m, 0.0)
+
+
+def reconstruction_threshold(branching: int, *, m_floor: float = 0.03,
+                             lo: float = 0.001, hi: float = 0.499, iters: int = 16,
+                             pop: int = 3000, seed: int = 0) -> float:
+    """Empirical reconstruction threshold ``ε_c`` by bisection on the fixed-point
+    magnetization (``m*`` is monotone-decreasing in ε): the largest ε at which
+    ``m* > m_floor``. For a binary symmetric channel + small branching this
+    coincides with the Kesten-Stigum threshold ``ks_threshold(b)`` (a canonical
+    self-consistency check); a gap would signal the harder robust-reconstruction
+    (1RSB) regime at larger branching."""
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if bp_fixed_point_magnetization(branching, mid, pop=pop, seed=seed) > m_floor:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def linear_stability_multiplier(branching: int, epsilon: float, *, m_in: float = 0.01,
+                                pop: int = 20000, seed: int = 0) -> float:
+    """Measure the recursion's **linear-stability multiplier** at the uninformative
+    (``m=0``) fixed point: seed a tiny magnetization, apply ONE density-evolution
+    step, return ``m_out / m_in``. The KS threshold *is* where this crosses 1, and
+    it should equal ``b·λ² = branching·(1−2ε)²`` — deriving the threshold from the
+    recursion itself, not from an operational peak."""
+    rng = np.random.default_rng(seed)
+    lam = 1.0 - 2.0 * epsilon
+    h = np.full(pop, np.arctanh(np.clip(m_in, -_CLIP, _CLIP)))   # E[tanh h] = m_in
+    acc = np.zeros(pop)
+    for _b in range(branching):
+        hc = h[rng.integers(0, pop, size=pop)].copy()
+        hc[rng.random(pop) < epsilon] *= -1.0
+        acc += np.arctanh(np.clip(lam * np.tanh(hc), -_CLIP, _CLIP))
+    return float(np.mean(np.tanh(acc)) / m_in)
