@@ -3,18 +3,21 @@
 
 Decides whether a frozen-encoder embedding is a single smooth manifold or continuous
 sheets joined by (event-driven) discrete jumps — i.e. whether a hybrid jump-diffusion
-generator could ever be warranted. This module implements the CPU, embedding-only
-tests **S2-S4**:
+generator could ever be warranted. This module implements the CPU tests:
 
 - S2 ``spectral_component_count`` — eigengap heuristic on the k-NN-graph Laplacian.
 - S3 ``local_id_heterogeneity`` — dispersion of the per-point local intrinsic dim.
 - S4 ``density_gap`` — low-density separators via the MST edge-length gap.
+- S1 ``event_aligned_bimodality`` — the *decisive* test: displacement bimodality
+  (via ``standardized_bimodality``, the size-invariant Z-Dip principle, #107) AND
+  alignment of that split with intercurrent-event markers.
 
-**S1** (event-aligned displacement bimodality) is the *decisive* test but needs real
-temporal MEDS trajectories with intercurrent-event timestamps — it is on-box-gated and
-NOT here. S2-S4 therefore **corroborate / rule out**: they can flag a *candidate*
-stratification (or clear it), but only S1 confirms the *event-driven jump* structure
-that licenses the jump term. numpy/scipy/sklearn only.
+S2-S4 are embedding-only and **corroborate / rule out** (flag or clear a *candidate*
+stratification). **S1 is decisive** but needs displacements + intercurrent-event
+markers: the algorithm is CPU/synthetic-validatable and lives here, while feeding it
+*real* temporal MEDS trajectory displacements + ICE timestamps is the on-box step.
+Only S1 confirms the *event-driven jump* structure that licenses the jump term.
+numpy/scipy/sklearn only.
 """
 from __future__ import annotations
 
@@ -104,20 +107,105 @@ def density_gap(Z: np.ndarray, *, quantile: float = 0.9, threshold: float = 3.0,
             "ref_edge": ref_edge, "min_side_frac": min_side_frac}
 
 
-def struct_s_screen(Z: np.ndarray, *, n_neighbors: int = 10, k: int = 10) -> dict:
+# ------------------------------------------------------------------ S1 (decisive)
+def _to_magnitude(displacements: np.ndarray) -> np.ndarray:
+    """Reduce displacement vectors to a 1-D magnitude for the bimodality test
+    (a scalar displacement is passed through)."""
+    d = np.asarray(displacements, float)
+    return d if d.ndim == 1 else np.linalg.norm(d.reshape(len(d), -1), axis=1)
+
+
+def _gmm_bic_gap(x: np.ndarray, *, seed: int) -> float:
+    """BIC(1-component) − BIC(2-component) for 1-D ``x``. Positive ⇒ a two-mode
+    fit is preferred (bimodal); ~0 or negative ⇒ unimodal. BIC's complexity
+    penalty already accounts for n, so the gap is a sound bimodality statistic."""
+    from sklearn.mixture import GaussianMixture
+    x = x.reshape(-1, 1)
+    b1 = GaussianMixture(1, random_state=seed).fit(x).bic(x)
+    b2 = GaussianMixture(2, random_state=seed, n_init=2).fit(x).bic(x)
+    return float(b1 - b2)
+
+
+def standardized_bimodality(x: np.ndarray, *, n_null: int = 40,
+                            seed: int = 0) -> dict:
+    """Size-invariant bimodality score (the **Z-Dip** principle, issue #107):
+    standardize the GMM-BIC gap against a **unimodal** Gaussian null of the same n.
+    ``z_bimodal`` is comparable across sample sizes with a universal threshold,
+    unlike the raw gap (or raw Hartigan dip) which drifts with n. Returns
+    ``{z_bimodal, bic_gap}``. (#107's route swaps the GMM gap for Hartigan's dip
+    as the underlying statistic; the standardization here is the same idea.)"""
+    x = _to_magnitude(x)
+    eps = np.finfo(float).tiny
+    gap = _gmm_bic_gap(x, seed=seed)
+    rng = np.random.default_rng(seed)
+    mu, sd = float(x.mean()), float(x.std()) + eps
+    null = np.array([_gmm_bic_gap(rng.normal(mu, sd, size=len(x)),
+                                  seed=int(rng.integers(1_000_000)))
+                     for _ in range(n_null)])
+    z = (gap - null.mean()) / (null.std() + eps)
+    return {"z_bimodal": float(z), "bic_gap": gap}
+
+
+def event_aligned_bimodality(displacements: np.ndarray, ice_flags: np.ndarray, *,
+                             z_threshold: float = 3.0, align_threshold: float = 0.7,
+                             n_null: int = 40, seed: int = 0) -> dict:
+    """S1 — the *decisive* test: is the displacement distribution **bimodal** AND
+    is that split **aligned with intercurrent events**? Only both together license
+    the event-driven jump term (a bimodal split unrelated to ICEs is not).
+
+    ``displacements`` — per-sample scalar or vector displacement (reduced to
+    magnitude). ``ice_flags`` — per-sample 0/1 intercurrent-event marker. The
+    algorithm is CPU/synthetic-validatable; feeding it *real* MEDS trajectory
+    displacements + ICE timestamps is the on-box step. Alignment = direction-
+    agnostic AUC of ICE-status predicted by displacement magnitude (0.5 = none,
+    1.0 = the high-displacement mode is exactly the ICE cohort)."""
+    from sklearn.metrics import roc_auc_score
+    x = _to_magnitude(displacements)
+    ice = np.asarray(ice_flags).astype(int)
+    bm = standardized_bimodality(x, n_null=n_null, seed=seed)
+    bimodal = bm["z_bimodal"] > z_threshold
+    if len(np.unique(ice)) < 2:
+        align = 0.5
+    else:
+        auc = roc_auc_score(ice, x)
+        align = float(max(auc, 1.0 - auc))            # direction-agnostic
+    ice_aligned = align > align_threshold
+    return {
+        "s1_confirms": bool(bimodal and ice_aligned),
+        "bimodal": bool(bimodal),
+        "z_bimodal": bm["z_bimodal"],
+        "ice_alignment": align,
+        "ice_aligned": bool(ice_aligned),
+        "bic_gap": bm["bic_gap"],
+    }
+
+
+def struct_s_screen(Z: np.ndarray, *, n_neighbors: int = 10, k: int = 10,
+                    displacements: np.ndarray | None = None,
+                    ice_flags: np.ndarray | None = None, n_null: int = 40) -> dict:
     """Run S2-S4 and summarize. ``candidate_stratified`` is True if S2 finds > 1
-    stratum OR S4 finds a density gap (S3 heterogeneity is reported as corroboration).
-    Always sets ``needs_S1_to_confirm=True``: S2-S4 cannot establish the *event-driven
-    jump* structure that licenses a jump-diffusion — only the on-box S1 can."""
+    stratum OR S4 finds a density gap (S3 heterogeneity corroborates). If
+    ``displacements`` **and** ``ice_flags`` are supplied, also run the decisive
+    S1 (event-aligned bimodality) and report ``S1_confirms`` with
+    ``needs_S1_to_confirm=False``; otherwise ``needs_S1_to_confirm=True`` because
+    S2-S4 alone cannot establish the event-driven jump structure."""
     s2 = spectral_component_count(Z, n_neighbors=n_neighbors)
     s3 = local_id_heterogeneity(Z, k=k)
     s4 = density_gap(Z)
     candidate = bool(s2["n_strata"] > 1 or s4["has_gap"])
-    return {
+    out = {
         "candidate_stratified": candidate,
         "needs_S1_to_confirm": True,
+        "S1_confirms": None,
         "S2_n_strata": s2["n_strata"],
         "S3_local_id_cv": s3["cv"],
         "S4_gap_ratio": s4["gap_ratio"],
         "S4_has_gap": s4["has_gap"],
     }
+    if displacements is not None and ice_flags is not None:
+        s1 = event_aligned_bimodality(displacements, ice_flags, n_null=n_null)
+        out["needs_S1_to_confirm"] = False
+        out["S1_confirms"] = s1["s1_confirms"]
+        out["S1_z_bimodal"] = s1["z_bimodal"]
+        out["S1_ice_alignment"] = s1["ice_alignment"]
+    return out
