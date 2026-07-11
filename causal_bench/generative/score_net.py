@@ -99,6 +99,15 @@ def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
     # Pass an existing optimizer to resume (its Adam moments carry over); omit it
     # for a fresh run. Default preserves the original single-call behaviour.
     opt = opt if opt is not None else torch.optim.Adam(model.parameters(), lr=1e-3)
+    # Cross-device resume safety: a checkpoint loaded with map_location='cpu' leaves
+    # the Adam moments on cpu; once the model is on `dev` (e.g. cuda on the box),
+    # opt.step() would device-mismatch. Align optimizer state to each param's device.
+    # No-op when everything is already on the same device (e.g. cpu).
+    for group in opt.param_groups:
+        for p in group["params"]:
+            for k, v in opt.state.get(p, {}).items():
+                if torch.is_tensor(v) and v.device != p.device:
+                    opt.state[p][k] = v.to(p.device)
     ab = torch.as_tensor(sch.alphas_bar, dtype=torch.float32, device=dev)
     for _ in range(epochs):
         model.train()
