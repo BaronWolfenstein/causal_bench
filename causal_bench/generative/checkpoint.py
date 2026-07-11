@@ -41,7 +41,11 @@ def load_checkpoint(path: _PathLike, model, opt=None, *,
                     map_location: str = "cpu") -> dict:
     """Restore ``model`` (and ``opt`` if given and present) in place from
     ``path``; returns the saved ``meta`` dict. ``map_location`` keeps loading
-    device-agnostic (default 'cpu' — move the model afterwards if needed)."""
+    device-agnostic (default 'cpu' — move the model afterwards if needed).
+
+    Cross-device resume note: the optimizer moments load onto ``map_location``;
+    ``train_score`` re-aligns them to the model's device before stepping, so a
+    checkpoint saved on cpu can be resumed on cuda without a device mismatch."""
     import torch
     ckpt = torch.load(str(path), map_location=map_location, weights_only=False)
     model.load_state_dict(ckpt["model"])
