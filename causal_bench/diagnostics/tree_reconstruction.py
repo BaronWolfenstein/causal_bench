@@ -156,3 +156,77 @@ def linear_stability_multiplier(branching: int, epsilon: float, *, m_in: float =
         hc[rng.random(pop) < epsilon] *= -1.0
         acc += np.arctanh(np.clip(lam * np.tanh(hc), -_CLIP, _CLIP))
     return float(np.mean(np.tanh(acc)) / m_in)
+
+
+# ─── q-ary (Potts) BP density evolution — shared primitive for #131 ───────────
+def qary_ks_threshold(branching: int) -> float:
+    """Kesten-Stigum threshold in the Potts *closeness* parameter θ (channel
+    ``M_ij = (1−θ)/q + θ·δ_ij``, second eigenvalue λ = θ): reconstruction by the
+    linear/BP-from-scratch estimator iff ``b·θ² > 1`` ⟺ ``θ > 1/√b``. (For binary,
+    θ = 1 − 2ε, recovering ``b(1−2ε)²=1``.)"""
+    return 1.0 / np.sqrt(branching)
+
+
+def _qary_overlap(H: np.ndarray, q: int) -> float:
+    """Potts overlap of a field population ``H`` (pop, q) conditioned on the true
+    symbol = 0: ``(q·E[belief(0)] − 1)/(q−1)`` ∈ [0,1] (0 = uniform, 1 = certain)."""
+    Hm = H - H.max(1, keepdims=True)
+    b = np.exp(Hm)
+    b /= b.sum(1, keepdims=True)
+    return float((q * b[:, 0].mean() - 1.0) / (q - 1))
+
+
+def qary_bp_magnetization(depth: int, branching: int, q: int, theta: float, *,
+                          init: str = "planted", pop: int = 4000, seed: int = 0,
+                          leaf_field: float = 16.0) -> float:
+    """q-ary Potts BP density evolution (population dynamics), conditioned on the
+    node's true symbol = 0. Returns the reconstruction **overlap** after ``depth``
+    levels. ``init='planted'`` starts from observed leaves (detects the
+    *reconstruction* threshold — does an informative fixed point exist); ``init=
+    'uninformative'`` starts near the trivial fixed point (detects the *KS/
+    algorithmic* threshold — is BP-from-scratch stable). For q ≥ 5 the two can
+    differ (the hard-phase gap, #131 Part A); binary (q=2) reproduces the BSC
+    recursion.
+
+    Channel ``M_ij = (1−θ)/q + θ·δ_ij``: with prob θ the symbol is kept, else
+    resampled uniformly over all q symbols."""
+    rng = np.random.default_rng(seed)
+    if init == "planted":
+        H = np.zeros((pop, q)); H[:, 0] = leaf_field           # observed = true = 0
+    else:
+        H = 1e-3 * rng.standard_normal((pop, q))               # near trivial fixed point
+        H[:, 0] += 1e-2                                         # tiny bias toward truth
+    qidx = np.arange(q)
+    for _ in range(depth):
+        acc = np.zeros((pop, q))
+        for _b in range(branching):
+            h = H[rng.integers(0, pop, size=pop)]              # (pop, q) sampled messages
+            # child true symbol given node=0: keep 0 w.p. θ, else uniform over q
+            keep = rng.random(pop) < theta
+            c = np.where(keep, 0, rng.integers(0, q, size=pop))
+            # relabel the (symbol-0-conditioned) field to be conditioned on symbol c
+            roll = (qidx[None, :] - c[:, None]) % q
+            h = np.take_along_axis(h, roll, axis=1)
+            # channel attenuation: h'_a = log[(1−θ)/q · Σ_b e^{h_b} + θ e^{h_a}]
+            hmax = h.max(1, keepdims=True)
+            e = np.exp(h - hmax)
+            S = e.sum(1, keepdims=True)
+            acc += np.log((1.0 - theta) / q * S + theta * e + 1e-300) + hmax
+        H = acc - acc.max(1, keepdims=True)                    # normalize (log-domain)
+    return _qary_overlap(H, q)
+
+
+def has_reconstruction_gap(branching: int, q: int, theta: float, *, depth: int = 20,
+                           pop: int = 5000, seed: int = 0, planted_floor: float = 0.05,
+                           uninform_ceil: float = 0.03) -> bool:
+    """#131 Part A: is ``(branching, q, θ)`` in the **hard phase** — reconstruction
+    possible from an informative start but NOT by BP-from-scratch? True when the
+    planted overlap survives (> ``planted_floor``) while the uninformative one
+    collapses (< ``uninform_ceil``). This is the algorithmic-vs-information-theoretic
+    gap (`ε_KS < ε < ε_recon`), which opens for q ≥ 5 / large branching and is
+    absent for the binary symmetric channel."""
+    mp = qary_bp_magnetization(depth, branching, q, theta, init="planted",
+                               pop=pop, seed=seed)
+    mu = qary_bp_magnetization(depth, branching, q, theta, init="uninformative",
+                               pop=pop, seed=seed)
+    return bool(mp > planted_floor and mu < uninform_ceil)
