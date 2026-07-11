@@ -89,16 +89,54 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
     with pm.Model():
         mu = pm.Normal("mu", 0.0, 10.0)
         tau = pm.HalfNormal("tau", 1.0)
-        sub_eff = pm.Normal("sub_eff", mu, tau, shape=n_sub)
+        z = pm.Normal("z", 0.0, 1.0, shape=n_sub)          # non-centered: avoids the funnel
+        sub_eff = pm.Deterministic("sub_eff", mu + tau * z)
         sigma = pm.HalfNormal("sigma", 2.0)
         pm.Normal("y", sub_eff[sub], sigma, observed=y)
         idata = pm.sample(draws=draws, tune=tune, chains=chains,
                           nuts_sampler=sampler, progressbar=False,
                           random_seed=seed,
+                          nuts_sampler_kwargs={"target_accept": 0.9},
                           idata_kwargs={"log_likelihood": False})
     post = idata.posterior["mu"]
     effect, se = float(post.mean()), float(post.std())
     out = _decision(effect, se, data["true_effect"])
+    out.update(_diagnostics(idata, "mu"))
+    return out
+
+
+def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
+                         chains: int = 2, seed: int = 0, sampler: str = "numpyro",
+                         true_effect: float = 0.0, mu_sd: float = 1.0,
+                         tau_sd: float = 0.5) -> dict:
+    """Three-level model on **subgroup summaries** (the exp19-compatible form): a
+    Bayesian random-effects meta-analysis over per-subgroup effect estimates.
+
+        μ ~ N(0, mu_sd²);  τ ~ HalfNormal(tau_sd);
+        θ_g ~ N(μ, τ²);    θ̂_g ~ N(θ_g, se_g²)   [se_g fixed, the within-subgroup SE]
+
+    ``μ`` is the population effect. Unlike an ESS-weighted pooled variance (which
+    ignores between-subgroup heterogeneity), this **propagates τ into the μ
+    posterior**, so the SE is honest when subgroups disagree. Sampled via the
+    NumPyro/JAX backend; reports R-hat / bulk-ESS / tail-ESS."""
+    import pymc as pm
+
+    theta_hat = np.asarray(theta_hat, float)
+    se = np.asarray(se, float)
+    n_g = len(theta_hat)
+    with pm.Model():
+        mu = pm.Normal("mu", 0.0, mu_sd)
+        tau = pm.HalfNormal("tau", tau_sd)
+        z = pm.Normal("z", 0.0, 1.0, shape=n_g)            # non-centered: avoids the funnel
+        theta = pm.Deterministic("theta", mu + tau * z)
+        pm.Normal("obs", theta, se, observed=theta_hat)
+        idata = pm.sample(draws=draws, tune=tune, chains=chains,
+                          nuts_sampler=sampler, progressbar=False,
+                          random_seed=seed,
+                          nuts_sampler_kwargs={"target_accept": 0.9},
+                          idata_kwargs={"log_likelihood": False})
+    post = idata.posterior["mu"]
+    out = _decision(float(post.mean()), float(post.std()), true_effect)
     out.update(_diagnostics(idata, "mu"))
     return out
 
