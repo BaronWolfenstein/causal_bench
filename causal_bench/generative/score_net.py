@@ -78,8 +78,17 @@ def make_torch_score_fn(model, sch, device: str = "auto") -> Callable[[np.ndarra
     return score_fn
 
 
+def make_optimizer(model, lr: float = 1e-3):
+    """Adam over the model's params. Exposed so training can be checkpointed and
+    resumed: the caller holds the optimizer across `train_score` calls and
+    persists its state via `checkpoint.save_checkpoint`."""
+    import torch
+    return torch.optim.Adam(model.parameters(), lr=lr)
+
+
 def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
-                epochs: int = 20, rng=None, device: str = "auto", _loss_log=None):
+                epochs: int = 20, rng=None, device: str = "auto", opt=None,
+                _loss_log=None):
     import torch
     dev = resolve_device(device)
     model.to(dev)
@@ -87,7 +96,9 @@ def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
     X = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=dev)
     w = (torch.as_tensor(np.asarray(weights), dtype=torch.float32, device=dev)
          if weights is not None else torch.ones(len(X), device=dev))
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    # Pass an existing optimizer to resume (its Adam moments carry over); omit it
+    # for a fresh run. Default preserves the original single-call behaviour.
+    opt = opt if opt is not None else torch.optim.Adam(model.parameters(), lr=1e-3)
     ab = torch.as_tensor(sch.alphas_bar, dtype=torch.float32, device=dev)
     for _ in range(epochs):
         model.train()
