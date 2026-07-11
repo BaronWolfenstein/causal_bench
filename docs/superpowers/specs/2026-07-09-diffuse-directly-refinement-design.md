@@ -66,7 +66,7 @@ The plan's current Global Constraint ("do not start until the localization diagn
 
 1. **Global Constraints:** replace the single blocking-gate bullet with the two-layer wording from Decision 5.
 2. **Task 9:** expand `eval_space_inputs` to emit all five eval-space arrays; add tests asserting `metric_hacking_flag` on Test B′ and the B″ landing gate (Decision 2).
-3. **Remaining deferred:** keep #87 as the two-space **training objective** only (Decision 3); **add dispersive loss** as a new deferred item with the self-contained definition from Decision 4.
+3. **Remaining deferred:** keep #87 as the two-space **training objective** only (Decision 3); **add dispersive loss** as a new deferred item with the self-contained definition from Decision 4; **note the tangent-DSM torch score net (causal_bench #108)** — a manifold-aware training-time score-net variant (`generative/tangent_dsm.py`, prototyped CPU/closed-form in PR #106) that shares Task 8's torch-score-net infrastructure. Its penalty becomes a differentiable auxiliary loss; the CPU closed-form stays the validation oracle. Gated on real embeddings **and** a curvature / STRUCT-S trigger (manifold-aware propensity spec, PR #99). Deployment details live in the A100 spec §6.
 4. **Core (Tasks 1–8):** unchanged (Decision 1).
 
 ## Non-goals
