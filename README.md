@@ -2,7 +2,7 @@
 
 Monte Carlo benchmarking of causal estimators for clinical trials with survival outcomes.
 
-Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 36 experiments.
+Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 37 experiments.
 
 The core finding: the "right" estimator depends entirely on what's wrong with your data. This framework makes that concrete.
 
@@ -103,7 +103,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 ---
 
-## Experiments (36)
+## Experiments (37)
 
 | Script | Swept parameter | Key story | Estimators |
 |--------|-----------------|-----------|------------|
@@ -133,6 +133,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp19_hierarchical_oc.py` | Hierarchical borrowing operating characteristics |
 | `exp20_tipping_point_borrowing.py` | Tipping-point sweep × borrowing strength |
 | `exp21_hte_subgroup.py` | HTE subgroup benchmark — EffectXShift CV-TMLE vs BCF/BART posterior tree |
+| `exp22_mbias_sensitivity.py` | M-bias sensitivity — adjusting for a pre-treatment **collider** *introduces* bias (coverage → 0); collider-aware backdoor set stays unbiased. Estimand-side handling of the zero-flow-CI collider caveat |
 | `exp24_site_clustering.py` | Site clustering in registry comparator — undercoverage demonstration |
 | `exp25_ordinal_pro.py` | Win ratio vs Bayesian CLMM on ordinal PROs — efficiency & coverage under PO violation |
 | `exp26_user_sim_detection.py` | Exogenous-shock detection in a user simulator |
@@ -157,14 +158,16 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 |-----------------|-----------|
 | `causal_bench/diagnostics/localization.py` | Rare-detail localization decision procedure (Tests A/B/B′/B″/C) for the synthetic-control-arm architecture; CPU-only. Demo: `experiments/demo_localization.py` |
 | `causal_bench/sampling/` | Twisted-diffusion SMC core with IPCW survival-weight bookkeeping (numpy, CPU-first; multi-GPU port specced in the A100 deployment spec). Demo: `experiments/demo_smc_ipcw.py` |
-| `causal_bench/detectors/zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery (numpy/sklearn, no torch) |
+| `causal_bench/detectors/zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery (numpy/sklearn, no torch). Note the collider caveat: the MB includes collider-induced spouses and the CI oracle is *fooled* by a collider in the conditioning set, so the MB is never an adjustment set — see `exp22_mbias_sensitivity.py` |
+| `causal_bench/diagnostics/struct_s.py` | STRUCT-S stratification detector (S2 spectral eigengap, S3 local intrinsic dimension, S4 MST density gap); flags whether an embedding is stratified before geometry-aware modelling. CPU. Demo: `experiments/demo_struct_s.py` *(arrives via PR #101)* |
+| `causal_bench/generative/tangent_dsm.py` | Tangent-space-penalty DSM + gap-sampler prototype on synthetic curved manifolds (arc in R², Swiss roll in R³) — closed-form, numpy-only. Cuts gap-region off-manifold error ~70% vs plain DSM. Demo: `experiments/demo_tangent_dsm.py` *(arrives via PR #106)* |
 
-**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 35 distinct numbers → 36 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
+**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 36 distinct numbers → 37 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
 
 | Number | Status |
 |--------|--------|
-| exp22 | Immortal-time-bias honest-null — design-level, unbuilt (#21) |
-| exp23 | Unassigned gap |
+| exp22 | **Built** — M-bias sensitivity (`exp22_mbias_sensitivity.py`, #104) |
+| exp23 | Immortal-time-bias honest-null — design-level, unbuilt (#21; renumbered from exp22) |
 | exp34 | Pooled-Q subgroup event rates for single-arm ENCIRCLE — candidate, unbuilt (#77) |
 | exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
 | exp36 | Released — #73 was renamed off this slot (z_anatomy embedding-diagnostics substrate) |
