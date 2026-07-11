@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from causal_bench.generative.tangent_dsm import (
-    ArcManifold, RFF, dsm_target, fit_linear_score, score_fn, denoise,
+    ArcManifold, SwissRoll, RFF, dsm_target, fit_linear_score, score_fn, denoise,
     gap_noise_points, offmanifold_dist,
 )
 
@@ -96,3 +96,47 @@ def test_tangent_penalty_beats_plain_dsm_in_the_gap():
     err_tan = offmanifold_dist(denoise(gxt_test, W_tan, rff, sigma), man).mean()
     assert err_tan < err_plain                        # the payoff
     assert err_tan < 0.7 * err_plain                  # and materially so
+
+
+# ----------------------------------------------------------- Swiss roll (R³, 2-manifold)
+def test_swiss_roll_geometry():
+    man = SwissRoll()
+    rng = np.random.default_rng(0)
+    params, X0 = man.sample(200, rng)
+    t, h = params[:, 0], params[:, 1]
+    # normal is orthogonal to BOTH surface tangents ∂P/∂t and ∂P/∂h
+    n = man.normal(t)
+    dPdt = np.column_stack([np.cos(t) - t * np.sin(t), np.zeros_like(t),
+                            np.sin(t) + t * np.cos(t)])
+    dPdh = np.tile([0.0, 1.0, 0.0], (len(t), 1))
+    assert np.all(np.abs(np.sum(n * dPdt, axis=1)) < 1e-8)
+    assert np.all(np.abs(np.sum(n * dPdh, axis=1)) < 1e-8)
+    assert np.allclose(np.linalg.norm(n, axis=1), 1.0, atol=1e-8)
+    # projection of on-manifold points is (near) identity
+    feet, _ = man.project(X0)
+    assert offmanifold_dist(X0, man).max() < 0.05
+
+
+def test_swiss_roll_tangent_penalty_beats_plain_dsm_in_the_gap():
+    man = SwissRoll()
+    gap = (2.5 * np.pi, 2.8 * np.pi)                   # a held-out band of the roll
+    rng = np.random.default_rng(7)
+    sigma = 0.15
+
+    _, X0 = man.sample(4000, rng, gaps=[gap])
+    Xt = X0 + sigma * rng.normal(size=X0.shape)
+    T = dsm_target(X0, Xt, sigma)
+
+    rff = RFF(n_features=400, dim=3, scale=0.6, seed=2)
+    Phi = rff.transform(Xt)
+
+    W_plain = fit_linear_score(Phi, T, lam=0.0)
+    gxt, _, gnorm, gr = gap_noise_points(man, gap, n=800, sigma=sigma, rng=rng)
+    W_tan = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt), normals=gnorm,
+                             r_pen=gr, lam=8.0)
+
+    gt, _, _, _ = gap_noise_points(man, gap, n=3000, sigma=sigma,
+                                   rng=np.random.default_rng(21))
+    err_plain = offmanifold_dist(denoise(gt, W_plain, rff, sigma), man).mean()
+    err_tan = offmanifold_dist(denoise(gt, W_tan, rff, sigma), man).mean()
+    assert err_tan < 0.5 * err_plain                  # payoff generalizes to R³
