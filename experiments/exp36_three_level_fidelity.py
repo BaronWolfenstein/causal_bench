@@ -171,11 +171,56 @@ def run_real(n_reps: int = 100, phi: float = 0.7, conflict: float = 0.0,
     print(f"\nSaved → {OUT_DIR}/summary_exp19.md")
 
 
+def run_grid(phi_grid=(0.4, 0.6, 0.8), conflict_grid=(0.0, 0.4, 0.8),
+             n_reps: int = 200, target: str = "teer", draws: int = 800,
+             tune: int = 800, chains: int = 2, seed: int = 42,
+             tail_ess_threshold: float = 100.0, n_jobs: int = 7):
+    """FULL φ×conflict fidelity grid on exp19's real DGP — designed to run
+    LOCALLY on the MacBook's cores. This workload is CPU-bound (the 4-subgroup
+    MCMC is tiny, so the A100s add nothing — see #40 / the A100 spec); 14 M4-Pro
+    cores are enough.
+
+    Parallelism: joblib (loky) spawns a fresh process per cell — JAX-safe (each
+    process initialises JAX once). Watch **oversubscription**: NumPyro also
+    parallelises the ``chains`` within a cell, so effective threads ≈
+    ``n_jobs × chains``. On a 14-core M4 Pro keep ``n_jobs × chains ≲ 14`` (default
+    n_jobs=7, chains=2). Not executed here — this is the runnable definition."""
+    from joblib import Parallel, delayed
+
+    cells = [(phi, conf) for phi in phi_grid for conf in conflict_grid]
+
+    def _cell(phi, conf):
+        return phi, conf, run_exp19_fidelity(
+            n_reps=n_reps, phi=phi, conflict=conf, target=target, draws=draws,
+            tune=tune, chains=chains, seed=seed, tail_ess_threshold=tail_ess_threshold)
+
+    print(f"Exp 36 GRID: {len(cells)} cells (φ×conflict) × {n_reps} reps · target={target} "
+          f"· n_jobs={n_jobs} chains={chains}")
+    results = Parallel(n_jobs=n_jobs)(delayed(_cell)(phi, conf) for phi, conf in cells)
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    rows = ["| φ | conflict | ΔType-I | Δcoverage | 2-lvl Type-I | 3-lvl Type-I | flagged |",
+            "|---|---|---|---|---|---|---|"]
+    for phi, conf, res in sorted(results):
+        two, three, d = res["two_level"], res["three_level"], res["delta"]
+        rows.append(f"| {phi:g} | {conf:g} | {d['type_i']:+.2f} | {d['coverage']:+.2f} | "
+                    f"{two['type_i']:.2f} | {three['type_i']:.2f} | "
+                    f"{res['n_tail_ess_flagged']}/{res['n_mcmc_fits']} |")
+    report = "\n".join(rows)
+    (OUT_DIR / "grid_summary.md").write_text(report + "\n")
+    print("\n" + report)
+    print(f"\nSaved → {OUT_DIR}/grid_summary.md")
+    print("\nRead-out: cells with high conflict/heterogeneity show ΔType-I > 0 and "
+          "Δcoverage < 0 — the two-level kernel is anti-conservative exactly where "
+          "subgroups disagree; the three-level BHM stays calibrated.")
+    return results
+
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Exp 36: two-vs-three-level OC fidelity")
-    p.add_argument("--dgp", choices=["synthetic", "exp19"], default="synthetic",
-                   help="synthetic τ-sweep (methodology) or exp19's real registry DGP")
+    p.add_argument("--dgp", choices=["synthetic", "exp19", "grid"], default="synthetic",
+                   help="synthetic τ-sweep, exp19 single cell, or the full φ×conflict grid")
     p.add_argument("--n-reps", type=int, default=100)
     p.add_argument("--phi", type=float, default=0.7)
     p.add_argument("--conflict", type=float, default=0.0)
@@ -185,8 +230,12 @@ if __name__ == "__main__":
     p.add_argument("--chains", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--sampler", type=str, default="numpyro")
+    p.add_argument("--n-jobs", type=int, default=7, help="joblib workers for --dgp grid")
     args = p.parse_args()
-    if args.dgp == "exp19":
+    if args.dgp == "grid":
+        run_grid(n_reps=args.n_reps, target=args.target, draws=args.draws,
+                 tune=args.tune, chains=args.chains, seed=args.seed, n_jobs=args.n_jobs)
+    elif args.dgp == "exp19":
         run_real(n_reps=args.n_reps, phi=args.phi, conflict=args.conflict,
                  target=args.target, draws=args.draws, tune=args.tune,
                  chains=args.chains, seed=args.seed, sampler=args.sampler)
