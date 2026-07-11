@@ -180,15 +180,31 @@ def event_aligned_bimodality(displacements: np.ndarray, ice_flags: np.ndarray, *
     }
 
 
+# ------------------------------------------------ S5 (hierarchical-compositionality)
+def hierarchical_levels(Z: np.ndarray, *, k_grid=(2, 3, 4, 6, 8, 12, 16, 24),
+                        n_grid: int = 18) -> dict:
+    """S5 — hierarchical/compositional structure via the **diffusion phase-transition**
+    depth probe (Sclocchi-Favero-Wyart; `diagnostics/hierarchy_probe.py`, #122).
+    Where S2-S4 ask "is the embedding stratified into sheets/jumps?", S5 asks "is
+    it a **tree of latents?**" — a staircase in the transition ``t*(k)`` across
+    clustering granularities signals hierarchy depth. Returns ``{estimated_levels,
+    hierarchical, t_star_of_k}`` (``hierarchical`` ⟺ > 1 distinct scale)."""
+    from causal_bench.diagnostics.hierarchy_probe import depth_scan
+    r = depth_scan(np.asarray(Z, float), k_grid=k_grid, n_grid=n_grid)
+    return {"estimated_levels": r["estimated_levels"],
+            "hierarchical": bool(r["estimated_levels"] > 1),
+            "t_star_of_k": r["t_star_of_k"]}
+
+
 def struct_s_screen(Z: np.ndarray, *, n_neighbors: int = 10, k: int = 10,
                     displacements: np.ndarray | None = None,
-                    ice_flags: np.ndarray | None = None, n_null: int = 40) -> dict:
-    """Run S2-S4 and summarize. ``candidate_stratified`` is True if S2 finds > 1
-    stratum OR S4 finds a density gap (S3 heterogeneity corroborates). If
-    ``displacements`` **and** ``ice_flags`` are supplied, also run the decisive
-    S1 (event-aligned bimodality) and report ``S1_confirms`` with
-    ``needs_S1_to_confirm=False``; otherwise ``needs_S1_to_confirm=True`` because
-    S2-S4 alone cannot establish the event-driven jump structure."""
+                    ice_flags: np.ndarray | None = None, n_null: int = 40,
+                    run_s5: bool = True) -> dict:
+    """Run S2-S4 (+ optional S1, S5) and summarize. ``candidate_stratified`` is
+    True if S2 finds > 1 stratum OR S4 finds a density gap (S3 corroborates). If
+    ``displacements`` **and** ``ice_flags`` are supplied, also run the decisive S1
+    (event-aligned bimodality). If ``run_s5`` (default), run S5 (diffusion
+    phase-transition depth probe) → ``S5_levels`` / ``S5_hierarchical``."""
     s2 = spectral_component_count(Z, n_neighbors=n_neighbors)
     s3 = local_id_heterogeneity(Z, k=k)
     s4 = density_gap(Z)
@@ -208,4 +224,8 @@ def struct_s_screen(Z: np.ndarray, *, n_neighbors: int = 10, k: int = 10,
         out["S1_confirms"] = s1["s1_confirms"]
         out["S1_z_bimodal"] = s1["z_bimodal"]
         out["S1_ice_alignment"] = s1["ice_alignment"]
+    if run_s5:
+        s5 = hierarchical_levels(Z)
+        out["S5_levels"] = s5["estimated_levels"]
+        out["S5_hierarchical"] = s5["hierarchical"]
     return out
