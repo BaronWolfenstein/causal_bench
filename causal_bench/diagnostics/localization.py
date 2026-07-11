@@ -91,6 +91,7 @@ def test_a(
     cv: int = 5,
     mlp_check: bool = True,
     auc_threshold: float = 0.70,
+    schedule_probe: bool = False,
 ) -> LocalizationResult:
     """Test A — encoder capacity: can we separate rare from common in embedding space?
 
@@ -183,6 +184,12 @@ def test_a(
         metrics["mlp_auc"]    = float(np.mean(mlp_aucs))
         metrics["mlp_pr_auc"] = float(np.mean(mlp_pr_aucs))
 
+    # schedule-resolved corroboration: how far into the noise schedule the rare
+    # signal survives (t_rare*). Test A is the t=0 slice; this is the whole curve.
+    if schedule_probe:
+        metrics["t_rare_star"] = rare_recoverability_threshold(
+            rare_emb, common_emb)["t_rare_star"]
+
     passed = mean_lr_auc >= auc_threshold
     if passed:
         notes = (
@@ -203,6 +210,40 @@ def test_a(
             )
 
     return LocalizationResult(test="A", passed=passed, metrics=metrics, notes=notes)
+
+
+# ─── Schedule-resolved recoverability (t_rare*) — #122 → localization ─────────
+def rare_recoverability_threshold(rare_emb: np.ndarray, common_emb: np.ndarray, *,
+                                  sch=None, n_grid: int = 25, rng=None) -> dict:
+    """Schedule-resolved companion to Test A: the noise level ``t_rare*`` below
+    which the rare subpopulation is still separable from common under VP-SDE
+    forward diffusion (the #122 phase-transition probe, treating rare-vs-common as
+    the class). Test A is the ``t=0`` slice — "separable at zero noise"; ``t_rare*``
+    says "separable up to noise ``t_rare*``". Its meaning:
+
+    - **high ``t_rare*``** — rare signal survives to high noise ⇒ robustly
+      localizable; CFG/twist guidance can operate up to ``t_rare*`` (item 5).
+    - **low ``t_rare*``** — rare detail dies at low noise ⇒ fragile; guidance must
+      act below ``t_rare*`` or the terminal drifts toward tail_aware / smc_required.
+
+    Returns ``{t_rare_star, acc_curve, t_frac}``."""
+    from causal_bench.diagnostics.hierarchy_probe import phase_transition_scan
+    rng = rng or np.random.default_rng(0)
+    rare_emb = np.asarray(rare_emb, float)
+    common_emb = np.asarray(common_emb, float)
+    # Balance the classes so accuracy erodes to a true 0.5 chance (not the majority
+    # rate) — otherwise the imbalanced plateau never crosses the transition.
+    m = min(len(rare_emb), len(common_emb))
+    rare_b = rare_emb[rng.choice(len(rare_emb), m, replace=False)]
+    common_b = common_emb[rng.choice(len(common_emb), m, replace=False)]
+    X = np.vstack([rare_b, common_b])
+    # labels must index the means stack: rare→0, common→1 (means[0]=rare, [1]=common)
+    lab = np.concatenate([np.zeros(m, int), np.ones(m, int)])
+    means = np.stack([rare_b.mean(0), common_b.mean(0)])
+    r = phase_transition_scan(X, lab, lab, means, means, sch=sch, n_grid=n_grid,
+                              rng=rng or np.random.default_rng(0))
+    return {"t_rare_star": r["t_coarse_star"], "acc_curve": r["acc_coarse"],
+            "t_frac": r["t_frac"]}
 
 
 # ─── Shared: cross-validated pairwise separation AUC ─────────────────────────
@@ -514,6 +555,7 @@ def run_diagnostic(
     auc_drop_tol: float = 0.05,
     fidelity_tol: float = 0.65,
     drift_threshold: float = 0.70,
+    schedule_probe: bool = False,
 ) -> DiagnosticReport:
     """Run the decision procedure (Tests A → B → B″ / B' → B″ / C).
 
@@ -613,6 +655,7 @@ def run_diagnostic(
     result_a = test_a(
         rare_emb, common_emb,
         cv=cv, mlp_check=True, auc_threshold=auc_threshold,
+        schedule_probe=schedule_probe,
     )
     tests_run.append(result_a)
 
