@@ -1,4 +1,4 @@
-# diffuse_directly Implementation Plan (deferred; gated on the localization terminal)
+# diffuse_directly Implementation Plan (core + CPU-torch buildable now; architecture + real run gated on the localization terminal)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -785,7 +785,7 @@ git commit -m "feat(generative): ELF render->re-encode + #88 guard, MOTOR-free"
 
 ## Self-Review
 
-**Spec coverage:** ZCA invertible+AUC-preserving (T1), VP-SDE forward/score/Tweedie/reverse (T2), round-trip emitting recon arrays (T3), tail-aware 1/p(z) Test-B′ fix (T4), CFG rare_guided (T5), end-to-end into `run_diagnostic` (T6); torch net / two-space / ELF+E_eval / real-encoder deferred. Every CPU-validatable piece of the generator is tasked; the gate (diagnostic terminal first) is stated up front. ✅
+**Spec coverage:** ZCA invertible+AUC-preserving (T1), VP-SDE forward/score/Tweedie/reverse (T2), round-trip emitting recon arrays (T3), tail-aware 1/p(z) Test-B′ fix (T4), CFG rare_guided (T5), end-to-end into `run_diagnostic` (T6), stand-in frozen encoder (T7), CPU-torch score net (T8), ELF render / #88 bridge (T9) — all CPU-validatable on the stand-in encoder. Genuinely deferred/gated: the two-space Sinkhorn **training** loss (#87), dispersive loss, the architectural commitment (separate latent?), and the real MOTOR/CLMBR + A100 run. Per refinement Decision 5 the gate is **two-layer** — the machinery (T1–T9) is buildable now; only the architecture commitment and the real-encoder run wait on the localization verdict — stated up front in Global Constraints. ✅
 
 **Placeholder scan:** real numpy in every step; deferred items are explicitly scoped, not hand-waved inside core tasks. ✅
 
