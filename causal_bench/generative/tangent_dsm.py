@@ -13,10 +13,17 @@ the score NORMAL to the manifold that fails to point back toward it. So the
 gap-sampler supplies the coordinates where the tangent penalty is enforced; the
 two pieces are one mechanism.
 
-Closed-form insight: for a 1-manifold in R², the normal space is 1-D, so the
-normal projector is N = n nᵀ and ``(I−P)v = n (n·v)``. The penalty per point is
-therefore the SCALAR ``(n·s + n·r)²`` — the whole objective stays a single ridge
-least-squares in the linear score weights. No torch, no SGD, deterministic.
+Closed-form insight: a projector obeys ``||N v||² = Σ_j (n_j·v)²``, so the
+penalty is a SUM of scalar terms — one per normal-basis vector — and the whole
+objective stays a single ridge least-squares in the linear score weights, at ANY
+codimension. No torch, no SGD, deterministic.
+
+Manifolds (all analytic, for validation): ``ArcManifold`` (1-mfld in R², codim 1),
+``SwissRoll`` (2-mfld in R³, codim 1), ``Helix`` (curve in R³, codim 2 — the
+multi-normal case), ``Plane`` (flat 2-mfld in R⁵, codim 3 — the negative control
+where the penalty should be harmless). ``estimate_local_normals`` reads the normal
+basis off a point cloud by local PCA — the data-driven metric that lets the same
+penalty run on REAL embeddings with no analytic manifold.
 
 The score model is a random-Fourier-feature linear map (RBF-kernel ridge on the
 velocity field) — a universal approximator that keeps everything analytic and
@@ -327,5 +334,88 @@ class Helix:
         feet = self.point(t)
         x_noised = feet + sigma * rng.normal(size=feet.shape)
         normals = self.frenet_normals(t)
+        r = (x_noised - feet) / (sigma ** 2)
+        return x_noised, feet, normals, r
+
+
+# ---------------------------------------------- learned metric (data-driven normals)
+def estimate_local_normals(X_ref: np.ndarray, query: np.ndarray, *, k: int = 30,
+                           intrinsic_dim: int = 1) -> np.ndarray:
+    """Estimate the NORMAL-space basis at each ``query`` point by local PCA on its
+    ``k`` nearest neighbours in the reference cloud ``X_ref`` — the data-driven
+    stand-in for an analytic ``frenet_normals``. The top ``intrinsic_dim`` local
+    principal directions span the estimated tangent space; the remaining
+    ``D − intrinsic_dim`` span the estimated normal space.
+
+    Returns ``(n_query, D − intrinsic_dim, D)``, ready to pass as ``normals`` to
+    ``fit_linear_score``. This is what makes the penalty work on REAL embeddings:
+    no analytic manifold needed — the geometry is read off the point cloud. numpy
+    brute-force k-NN (no sklearn), CPU."""
+    X_ref = np.asarray(X_ref, dtype=float)
+    query = np.asarray(query, dtype=float)
+    D = X_ref.shape[1]
+    k = min(k, len(X_ref))
+    out = np.empty((len(query), D - intrinsic_dim, D))
+    for i in range(len(query)):
+        d2 = ((X_ref - query[i]) ** 2).sum(1)
+        idx = np.argpartition(d2, k - 1)[:k]
+        nbr = X_ref[idx]
+        nbr = nbr - nbr.mean(0)
+        _, _, Vt = np.linalg.svd(nbr, full_matrices=True)
+        out[i] = Vt[intrinsic_dim:]                    # bottom rows = normal space
+    return out
+
+
+# --------------------------------------------------- flat manifold (negative control)
+class Plane:
+    """A 2-flat (flat 2-manifold) embedded in R^D — **codimension D−2**, and
+    FLAT (zero curvature). The control case for the gated design: on a flat
+    manifold the plain Euclidean DSM is already correct (the normal field is
+    constant), so the tangent penalty should be a near-no-op. Random orthonormal
+    tangent/normal frame; analytic projection."""
+
+    def __init__(self, dim: int = 5, intrinsic: int = 2, span: float = 3.0,
+                 seed: int = 0):
+        self.dim, self.intrinsic, self.span = dim, intrinsic, float(span)
+        rng = np.random.default_rng(seed)
+        Q, _ = np.linalg.qr(rng.normal(size=(dim, dim)))
+        self.T = Q[:intrinsic]                          # (intrinsic, D) tangent basis
+        self.N = Q[intrinsic:]                          # (D-intrinsic, D) normal basis
+        self.origin = rng.normal(size=dim)
+
+    def point(self, coords: np.ndarray) -> np.ndarray:
+        return self.origin + np.asarray(coords, dtype=float) @ self.T
+
+    def sample(self, n: int, rng: np.random.Generator,
+               gaps: Sequence[Tuple[float, float]] = ()):
+        keep: List = []
+        while len(keep) < n:
+            c0 = rng.uniform(-self.span, self.span, size=n)
+            for g in gaps:
+                c0 = c0[(c0 < g[0]) | (c0 > g[1])]       # gap on the first tangent coord
+            keep.extend(c0.tolist())
+        c0 = np.asarray(keep[:n])
+        rest = rng.uniform(-self.span, self.span, size=(n, self.intrinsic - 1))
+        coords = np.column_stack([c0, rest])
+        return coords, self.point(coords)
+
+    def normal_basis(self, n: int) -> np.ndarray:
+        """Constant orthonormal normal basis, tiled to ``(n, D−intrinsic, D)``."""
+        return np.tile(self.N[None], (n, 1, 1))
+
+    def project(self, X: np.ndarray):
+        X = np.asarray(X, dtype=float)
+        d = X - self.origin
+        feet = self.origin + (d @ self.T.T) @ self.T    # drop normal components
+        return feet, None
+
+    def gap_sample(self, gap: Tuple[float, float], *, n: int, sigma: float,
+                   rng: np.random.Generator):
+        c0 = rng.uniform(gap[0], gap[1], size=n)
+        rest = rng.uniform(-self.span, self.span, size=(n, self.intrinsic - 1))
+        coords = np.column_stack([c0, rest])
+        feet = self.point(coords)
+        x_noised = feet + sigma * rng.normal(size=feet.shape)
+        normals = self.normal_basis(n)
         r = (x_noised - feet) / (sigma ** 2)
         return x_noised, feet, normals, r

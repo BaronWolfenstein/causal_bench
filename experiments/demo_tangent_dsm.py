@@ -23,8 +23,8 @@ import numpy as np
 warnings.filterwarnings("ignore", message=".*encountered in matmul", category=RuntimeWarning)
 
 from causal_bench.generative.tangent_dsm import (
-    ArcManifold, SwissRoll, Helix, RFF, dsm_target, fit_linear_score, denoise,
-    gap_noise_points, offmanifold_dist,
+    ArcManifold, SwissRoll, Helix, Plane, RFF, dsm_target, fit_linear_score,
+    denoise, gap_noise_points, offmanifold_dist, estimate_local_normals,
 )
 
 OUT_DIR = Path("results/tangent_dsm")
@@ -64,6 +64,61 @@ def _fit_and_eval(man, dim, gap, *, sigma, lam, n_data, n_feat, scale, n_pen,
                                  normals=gnorm[:, 0, :], r_pen=gr, lam=lam)
         ablation = (err(W_one, gt), err(W_tan, gt))       # (1 normal, full basis)
     return rows, ablation
+
+
+def _learned_and_control_section() -> str:
+    """Two additions that matter for real embeddings: (1) LEARNED normals — the
+    penalty works with the normal basis estimated from the point cloud by local
+    PCA, no analytic manifold; (2) a FLAT plane in R⁵ — the gated-design control
+    showing the penalty is harmless where curvature is absent."""
+    lines = ["### Learned metric & flat control"]
+
+    # (1) learned normals recover the analytic payoff on the helix (codim 2)
+    man = Helix()
+    gap = (1.6 * np.pi, 2.0 * np.pi)
+    sigma = 0.10
+    rng = np.random.default_rng(5)
+    _, X0 = man.sample(4000, rng, gaps=[gap])
+    Xt = X0 + sigma * rng.normal(size=X0.shape)
+    T = dsm_target(X0, Xt, sigma)
+    rff = RFF(500, 3, 1.2, seed=3)
+    Phi = rff.transform(Xt)
+    W_plain = fit_linear_score(Phi, T, lam=0.0)
+    gxt, _, gn_a, gr = gap_noise_points(man, gap, n=900, sigma=sigma, rng=rng)
+    _, cloud = man.sample(6000, np.random.default_rng(123))
+    gn_l = estimate_local_normals(cloud, gxt, k=40, intrinsic_dim=1)
+    W_a = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt), normals=gn_a, r_pen=gr, lam=8.0)
+    W_l = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt), normals=gn_l, r_pen=gr, lam=8.0)
+    gt, _, _, _ = gap_noise_points(man, gap, n=3000, sigma=sigma, rng=np.random.default_rng(31))
+    ep = offmanifold_dist(denoise(gt, W_plain, rff, sigma), man).mean()
+    ea = offmanifold_dist(denoise(gt, W_a, rff, sigma), man).mean()
+    el = offmanifold_dist(denoise(gt, W_l, rff, sigma), man).mean()
+    lines += ["", f"**Learned normals (helix, codim 2)** — normal basis estimated from the "
+              f"point cloud by local PCA, *no analytic manifold*:",
+              f"- plain DSM {ep:.4f} → analytic-normal penalty {ea:.4f} → "
+              f"**learned-normal penalty {el:.4f}** ({100*(1-el/ep):.0f}% drop, matches analytic). "
+              f"This is the bridge to real embeddings."]
+
+    # (2) flat plane in R^5 — penalty harmless
+    pl = Plane(dim=5, intrinsic=2, seed=0)
+    pgap = (-0.8, 0.8)
+    rng = np.random.default_rng(2)
+    _, X0 = pl.sample(4000, rng, gaps=[pgap])
+    Xt = X0 + 0.12 * rng.normal(size=X0.shape)
+    T = dsm_target(X0, Xt, 0.12)
+    rff = RFF(400, 5, 0.7, seed=4)
+    Phi = rff.transform(Xt)
+    W_plain = fit_linear_score(Phi, T, lam=0.0)
+    gxt, _, gn, gr = gap_noise_points(pl, pgap, n=800, sigma=0.12, rng=rng)
+    W_tan = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt), normals=gn, r_pen=gr, lam=8.0)
+    gt, _, _, _ = gap_noise_points(pl, pgap, n=3000, sigma=0.12, rng=np.random.default_rng(9))
+    ep = offmanifold_dist(denoise(gt, W_plain, rff, 0.12), pl).mean()
+    et = offmanifold_dist(denoise(gt, W_tan, rff, 0.12), pl).mean()
+    lines += ["", f"**Flat plane in R⁵ (codim 3, gated-design control)** — raw gap noise "
+              f"{offmanifold_dist(gt, pl).mean():.3f}: plain DSM already {ep:.4f}, penalty "
+              f"{et:.4f}. On a flat manifold plain DSM is correct and the penalty is "
+              f"harmless — you only pay for geometry when curvature is present."]
+    return "\n".join(lines)
 
 
 def run():
@@ -109,7 +164,7 @@ def run():
                          f"drift in the other — this is why codim ≥ 2 needs the basis.*")
         blocks.append("\n".join(lines))
 
-    report = "\n\n".join(blocks)
+    report = "\n\n".join(blocks + [_learned_and_control_section()])
     (OUT_DIR / "summary.md").write_text(report + "\n")
     print(report)
     print(f"\nSaved → {OUT_DIR}/summary.md")

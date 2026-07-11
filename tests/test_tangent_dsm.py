@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 from causal_bench.generative.tangent_dsm import (
-    ArcManifold, SwissRoll, Helix, RFF, dsm_target, fit_linear_score, score_fn,
-    denoise, gap_noise_points, offmanifold_dist,
+    ArcManifold, SwissRoll, Helix, Plane, RFF, dsm_target, fit_linear_score,
+    score_fn, denoise, gap_noise_points, offmanifold_dist, estimate_local_normals,
 )
 
 
@@ -205,3 +205,80 @@ def test_helix_tangent_penalty_beats_plain_dsm_in_the_gap_codim2():
                              normals=gnorm[:, 0, :], r_pen=gr, lam=8.0)
     err_one = offmanifold_dist(denoise(gt, W_one, rff, sigma), man).mean()
     assert err_tan < 0.5 * err_one                    # two normals materially beat one
+
+
+# ------------------------------------------- learned metric (data-driven normals)
+def test_local_pca_recovers_the_analytic_normal_space():
+    # On a dense clean helix cloud, local PCA should recover the Frenet normal
+    # SPACE (basis-invariant, compared via projectors) almost exactly.
+    man = Helix()
+    rng = np.random.default_rng(0)
+    _, ref = man.sample(6000, rng)
+    t = rng.uniform(man.t_lo + 0.6, man.t_hi - 0.6, 200)
+    q = man.point(t)
+    N_learn = estimate_local_normals(ref, q, k=40, intrinsic_dim=1)   # (200, 2, 3)
+    N_true = man.frenet_normals(t)
+    assert N_learn.shape == N_true.shape
+    P_learn = np.einsum("njk,njl->nkl", N_learn, N_learn)             # normal projectors
+    P_true = np.einsum("njk,njl->nkl", N_true, N_true)
+    frob = np.linalg.norm(P_learn - P_true, axis=(1, 2))
+    assert frob.mean() < 0.05                                         # (actual ≈ 0.003)
+
+
+def test_learned_normals_recover_the_gap_payoff():
+    # The bridge to real embeddings: estimate the normal basis from the point
+    # cloud (no analytic manifold) and recover the same gap payoff.
+    man = Helix()
+    gap = (1.6 * np.pi, 2.0 * np.pi)
+    sigma = 0.10
+    rng = np.random.default_rng(5)
+    _, X0 = man.sample(4000, rng, gaps=[gap])
+    Xt = X0 + sigma * rng.normal(size=X0.shape)
+    T = dsm_target(X0, Xt, sigma)
+    rff = RFF(n_features=500, dim=3, scale=1.2, seed=3)
+    Phi = rff.transform(Xt)
+
+    W_plain = fit_linear_score(Phi, T, lam=0.0)
+    gxt, _, gn_analytic, gr = gap_noise_points(man, gap, n=900, sigma=sigma, rng=rng)
+    _, cloud = man.sample(6000, np.random.default_rng(123))           # geometry cloud
+    gn_learned = estimate_local_normals(cloud, gxt, k=40, intrinsic_dim=1)
+    W_analytic = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt),
+                                  normals=gn_analytic, r_pen=gr, lam=8.0)
+    W_learned = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt),
+                                 normals=gn_learned, r_pen=gr, lam=8.0)
+
+    gt, _, _, _ = gap_noise_points(man, gap, n=3000, sigma=sigma,
+                                   rng=np.random.default_rng(31))
+    ep = offmanifold_dist(denoise(gt, W_plain, rff, sigma), man).mean()
+    ea = offmanifold_dist(denoise(gt, W_analytic, rff, sigma), man).mean()
+    el = offmanifold_dist(denoise(gt, W_learned, rff, sigma), man).mean()
+    assert el < 0.25 * ep                              # learned normals rescue the gap
+    assert el < 1.5 * ea + 0.005                       # ≈ as good as analytic ground truth
+
+
+# ------------------------------------------------ flat manifold (negative control)
+def test_plane_flat_penalty_is_harmless_codim3():
+    # Gated-design control: on a FLAT manifold the plain Euclidean DSM already
+    # handles the gap, and the tangent penalty (codim 3) is a near-no-op.
+    man = Plane(dim=5, intrinsic=2, seed=0)
+    gap = (-0.8, 0.8)                                  # gap on the first tangent coord
+    sigma = 0.12
+    rng = np.random.default_rng(2)
+    _, X0 = man.sample(4000, rng, gaps=[gap])
+    Xt = X0 + sigma * rng.normal(size=X0.shape)
+    T = dsm_target(X0, Xt, sigma)
+    rff = RFF(n_features=400, dim=5, scale=0.7, seed=4)
+    Phi = rff.transform(Xt)
+
+    W_plain = fit_linear_score(Phi, T, lam=0.0)
+    gxt, _, gnorm, gr = gap_noise_points(man, gap, n=800, sigma=sigma, rng=rng)
+    assert gnorm.shape[1] == 3                         # codimension 3
+    W_tan = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt), normals=gnorm,
+                             r_pen=gr, lam=8.0)
+
+    gt, _, _, _ = gap_noise_points(man, gap, n=3000, sigma=sigma,
+                                   rng=np.random.default_rng(9))
+    ep = offmanifold_dist(denoise(gt, W_plain, rff, sigma), man).mean()
+    et = offmanifold_dist(denoise(gt, W_tan, rff, sigma), man).mean()
+    assert ep < 0.02                                   # flat → plain DSM already good
+    assert et < ep + 0.01                              # penalty is harmless (no distortion)
