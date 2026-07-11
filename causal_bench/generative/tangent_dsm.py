@@ -121,12 +121,16 @@ def fit_linear_score(Phi: np.ndarray, target: np.ndarray, *,
     ``ŝ = Phi @ Woutᵀ`` matches the DSM ``target`` (shape ``(n, 2)``), plus the
     tangent penalty on the ``Phi_pen`` points.
 
-    Penalty per gap point i (unit normal ``n_i``, restoring term ``r_i``):
-        λ · ( n_i·(Wout φ_i) + n_i·r_i )²
-    which is linear in the stacked weights ``w = [Wout[0], …, Wout[D-1]]`` — one
-    ridge system of size ``D·d``. Works for any ambient dimension D (D=2 arc in
-    R², D=3 Swiss roll in R³): the manifold is codimension-1 so ``n_i`` is a
-    single unit vector and the penalty stays a scalar."""
+    ``normals`` gives, per gap point i, an orthonormal basis of the NORMAL space:
+    shape ``(n, D)`` for a single normal (codimension-1) or ``(n, c, D)`` for a
+    rank-``c`` normal space (codimension ≥ 2). Since a projector obeys
+    ``||N v||² = Σ_j (n_j·v)²``, the penalty is a SUM of scalar terms — one per
+    (point, normal-basis-vector):
+        λ · Σ_j ( n_{i,j}·(Wout φ_i) + n_{i,j}·r_i )²
+    each linear in the stacked weights ``w = [Wout[0], …, Wout[D-1]]``. So the
+    whole objective stays one ridge system of size ``D·d`` for any codimension —
+    a curve in R³ (c=2) or a low-dim manifold in a high-D embedding just stacks
+    more penalty rows."""
     d = Phi.shape[1]
     D = target.shape[1]                                   # ambient dimension
     G = Phi.T @ Phi                                        # d×d, shared by all rows
@@ -136,9 +140,16 @@ def fit_linear_score(Phi: np.ndarray, target: np.ndarray, *,
     rhs = np.concatenate([Phi.T @ target[:, k] for k in range(D)])
 
     if lam > 0 and Phi_pen is not None:
-        # scalar-per-point design row c_i = [n_i0·φ_i, …, n_i(D-1)·φ_i]; target −n_i·r_i
-        C = np.hstack([normals[:, [k]] * Phi_pen for k in range(D)])
-        d_pen = np.sum(normals * r_pen, axis=1)           # n_i · r_i
+        N = np.asarray(normals, dtype=float)
+        if N.ndim == 2:                                   # (n, D) → (n, 1, D)
+            N = N[:, None, :]
+        C_blocks, d_blocks = [], []
+        for j in range(N.shape[1]):                       # one block per normal-basis vector
+            nj = N[:, j, :]                               # (n, D)
+            C_blocks.append(np.hstack([nj[:, [k]] * Phi_pen for k in range(D)]))
+            d_blocks.append(np.sum(nj * r_pen, axis=1))   # n_{i,j} · r_i
+        C = np.vstack(C_blocks)
+        d_pen = np.concatenate(d_blocks)
         A += lam * (C.T @ C)
         rhs -= lam * (C.T @ d_pen)
 
@@ -243,5 +254,78 @@ class SwissRoll:
         feet = self.point(t, h)
         x_noised = feet + sigma * rng.normal(size=feet.shape)
         normals = self.normal(t)
+        r = (x_noised - feet) / (sigma ** 2)
+        return x_noised, feet, normals, r
+
+
+# ----------------------------------------------- 1-manifold in R³ (codimension 2)
+class Helix:
+    """A helix — a curve (1-manifold) in R³, so **codimension 2**: the normal
+    space at each point is a 2-D plane, and the tangent penalty no longer
+    collapses to a scalar. This exercises the general normal-basis path in
+    ``fit_linear_score`` (the on-mission case: a low-dim manifold in a higher-D
+    ambient space, like a patient-embedding manifold).
+
+        P(t) = (R·cos t,  R·sin t,  b·t),   t ∈ [t_lo, t_hi].
+
+    The unit normal basis is the Frenet principal-normal + binormal:
+        N(t) = (−cos t, −sin t, 0),   B(t) = (b·sin t, −b·cos t, R)/√(R²+b²),
+    both unit, orthogonal to each other and to the tangent."""
+
+    def __init__(self, R: float = 1.0, b: float = 0.15,
+                 t_lo: float = 0.0, t_hi: float = 4.0 * np.pi, grid: int = 3000):
+        self.R, self.b = float(R), float(b)
+        self.t_lo, self.t_hi = float(t_lo), float(t_hi)
+        self.s = np.sqrt(self.R ** 2 + self.b ** 2)        # ||P'(t)||, constant
+        self._tg = np.linspace(self.t_lo, self.t_hi, grid)
+        self._pg = self.point(self._tg)                    # grid of curve points
+
+    def point(self, t: np.ndarray) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        return np.column_stack([self.R * np.cos(t), self.R * np.sin(t), self.b * t])
+
+    def tangent(self, t: np.ndarray) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        tg = np.column_stack([-self.R * np.sin(t), self.R * np.cos(t),
+                              self.b * np.ones_like(t)])
+        return tg / self.s
+
+    def frenet_normals(self, t: np.ndarray) -> np.ndarray:
+        """Orthonormal normal basis ``(n, 2, 3)`` — [principal normal, binormal]."""
+        t = np.asarray(t, dtype=float)
+        N = np.column_stack([-np.cos(t), -np.sin(t), np.zeros_like(t)])
+        B = np.column_stack([self.b * np.sin(t), -self.b * np.cos(t),
+                             self.R * np.ones_like(t)]) / self.s
+        return np.stack([N, B], axis=1)                    # (n, 2, 3)
+
+    def sample(self, n: int, rng: np.random.Generator,
+               gaps: Sequence[Tuple[float, float]] = ()) -> Tuple[np.ndarray, np.ndarray]:
+        keep: List[float] = []
+        while len(keep) < n:
+            cand = rng.uniform(self.t_lo, self.t_hi, size=n)
+            for g in gaps:
+                cand = cand[(cand < g[0]) | (cand > g[1])]
+            keep.extend(cand.tolist())
+        t = np.asarray(keep[:n])
+        return t, self.point(t)
+
+    def project(self, X: np.ndarray, chunk: int = 1000):
+        """Nearest curve point (``feet``): 1-D search over ``t`` (chunked)."""
+        X = np.asarray(X, dtype=float)
+        tstar = np.empty(len(X))
+        for i in range(0, len(X), chunk):
+            block = X[i:i + chunk]
+            d2 = ((block[:, None, :] - self._pg[None, :, :]) ** 2).sum(-1)
+            tstar[i:i + chunk] = self._tg[np.argmin(d2, axis=1)]
+        return self.point(tstar), tstar
+
+    def gap_sample(self, gap: Tuple[float, float], *, n: int, sigma: float,
+                   rng: np.random.Generator):
+        """Near-curve noised points whose feet have ``t`` inside ``gap``. Returns
+        ``(x_noised, feet, normal_basis (n,2,3), r)``."""
+        t = rng.uniform(gap[0], gap[1], size=n)
+        feet = self.point(t)
+        x_noised = feet + sigma * rng.normal(size=feet.shape)
+        normals = self.frenet_normals(t)
         r = (x_noised - feet) / (sigma ** 2)
         return x_noised, feet, normals, r

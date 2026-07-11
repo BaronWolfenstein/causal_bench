@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 from causal_bench.generative.tangent_dsm import (
-    ArcManifold, SwissRoll, RFF, dsm_target, fit_linear_score, score_fn, denoise,
-    gap_noise_points, offmanifold_dist,
+    ArcManifold, SwissRoll, Helix, RFF, dsm_target, fit_linear_score, score_fn,
+    denoise, gap_noise_points, offmanifold_dist,
 )
 
 
@@ -140,3 +140,68 @@ def test_swiss_roll_tangent_penalty_beats_plain_dsm_in_the_gap():
     err_plain = offmanifold_dist(denoise(gt, W_plain, rff, sigma), man).mean()
     err_tan = offmanifold_dist(denoise(gt, W_tan, rff, sigma), man).mean()
     assert err_tan < 0.5 * err_plain                  # payoff generalizes to R³
+
+
+# --------------------------------------------- Helix (curve in R³, codimension 2)
+def test_helix_normal_basis_is_orthonormal_and_normal():
+    man = Helix()
+    rng = np.random.default_rng(0)
+    t, X0 = man.sample(200, rng)
+    N = man.frenet_normals(t)                          # (n, 2, 3)
+    assert N.shape == (200, 2, 3)
+    assert np.allclose(np.linalg.norm(N, axis=2), 1.0, atol=1e-8)      # each unit
+    assert np.all(np.abs(np.einsum("nk,nk->n", N[:, 0], N[:, 1])) < 1e-8)  # ⟂ each other
+    Tg = man.tangent(t)
+    assert np.all(np.abs(np.einsum("njk,nk->nj", N, Tg)) < 1e-8)       # both ⟂ tangent
+    assert offmanifold_dist(X0, man).max() < 0.05                      # projection ≈ id
+
+
+def test_fit_linear_score_normal_basis_matches_single_normal():
+    # codim-1 given as (n, D) vs (n, 1, D) must be identical (back-compat), and a
+    # (n, 2, D) basis must run and return the right shape.
+    rng = np.random.default_rng(1)
+    Phi = rng.normal(size=(60, 12))
+    T = rng.normal(size=(60, 3))
+    Phi_pen = rng.normal(size=(25, 12))
+    r = rng.normal(size=(25, 3))
+    n1 = rng.normal(size=(25, 3))
+    W_2d = fit_linear_score(Phi, T, Phi_pen=Phi_pen, normals=n1, r_pen=r, lam=1.0)
+    W_3d = fit_linear_score(Phi, T, Phi_pen=Phi_pen, normals=n1[:, None, :],
+                            r_pen=r, lam=1.0)
+    assert np.allclose(W_2d, W_3d, atol=1e-9)
+    basis = rng.normal(size=(25, 2, 3))
+    W_basis = fit_linear_score(Phi, T, Phi_pen=Phi_pen, normals=basis, r_pen=r, lam=1.0)
+    assert W_basis.shape == (3, 12)
+
+
+def test_helix_tangent_penalty_beats_plain_dsm_in_the_gap_codim2():
+    man = Helix()
+    gap = (1.6 * np.pi, 2.0 * np.pi)                   # a held-out turn of the helix
+    rng = np.random.default_rng(5)
+    sigma = 0.10
+
+    _, X0 = man.sample(4000, rng, gaps=[gap])
+    Xt = X0 + sigma * rng.normal(size=X0.shape)
+    T = dsm_target(X0, Xt, sigma)
+
+    rff = RFF(n_features=500, dim=3, scale=1.2, seed=3)
+    Phi = rff.transform(Xt)
+
+    W_plain = fit_linear_score(Phi, T, lam=0.0)
+    gxt, _, gnorm, gr = gap_noise_points(man, gap, n=900, sigma=sigma, rng=rng)
+    assert gnorm.shape[1] == 2                         # codim-2 normal basis
+    W_tan = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt), normals=gnorm,
+                             r_pen=gr, lam=8.0)
+
+    gt, _, _, _ = gap_noise_points(man, gap, n=3000, sigma=sigma,
+                                   rng=np.random.default_rng(31))
+    err_plain = offmanifold_dist(denoise(gt, W_plain, rff, sigma), man).mean()
+    err_tan = offmanifold_dist(denoise(gt, W_tan, rff, sigma), man).mean()
+    assert err_tan < 0.5 * err_plain                  # payoff holds at codim 2
+
+    # ABLATION — why codim-2 needs the FULL basis: constraining only ONE normal
+    # leaves the score free to drift along the OTHER normal direction.
+    W_one = fit_linear_score(Phi, T, Phi_pen=rff.transform(gxt),
+                             normals=gnorm[:, 0, :], r_pen=gr, lam=8.0)
+    err_one = offmanifold_dist(denoise(gt, W_one, rff, sigma), man).mean()
+    assert err_tan < 0.5 * err_one                    # two normals materially beat one
