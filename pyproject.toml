@@ -39,6 +39,13 @@ bayes = [
     "pymc>=5.0; python_version >= '3.12'",
     "arviz>=1.0; python_version >= '3.12'",
 ]
+# JAX/NumPyro NUTS backend for PyMC (pm.sample(nuts_sampler="numpyro")) — the
+# A100 Fidelity-path GPU sampler for the three-level BHM (#40). Same 3.12 gate as
+# the bayes stack (needs pymc). On the box, install jax[cuda] instead of jax[cpu].
+bayes-gpu = [
+    "numpyro>=0.15; python_version >= '3.12'",
+    "jax>=0.4; python_version >= '3.12'",
+]
 all = [
     "rpy2>=3.5", "pyarrow>=12", "Pillow>=10",
     "bambi>=0.13; python_version >= '3.12'",
