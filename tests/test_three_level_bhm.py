@@ -69,3 +69,32 @@ def test_fidelity_harness_reports_both_kernels_and_deltas():
             res["two_level"][q] - res["three_level"][q], abs=1e-9)
     assert "n_mcmc_fits" in res and res["n_mcmc_fits"] == 4 * 2   # null + alt reps
     assert "n_tail_ess_flagged" in res
+
+
+# ---- three-level meta-analysis over subgroup summaries + exp19 real-DGP wiring ----
+from causal_bench.estimators.three_level_bhm import fit_three_level_meta
+
+
+def test_three_level_meta_recovers_effect_from_summaries():
+    rng = np.random.default_rng(0)
+    mu_true, tau_true = -0.12, 0.15
+    theta = rng.normal(mu_true, tau_true, 8)
+    se = np.full(8, 0.10)
+    theta_hat = theta + rng.normal(0, se)
+    fit = fit_three_level_meta(theta_hat, se, true_effect=mu_true, **FAST)
+    assert abs(fit["effect"] - mu_true) < 0.15                 # μ recovered from summaries
+    for k in ("r_hat", "bulk_ess", "tail_ess", "se", "rejects_null", "covers_truth"):
+        assert k in fit
+    assert fit["r_hat"] < 1.1
+
+
+def test_exp19_bridge_extracts_summaries_and_both_kernels():
+    # the real registry DGP → 4 subgroup summaries + exp19's ESS-weighted two-level.
+    from experiments.exp36_three_level_fidelity import exp19_subgroup_summaries
+    s = exp19_subgroup_summaries(phi=0.7, conflict=0.0, scenario="alternative", seed=1)
+    assert s["theta_hat"].shape == s["se"].shape and len(s["theta_hat"]) == 4
+    assert np.isfinite(s["theta_hat"]).all() and (s["se"] > 0).all()
+    assert hasattr(s["two_level"], "ate_posterior")            # exp19 BorrowingResult
+    # the three-level meta runs on those real summaries and reports diagnostics
+    three = fit_three_level_meta(s["theta_hat"], s["se"], true_effect=s["true_ate"], **FAST)
+    assert np.isfinite(three["tail_ess"]) and three["tail_ess"] > 0
