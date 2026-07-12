@@ -285,3 +285,47 @@ def reconstruction_gap(branching: int, q: int, *, depth: int = 26, pop: int = 50
             "theta_ks_analytic": 1.0 / np.sqrt(branching),
             "has_gap": bool(th_recon < th_ks - tol),
             "gap_width": float(max(0.0, th_ks - th_recon))}
+
+
+# ─── #131 Part B: canonical SFW — diffusion class-overlap via exact BP ────────
+def diffusion_class_overlap(depth: int, branching: int, q: int, theta_gen: float,
+                            theta_diff: float, *, pop: int = 5000, seed: int = 0) -> float:
+    """Exact-BP class-overlap on a **symmetric broadcast tree** under leaf diffusion
+    — a validated stepping-stone toward canonical SFW (#131 Part B), and a negative
+    result that motivates the grammar.
+
+    Data = a root class broadcast down a depth-``depth`` ``b``-ary tree with
+    generation closeness ``theta_gen``; the forward diffusion corrupts each leaf
+    through the uniform categorical channel ``theta_diff`` (1 = clean, → 0 noised).
+    Returns the BP posterior overlap on the root class given the corrupted leaves
+    (the optimal denoiser IS this BP; no trained net). ``theta_diff=1`` recovers the
+    clean reconstruction (= ``qary_bp_magnetization`` planted).
+
+    **Finding (do not misread as an SFW transition):** a *supercritical* broadcast
+    (``theta_gen > 1/√b``) **amplifies** any positive leaf information, so the overlap
+    is essentially FLAT in ``theta_diff`` — leaf-only corruption cannot tip a
+    supercritical tree, and a subcritical one fails regardless. So the symmetric
+    broadcast has **no diffusion phase transition** in ``theta_diff``; the sharp SFW
+    class-flip transition requires the RHM **grammar** (deterministic production
+    rules), where a corrupted token can make a subtree inconsistent with *all* rules
+    — a nonlinear rule-consistency effect the broadcast lacks. Canonical Part B
+    therefore needs the grammar + rule-BP (#131, updated)."""
+    rng = np.random.default_rng(seed)
+    qidx = np.arange(q)
+    # corrupted-leaf field, conditioned on the leaf's true symbol = 0: observe y
+    # through the diffusion channel and set the log-likelihood field log P(y | ·).
+    y = np.where(rng.random(pop) < theta_diff, 0, rng.integers(0, q, size=pop))
+    H = np.full((pop, q), np.log((1.0 - theta_diff) / q + 1e-300))
+    H[np.arange(pop), y] = np.log((1.0 - theta_diff) / q + theta_diff + 1e-300)
+    for _ in range(depth):                                # BP up the generation tree
+        acc = np.zeros((pop, q))
+        for _b in range(branching):
+            h = H[rng.integers(0, pop, size=pop)]
+            c = np.where(rng.random(pop) < theta_gen, 0, rng.integers(0, q, size=pop))
+            h = np.take_along_axis(h, (qidx[None, :] - c[:, None]) % q, axis=1)
+            hmax = h.max(1, keepdims=True)
+            e = np.exp(h - hmax)
+            S = e.sum(1, keepdims=True)
+            acc += np.log((1.0 - theta_gen) / q * S + theta_gen * e + 1e-300) + hmax
+        H = acc - acc.max(1, keepdims=True)
+    return _qary_overlap(H, q)
