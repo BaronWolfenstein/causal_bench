@@ -12,12 +12,28 @@ control parameter* ``b·λ² > 1`` with ``λ = 1 − 2ε`` — the **Kesten-Stig
 threshold** ``ε* = (1 − 1/√b)/2``. As tree depth → ∞ the crossover sharpens into a
 true transition; that sharpening (finite-size scaling) is the honest evidence.
 
+**"BP" here = belief propagation** — the message-passing / cavity *inference*
+recursion that computes the posterior over the root from the leaves. NOT
+backpropagation; there are no gradients or neural nets anywhere in this module.
+
 BP is computed by **population dynamics / density evolution**: track the
 distribution of the BP field (log-odds) at a node *given its own spin = +1* (by
 symmetry). Leaf field = +∞ (observed); the edge channel attenuates a field by
 ``atanh(λ tanh(h))``; a node sums its children's attenuated fields. The
 reconstruction **magnetization** ``m = E[tanh(h)]`` is the order parameter — > 0
 below KS, → 0 above. numpy only, vectorized.
+
+**Forward-channel variants (for the diffusion connection, #131 Part B).** The
+q-ary tools here assume the **uniform** categorical channel (a token is kept w.p.
+θ else resampled uniformly), whose exact BP denoiser is the recursion below. A
+**D3PM** (Discrete Denoising Diffusion Probabilistic Models, Austin et al. 2021)
+*absorbing/masking* channel instead replaces tokens by a [MASK] symbol — so its
+exact BP needs a different **leaf-message** model: an unmasked leaf is a *clean*
+fully-informative observation (a delta), a masked leaf is *fully uninformative*
+(flat), rather than the uniform channel's graded per-leaf corruption. Same tree
+recursion, different leaf likelihood + noise schedule — still belief propagation,
+not a trained net. (A *trained* D3PM learns the denoiser with cross-entropy and
+runs no BP; BP is our exact-analysis oracle for the synthetic case.)
 """
 from __future__ import annotations
 
@@ -230,3 +246,42 @@ def has_reconstruction_gap(branching: int, q: int, theta: float, *, depth: int =
     mu = qary_bp_magnetization(depth, branching, q, theta, init="uninformative",
                                pop=pop, seed=seed)
     return bool(mp > planted_floor and mu < uninform_ceil)
+
+
+def _qary_threshold_bisect(branching: int, q: int, init: str, *, depth: int, pop: int,
+                           seed: int, floor: float, iters: int) -> float:
+    """Bisect the closeness θ (overlap is increasing in θ) for the θ at which the
+    ``init``-started BP overlap crosses ``floor``."""
+    lo, hi = 1.0 / q, 0.999
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if qary_bp_magnetization(depth, branching, q, mid, init=init, pop=pop, seed=seed) > floor:
+            hi = mid
+        else:
+            lo = mid
+    return 0.5 * (lo + hi)
+
+
+def reconstruction_gap(branching: int, q: int, *, depth: int = 26, pop: int = 5000,
+                       seed: int = 0, floor: float = 0.05, iters: int = 15,
+                       tol: float = 0.02) -> dict:
+    """#131 Part A (finished): map the KS-vs-reconstruction gap boundaries by
+    bisecting **both** BP initializations in the Potts closeness θ.
+
+    - ``theta_recon`` (planted start) — the *information-theoretic* threshold: the
+      smallest θ at which an informative fixed point survives.
+    - ``theta_ks`` (uninformative start) — the *algorithmic* KS threshold: the
+      smallest θ at which BP-from-scratch reconstructs. Should ≈ ``1/√b``.
+
+    ``has_gap`` ⟺ ``theta_recon < theta_ks − tol`` — the **hard phase** where
+    reconstruction is possible but not by BP-from-ignorance (opens for q ≥ 5;
+    absent for the binary symmetric channel). Returns the two empirical thresholds,
+    the analytic KS ``1/√b``, ``has_gap`` and ``gap_width``."""
+    th_recon = _qary_threshold_bisect(branching, q, "planted", depth=depth, pop=pop,
+                                      seed=seed, floor=floor, iters=iters)
+    th_ks = _qary_threshold_bisect(branching, q, "uninformative", depth=depth, pop=pop,
+                                   seed=seed, floor=floor, iters=iters)
+    return {"theta_recon": th_recon, "theta_ks": th_ks,
+            "theta_ks_analytic": 1.0 / np.sqrt(branching),
+            "has_gap": bool(th_recon < th_ks - tol),
+            "gap_width": float(max(0.0, th_ks - th_recon))}
