@@ -34,6 +34,18 @@ fully-informative observation (a delta), a masked leaf is *fully uninformative*
 recursion, different leaf likelihood + noise schedule — still belief propagation,
 not a trained net. (A *trained* D3PM learns the denoiser with cross-entropy and
 runs no BP; BP is our exact-analysis oracle for the synthetic case.)
+
+**Large-K scaling (not on our critical path).** A general D3PM stores a K×K
+transition matrix per step → ``O(K²T)`` memory, prohibitive for high-cardinality
+alphabets (real MEDS codes: K ~ 1e4+). We avoid it entirely: the uniform (and
+absorbing) channels are rank-1/identity-structured — ``O(1)`` to represent, BP
+messages ``O(v)``, no matrices stored. It would only bite if we ever diffused over
+*raw* MEDS tokens; diffuse_directly diffuses in the *continuous embedding* space
+(no K×K), with the only discrete step the ELF codebook render (nearest-neighbour,
+``O(K·d)``). If we ever go discrete-native, the standard fixes apply — absorbing/
+masking (``O(1)``), CTMC + closed-form matrix exponential (SEDD), or low-rank +
+diagonal corruption; a low-rank corruption *respecting the SNOMED/LOINC ontology*
+would be both faithful and ``O(K·r)``.
 """
 from __future__ import annotations
 

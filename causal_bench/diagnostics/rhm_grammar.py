@@ -15,6 +15,19 @@ allowed rules: ``belief(a) ∝ Σ_{rule r of a} Π_i child_i(r[i])``. Sweeping t
 diffusion corruption traces the genuine class-overlap phase transition (arXiv
 references: Sclocchi-Favero-Wyart; Cagnetta/Favero/Wyart RHM; Favero et al. 2502.12089).
 numpy only, exact BP on sampled trees.
+
+**Refinements (#131 Part B follow-up).** ``rhm_transition_scan`` locates the
+transition via the susceptibility (``dm/dθ``) peak; ``rhm_finite_size`` shows the
+transition **sharpens** with depth (width ∝ 1/max-susceptibility shrinks) — the FSS
+signature of a genuine phase transition, not a smooth crossover. ``rhm_bp_density_
+evolution`` is the **population-dynamics** predictor: it iterates the rule-BP
+recursion over a population of (true symbol, belief) pairs — no full trees sampled —
+and its transition matches the empirical exact-BP ``theta_star`` (the grammar analog
+of the KS/reconstruction density evolution in tree_reconstruction.py).
+
+**Large-K corruption channels.** The uniform channel used here is rank-1/identity-
+structured, so BP stays ``O(v)`` and no K×K transition matrix is ever stored — the
+D3PM ``O(K²T)`` cost (see tree_reconstruction.py) never arises for large ``v``.
 """
 from __future__ import annotations
 
@@ -75,3 +88,77 @@ def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
         tot += _bp_belief(y, depth, rules, v, theta)[root]
     mean_p = tot / n_trees
     return float((v * mean_p - 1.0) / (v - 1))
+
+
+def rhm_transition_scan(v: int, s: int, m: int, depth: int, *,
+                        theta_grid: np.ndarray | None = None, n_trees: int = 250,
+                        seed: int = 0, grammar_seed: int = 0) -> dict:
+    """Scan corruption θ (exact rule-BP on sampled trees): class-overlap +
+    susceptibility ``dm/dθ``. The **susceptibility peak** locates the transition
+    ``theta_star``. Returns ``{theta, overlap, susceptibility, theta_star}``."""
+    theta_grid = np.linspace(0.3, 0.98, 16) if theta_grid is None else np.asarray(theta_grid, float)
+    m_ov = np.array([rhm_class_overlap(v, s, m, depth, float(t), n_trees=n_trees,
+                                       seed=seed, grammar_seed=grammar_seed)
+                     for t in theta_grid])
+    susc = np.diff(m_ov) / np.diff(theta_grid)            # overlap rises with θ
+    mid = 0.5 * (theta_grid[:-1] + theta_grid[1:])
+    return {"theta": theta_grid, "overlap": m_ov, "susceptibility": susc,
+            "theta_star": float(mid[int(np.argmax(susc))])}
+
+
+def rhm_finite_size(v: int, s: int, m: int, *, depths=(3, 5, 7), n_trees: int = 250,
+                    seed: int = 0, grammar_seed: int = 0) -> dict:
+    """Finite-size scaling on the grammar: transition **width** (= 1/max
+    susceptibility) and location ``theta_star`` vs depth. A genuine transition
+    **sharpens** (width shrinks) as depth grows. Returns ``{depths, widths, theta_stars}``."""
+    widths, stars = [], []
+    for d in depths:
+        r = rhm_transition_scan(v, s, m, int(d), n_trees=n_trees, seed=seed,
+                                grammar_seed=grammar_seed)
+        widths.append(1.0 / float(np.max(r["susceptibility"])))
+        stars.append(r["theta_star"])
+    return {"depths": np.asarray(depths), "widths": np.asarray(widths),
+            "theta_stars": np.asarray(stars)}
+
+
+def _sample_by_symbol(syms: np.ndarray, targets: np.ndarray, rng, v: int) -> np.ndarray:
+    """For each target symbol, draw a population index whose symbol matches it."""
+    idx = np.zeros(len(targets), dtype=int)
+    for a in range(v):
+        g = np.where(syms == a)[0]
+        mask = targets == a
+        n = int(mask.sum())
+        if n:
+            idx[mask] = (g[rng.integers(0, len(g), n)] if len(g)
+                         else rng.integers(0, len(syms), n))
+    return idx
+
+
+def rhm_bp_density_evolution(v: int, s: int, m: int, depth: int, theta: float, *,
+                             pop: int = 4000, seed: int = 0, grammar_seed: int = 0) -> float:
+    """Rule-BP **density evolution** (population dynamics) — predicts the class
+    overlap from the recursion WITHOUT sampling full trees (the grammar analog of
+    ``bp_magnetization``). Tracks (true symbol, belief message) pairs; the leaf init
+    is the corrupted-observation likelihood; each step draws children by symbol,
+    combines through the rules, and conditions on a fresh node symbol. Returns the
+    normalized class overlap; the theta at which it transitions matches the
+    empirical exact-BP ``theta_star``."""
+    rules = make_rhm(v, s, m, seed=grammar_seed)
+    rng = np.random.default_rng(seed)
+    syms = rng.integers(0, v, pop)
+    y = np.where(rng.random(pop) < theta, syms, rng.integers(0, v, pop))
+    msgs = np.full((pop, v), (1.0 - theta) / v)
+    msgs[np.arange(pop), y] += theta
+    ri = np.arange(v)
+    for _ in range(depth):
+        new_syms = rng.integers(0, v, pop)
+        child_syms = rules[new_syms, rng.integers(0, m, pop)]      # (pop, s)
+        belief = np.ones((pop, v, m))
+        for i in range(s):
+            cm = msgs[_sample_by_symbol(syms, child_syms[:, i], rng, v)]  # (pop, v)
+            belief *= cm[:, rules[:, :, i]]                        # (pop, v, m)
+        belief = belief.sum(2)                                     # (pop, v)
+        belief /= belief.sum(1, keepdims=True) + 1e-300
+        syms, msgs = new_syms, belief
+    mean_p = float(msgs[np.arange(pop), syms].mean())
+    return (v * mean_p - 1.0) / (v - 1)

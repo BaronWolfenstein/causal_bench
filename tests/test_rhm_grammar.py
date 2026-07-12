@@ -4,7 +4,8 @@ exact BP."""
 import numpy as np
 
 from causal_bench.diagnostics.rhm_grammar import (
-    make_rhm, rhm_class_overlap,
+    make_rhm, rhm_class_overlap, rhm_transition_scan, rhm_finite_size,
+    rhm_bp_density_evolution,
 )
 from causal_bench.diagnostics.tree_reconstruction import diffusion_class_overlap
 
@@ -37,3 +38,28 @@ def test_grammar_transition_vs_broadcast_flatness():
     b_lo = diffusion_class_overlap(12, 3, 8, 0.85, 0.3, pop=4000, seed=3)
     assert (g_hi - g_lo) > 0.5                                    # grammar: real transition
     assert abs(b_hi - b_lo) < 0.10                               # broadcast: flat
+
+
+def test_transition_scan_locates_a_susceptibility_peak():
+    r = rhm_transition_scan(8, 2, 2, 7, n_trees=300, seed=1)
+    assert r["overlap"][-1] > r["overlap"][0] + 0.5              # rises across the sweep
+    assert 0.3 < r["theta_star"] < 0.9                           # peak in the transition band
+
+
+def test_finite_size_transition_sharpens_with_depth():
+    # FSS: a genuine transition sharpens (width = 1/max-susceptibility shrinks) as
+    # depth grows — the hallmark of a real phase transition vs a smooth crossover.
+    r = rhm_finite_size(8, 2, 2, depths=(3, 5, 7), n_trees=300, seed=1)
+    assert r["widths"][-1] < r["widths"][0]                      # deeper ⇒ sharper
+
+
+def test_density_evolution_predicts_the_empirical_transition():
+    # The rule-BP density-evolution (population dynamics) predictor transitions at the
+    # same θ as exact BP on sampled trees — the recursion's fixed point matches the
+    # empirical threshold (no full trees sampled).
+    de_lo = rhm_bp_density_evolution(8, 2, 2, 20, 0.4, pop=4000, seed=3)
+    de_hi = rhm_bp_density_evolution(8, 2, 2, 20, 0.7, pop=4000, seed=3)
+    assert de_lo < 0.3                                            # below transition: collapsed
+    assert de_hi > 0.5                                            # above transition: recovered
+    emp = rhm_transition_scan(8, 2, 2, 8, n_trees=300, seed=2)["theta_star"]
+    assert 0.35 < emp < 0.75                                     # empirical θ* in the DE band
