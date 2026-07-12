@@ -25,6 +25,14 @@ recursion over a population of (true symbol, belief) pairs — no full trees sam
 and its transition matches the empirical exact-BP ``theta_star`` (the grammar analog
 of the KS/reconstruction density evolution in tree_reconstruction.py).
 
+**FSS collapse + exponent (#136).** ``rhm_fss_collapse`` fits the mean-field-style
+ansatz ``m(theta, L) = L^{-beta/nu} f((theta - theta_c) L^{1/nu})`` and reports a
+``collapse_residual`` (curves genuinely land on one master curve). ``theta_c`` is
+anchored from ``rhm_density_evolution_threshold`` (density evolution, stable across
+seeds) rather than extrapolated from the noisier finite-tree ``theta_star(L)`` — with
+only a handful of feasible exact-BP depths (cost grows as ``s**depth``), that
+extrapolation is unstable enough to land outside ``[0, 1]``.
+
 **Large-K corruption channels.** The uniform channel used here is rank-1/identity-
 structured, so BP stays ``O(v)`` and no K×K transition matrix is ever stored — the
 D3PM ``O(K²T)`` cost (see tree_reconstruction.py) never arises for large ``v``.
@@ -92,14 +100,20 @@ def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
 
 def rhm_transition_scan(v: int, s: int, m: int, depth: int, *,
                         theta_grid: np.ndarray | None = None, n_trees: int = 250,
-                        seed: int = 0, grammar_seed: int = 0) -> dict:
+                        seed: int = 0, grammar_seed: int = 0, n_reps: int = 1) -> dict:
     """Scan corruption θ (exact rule-BP on sampled trees): class-overlap +
     susceptibility ``dm/dθ``. The **susceptibility peak** locates the transition
-    ``theta_star``. Returns ``{theta, overlap, susceptibility, theta_star}``."""
+    ``theta_star``. ``n_reps > 1`` averages the overlap curve over independent
+    tree-sampling seeds — cheaper noise reduction than deepening trees (whose cost
+    grows as ``s**depth``), used by ``rhm_fss_collapse`` to stabilize the fit.
+    Returns ``{theta, overlap, susceptibility, theta_star}``."""
     theta_grid = np.linspace(0.3, 0.98, 16) if theta_grid is None else np.asarray(theta_grid, float)
-    m_ov = np.array([rhm_class_overlap(v, s, m, depth, float(t), n_trees=n_trees,
-                                       seed=seed, grammar_seed=grammar_seed)
-                     for t in theta_grid])
+    m_ov = np.mean([
+        [rhm_class_overlap(v, s, m, depth, float(t), n_trees=n_trees,
+                           seed=seed + rep, grammar_seed=grammar_seed)
+         for t in theta_grid]
+        for rep in range(n_reps)
+    ], axis=0)
     susc = np.diff(m_ov) / np.diff(theta_grid)            # overlap rises with θ
     mid = 0.5 * (theta_grid[:-1] + theta_grid[1:])
     return {"theta": theta_grid, "overlap": m_ov, "susceptibility": susc,
@@ -162,3 +176,92 @@ def rhm_bp_density_evolution(v: int, s: int, m: int, depth: int, theta: float, *
         syms, msgs = new_syms, belief
     mean_p = float(msgs[np.arange(pop), syms].mean())
     return (v * mean_p - 1.0) / (v - 1)
+
+
+def rhm_density_evolution_threshold(v: int, s: int, m: int, *, de_depth: int = 20,
+                                    pop: int = 6000, seed: int = 0, grammar_seed: int = 0,
+                                    lo: float = 0.05, hi: float = 0.98, tol: float = 1e-3,
+                                    max_iter: int = 30) -> float:
+    """Bisect the rule-BP **density-evolution** overlap (population dynamics, cost
+    additive in ``pop`` rather than exponential in depth — so ``de_depth`` can be
+    pushed much deeper than exact-BP trees) to find the theta where the overlap
+    crosses half its clean-signal (``theta=hi``) value. Used as the stable
+    infinite-depth anchor for ``theta_c`` in ``rhm_fss_collapse``, since it does not
+    depend on extrapolating the noisier finite-tree ``theta_star(L)``."""
+    target = 0.5 * rhm_bp_density_evolution(v, s, m, de_depth, hi, pop=pop, seed=seed,
+                                            grammar_seed=grammar_seed)
+    a, b = lo, hi
+    for _ in range(max_iter):
+        mid = 0.5 * (a + b)
+        ov = rhm_bp_density_evolution(v, s, m, de_depth, mid, pop=pop, seed=seed,
+                                      grammar_seed=grammar_seed)
+        if ov < target:
+            a = mid
+        else:
+            b = mid
+        if b - a < tol:
+            break
+    return 0.5 * (a + b)
+
+
+def rhm_fss_collapse(v: int, s: int, m: int, depths, *, theta_grid: np.ndarray | None = None,
+                     n_trees: int = 250, seed: int = 0, grammar_seed: int = 0,
+                     n_reps: int = 1, theta_c: float | None = None) -> dict:
+    """Finite-size scaling collapse for the RHM class-overlap transition (#136).
+
+    Fits the mean-field-style ansatz ``m(theta, L) = L^{-beta/nu} f((theta -
+    theta_c) L^{1/nu})`` using depth ``L`` as the scaling variable (the tree's
+    "volume" grows as ``s**depth``, so depth plays the role of log-volume).
+
+    ``theta_c`` is **anchored from density evolution**
+    (``rhm_density_evolution_threshold``), not extrapolated from the noisy
+    finite-tree ``theta_star(L)`` — with only a handful of feasible depths (exact-BP
+    tree cost grows as ``s**depth``), a linear extrapolation of ``theta_star(L)`` is
+    too unstable (it can even land outside ``[0, 1]``). Density evolution's
+    population-dynamics cost is additive in population size, so it can run at a much
+    larger effective depth and gives a stable estimate; pass ``theta_c`` explicitly to
+    override. The convergence of ``theta_star(L)`` toward this anchor as depth grows
+    is reported as a **consistency check**, not the estimator.
+
+    Fit procedure:
+    1. ``nu`` from a log-log fit of transition width vs depth (``width ~
+       L**(-1/nu)``, the susceptibility-peak widths from ``rhm_transition_scan``).
+    2. ``beta_over_nu`` from a log-log fit of ``m(theta_c, L)`` vs depth.
+
+    Then rescales every depth's curve onto ``x = (theta - theta_c) L**(1/nu)``,
+    ``y = m * L**beta_over_nu`` and reports ``collapse_residual`` = the mean
+    cross-depth spread on the common rescaled domain — small residual means the
+    curves genuinely collapse onto one master curve, confirming a real
+    transition (not a per-depth artifact).
+
+    Returns ``{theta_c, nu, beta_over_nu, collapse_residual, theta_stars, widths}``.
+    """
+    depths = np.asarray(list(depths), dtype=float)
+    if theta_c is None:
+        theta_c = rhm_density_evolution_threshold(v, s, m, seed=seed, grammar_seed=grammar_seed)
+    curves = [rhm_transition_scan(v, s, m, int(L), theta_grid=theta_grid, n_trees=n_trees,
+                                  seed=seed, grammar_seed=grammar_seed, n_reps=n_reps)
+              for L in depths]
+    theta_stars = np.array([c["theta_star"] for c in curves])
+    widths = np.array([1.0 / np.max(c["susceptibility"]) for c in curves])
+
+    slope, _ = np.polyfit(np.log(depths), np.log(widths), 1)
+    nu = -1.0 / slope
+
+    m_at_c = np.array([np.interp(theta_c, c["theta"], c["overlap"]) for c in curves])
+    slope2, _ = np.polyfit(np.log(depths), np.log(np.clip(m_at_c, 1e-6, None)), 1)
+    beta_over_nu = -slope2
+
+    xs_resc, ys_resc = [], []
+    for L, c in zip(depths, curves):
+        xs_resc.append((c["theta"] - theta_c) * L ** (1.0 / nu))
+        ys_resc.append(c["overlap"] * L ** beta_over_nu)
+    lo = max(x.min() for x in xs_resc)
+    hi = min(x.max() for x in xs_resc)
+    grid = np.linspace(lo, hi, 20)
+    stacked = np.array([np.interp(grid, *zip(*sorted(zip(x, y))))
+                        for x, y in zip(xs_resc, ys_resc)])
+    collapse_residual = float(np.mean(np.std(stacked, axis=0)))
+
+    return {"theta_c": float(theta_c), "nu": float(nu), "beta_over_nu": float(beta_over_nu),
+            "collapse_residual": collapse_residual, "theta_stars": theta_stars, "widths": widths}

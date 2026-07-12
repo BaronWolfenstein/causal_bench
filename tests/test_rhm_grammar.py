@@ -5,7 +5,7 @@ import numpy as np
 
 from causal_bench.diagnostics.rhm_grammar import (
     make_rhm, rhm_class_overlap, rhm_transition_scan, rhm_finite_size,
-    rhm_bp_density_evolution,
+    rhm_bp_density_evolution, rhm_fss_collapse, rhm_density_evolution_threshold,
 )
 from causal_bench.diagnostics.tree_reconstruction import diffusion_class_overlap
 
@@ -63,3 +63,26 @@ def test_density_evolution_predicts_the_empirical_transition():
     assert de_hi > 0.5                                            # above transition: recovered
     emp = rhm_transition_scan(8, 2, 2, 8, n_trees=300, seed=2)["theta_star"]
     assert 0.35 < emp < 0.75                                     # empirical θ* in the DE band
+
+
+def test_density_evolution_threshold_is_stable_across_seeds():
+    # The FSS anchor's whole point is stability where theta_star(L) extrapolation
+    # is not: population-dynamics cost is additive in pop, not exponential in depth.
+    vals = [rhm_density_evolution_threshold(8, 2, 2, seed=s) for s in (0, 1, 2, 3)]
+    assert max(vals) - min(vals) < 0.1
+    assert all(0.3 < t < 0.6 for t in vals)
+
+
+def test_fss_collapse_recovers_a_stable_theta_c_and_small_residual():
+    # theta_c is anchored from density evolution (stable), not extrapolated from the
+    # noisy finite-tree theta_star(L) (which can land outside [0, 1] with few depths).
+    r = rhm_fss_collapse(8, 2, 2, (3, 5, 7), n_trees=200, n_reps=3, seed=10)
+    assert 0.3 < r["theta_c"] < 0.6                              # matches DE anchor band
+    assert r["nu"] > 0                                           # finite positive exponent
+    assert r["collapse_residual"] < 0.05                         # curves genuinely collapse
+
+
+def test_fss_collapse_theta_c_override():
+    # An explicit theta_c bypasses the density-evolution anchor.
+    r = rhm_fss_collapse(8, 2, 2, (3, 5, 7), n_trees=200, n_reps=2, seed=11, theta_c=0.5)
+    assert r["theta_c"] == 0.5
