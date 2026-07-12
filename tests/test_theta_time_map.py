@@ -8,6 +8,7 @@ from causal_bench.diagnostics.hierarchy_probe import sample_hierarchical_gaussia
 from causal_bench.diagnostics.theta_time_map import (
     theta_to_vpsde_time, flip_rate, embedding_channel_overlap,
     embedding_transition_scan, transition_report,
+    linear_probe_overlap, linear_probe_transition_scan, _fit_shared_cov_lda,
 )
 
 
@@ -52,6 +53,43 @@ def test_embedding_transition_scan_is_monotone_and_locates_transition():
     assert r["overlap"][-1] < r["overlap"][0] - 0.4           # substantially eroded
     assert np.all(np.diff(r["overlap"]) < 0.05)               # non-increasing (small tol)
     assert 0.3 < r["t_star"] < 1.0
+
+
+def test_linear_probe_overlap_perfect_and_chance():
+    means = np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]])
+    labels_ref = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])
+    rng = np.random.default_rng(0)
+    X_ref = means[labels_ref] + 0.1 * rng.normal(size=(9, 2))
+    params = _fit_shared_cov_lda(X_ref, labels_ref)
+    ov_perfect = linear_probe_overlap(means, np.array([0, 1, 2]), params)
+    assert ov_perfect > 0.9
+    Xt_random = rng.normal(scale=50, size=(300, 2))
+    labels_random = rng.integers(0, 3, 300)
+    ov_chance = linear_probe_overlap(Xt_random, labels_random, params)
+    assert -0.3 < ov_chance < 0.3
+
+
+def test_linear_probe_transition_scan_is_monotone_and_locates_transition():
+    d = sample_hierarchical_gaussian(n_coarse=4, n_fine=1, per_leaf=120, seed=0)
+    r = linear_probe_transition_scan(d["X"], d["coarse"], sch=Schedule(n_steps=200),
+                                     n_grid=25, rng=np.random.default_rng(1))
+    assert r["overlap"][0] > 0.85
+    assert r["overlap"][-1] < r["overlap"][0] - 0.4
+    assert np.all(np.diff(r["overlap"]) < 0.1)                # non-increasing (looser tol: refit noise)
+    assert 0.3 < r["t_star"] < 1.0
+
+
+def test_linear_probe_and_nearest_mean_agree_on_isotropic_synthetic_data():
+    # Oracle (nearest-mean, true means) vs estimated (LDA fit from a noised sample)
+    # should roughly agree on this isotropic-equal-covariance synthetic mixture —
+    # divergence would flag anisotropic geometry (see module docstring).
+    d = sample_hierarchical_gaussian(n_coarse=4, n_fine=1, per_leaf=120, seed=0)
+    sch = Schedule(n_steps=200)
+    r_mean = embedding_transition_scan(d["X"], d["coarse"], d["coarse_means"], sch=sch,
+                                       n_grid=25, rng=np.random.default_rng(1))
+    r_probe = linear_probe_transition_scan(d["X"], d["coarse"], sch=sch, n_grid=25,
+                                           rng=np.random.default_rng(1))
+    assert abs(r_mean["t_star"] - r_probe["t_star"]) < 0.3
 
 
 def test_transition_report_gap_is_nonnegative_and_bounded():
