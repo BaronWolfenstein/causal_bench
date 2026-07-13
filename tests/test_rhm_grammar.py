@@ -6,6 +6,7 @@ import numpy as np
 from causal_bench.diagnostics.rhm_grammar import (
     make_rhm, rhm_class_overlap, rhm_transition_scan, rhm_finite_size,
     rhm_bp_density_evolution, rhm_fss_collapse, rhm_density_evolution_threshold,
+    make_lowrank_corruption, _sample_corruption, structured_corruption_shift,
 )
 from causal_bench.diagnostics.tree_reconstruction import diffusion_class_overlap
 
@@ -86,3 +87,52 @@ def test_fss_collapse_theta_c_override():
     # An explicit theta_c bypasses the density-evolution anchor.
     r = rhm_fss_collapse(8, 2, 2, (3, 5, 7), n_trees=200, n_reps=2, seed=11, theta_c=0.5)
     assert r["theta_c"] == 0.5
+
+
+# ─── structured (low-rank) corruption channel (#138) ─────────────────────────
+def test_lowrank_corruption_is_valid_zero_diagonal_row_stochastic():
+    C, U = make_lowrank_corruption(8, 4, beta=6.0, seed=0)
+    assert C.shape == (8, 8)
+    assert np.allclose(C.sum(1), 1.0)                            # row-stochastic
+    assert np.allclose(np.diag(C), 0.0)                         # never replace with self
+    assert (C >= 0).all()
+
+
+def test_lowrank_corruption_beta_zero_is_uniform_over_others():
+    C, _ = make_lowrank_corruption(8, 4, beta=0.0, seed=1)
+    off = C[~np.eye(8, dtype=bool)]
+    assert np.allclose(off, 1.0 / 7.0)                          # uniform over v-1 others
+
+
+def test_lowrank_corruption_beta_positive_concentrates():
+    C, _ = make_lowrank_corruption(8, 4, beta=6.0, seed=2)
+    assert C.max(1).mean() > 3.0 / 7.0                          # far more peaked than uniform
+
+
+def test_sample_corruption_never_returns_self_and_stays_in_support():
+    C, _ = make_lowrank_corruption(8, 4, beta=6.0, seed=3)
+    rng = np.random.default_rng(0)
+    leaves = rng.integers(0, 8, 500)
+    repl = _sample_corruption(leaves, C, rng)
+    assert (repl != leaves).all()                               # zero diagonal ⇒ always changes
+    assert repl.min() >= 0 and repl.max() < 8
+
+
+def test_uniform_corruption_matrix_still_shows_a_transition():
+    # The corruption-matrix code path (beta=0, uniform-over-others) must still
+    # reproduce the SFW transition — overlap rises with theta.
+    C, _ = make_lowrank_corruption(8, 4, beta=0.0, seed=0)
+    r = rhm_transition_scan(8, 2, 2, 7, corruption=C, n_trees=250, seed=1)
+    assert r["overlap"][-1] - r["overlap"][0] > 0.5
+
+
+def test_concentrated_corruption_washes_out_the_transition():
+    # THE #138 finding: a concentrated (low-rank) channel keeps corrupted leaves
+    # informative, so the root class survives even under heavy corruption — the
+    # overlap floor (at heaviest corruption) is lifted from ~0 toward the clean
+    # value, washing out the transition. Robust in sign and magnitude across seeds.
+    for sd in (0, 1, 2):
+        r = structured_corruption_shift(8, 2, 2, 7, r=4, beta=6.0, n_trees=250, seed=sd)
+        assert r["overlap_floor_uniform"] < 0.1                 # uniform: class destroyed
+        assert r["overlap_floor_structured"] > 0.5             # structured: class survives
+        assert r["floor_lift"] > 0.5                           # large, positive, consistent

@@ -36,6 +36,17 @@ extrapolation is unstable enough to land outside ``[0, 1]``.
 **Large-K corruption channels.** The uniform channel used here is rank-1/identity-
 structured, so BP stays ``O(v)`` and no K×K transition matrix is ever stored — the
 D3PM ``O(K²T)`` cost (see tree_reconstruction.py) never arises for large ``v``.
+
+**Structured (low-rank) corruption (#138).** ``make_lowrank_corruption`` builds a
+zero-diagonal, row-stochastic channel (``O(v·r)`` parameterization) where a corrupted
+symbol is replaced by a *similar* one; ``corruption=C`` threads through ``_bp_belief``
+/ ``rhm_class_overlap`` / ``rhm_transition_scan`` (``None`` = uniform). Finding
+(``structured_corruption_shift``): a concentrated channel **washes out** the
+transition — a corrupted leaf still points at a small neighbourhood, stays
+informative, and the root class survives even under heavy corruption (the overlap
+floor lifts from ~0 to ~0.75). The transition needs corruption that genuinely
+destroys leaf information (uniform/masking); this parallels the broadcast having no
+transition because it *amplifies*. Gates the trainable low-rank channel (see #131).
 """
 from __future__ import annotations
 
@@ -59,17 +70,25 @@ def _generate(sym: int, depth: int, rules: np.ndarray, rng: np.random.Generator)
     return out
 
 
-def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float) -> np.ndarray:
+def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
+               corruption: np.ndarray | None = None) -> np.ndarray:
     """Exact rule-BP upward pass → the posterior belief (v-vector) over this node's
-    symbol given its (corrupted) subtree leaves."""
+    symbol given its (corrupted) subtree leaves. ``corruption`` = an optional
+    row-stochastic channel ``C`` (``C[a,b] = P(replacement b | true a)``); ``None``
+    is the uniform channel. Leaf likelihood ``P(observed y | true a) = theta·[a==y]
+    + (1-theta)·C[a,y]`` → ``msg = (1-theta)·C[:,y]; msg[y] += theta``."""
     if depth == 0:
         y = int(leaves[0])
-        msg = np.full(v, (1.0 - theta) / v)
+        if corruption is None:
+            msg = np.full(v, (1.0 - theta) / v)
+        else:
+            msg = (1.0 - theta) * corruption[:, y].copy()
         msg[y] += theta                                  # P(observed y | true ·)
         return msg
     s = rules.shape[2]
     csz = len(leaves) // s
-    child = np.stack([_bp_belief(leaves[i * csz:(i + 1) * csz], depth - 1, rules, v, theta)
+    child = np.stack([_bp_belief(leaves[i * csz:(i + 1) * csz], depth - 1, rules, v, theta,
+                                 corruption)
                       for i in range(s)])                # (s, v)
     # belief(a) ∝ Σ_{rule r of a} Π_i child[i, rules[a,r,i]]
     gathered = child[np.arange(s)[None, None, :], rules]  # (v, m, s)
@@ -77,11 +96,41 @@ def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float) -> n
     return belief / (belief.sum() + 1e-300)
 
 
+def make_lowrank_corruption(v: int, r: int, *, beta: float = 1.0, seed: int = 0,
+                            features: np.ndarray | None = None):
+    """A low-rank, zero-diagonal, row-stochastic corruption matrix ``C`` (v×v): when
+    a symbol corrupts, its replacement is drawn from ``C[a,:]``, concentrated on
+    symbols SIMILAR to ``a`` in an ``r``-dim feature space (``r ≪ v``), never on
+    ``a`` itself. Score ``S[a,b] = beta·⟨u_a, u_b⟩`` (rank ≤ r), diagonal masked to
+    ``-inf``, row-softmaxed. ``beta = 0`` ⇒ uniform over the other v−1 symbols (the
+    structure-free baseline); larger ``beta`` ⇒ more concentrated (a corrupted leaf
+    still points at a small neighbourhood, so it leaks more information than a flat
+    uniform draw). Parameterization is ``O(v·r)``; ``C`` is materialized at v² only
+    because the synthetic ``v`` is small. Returns ``(C, U)``."""
+    rng = np.random.default_rng(seed)
+    U = rng.normal(size=(v, r)) if features is None else np.asarray(features, float)
+    S = beta * (U @ U.T)
+    np.fill_diagonal(S, -np.inf)
+    S = S - S.max(1, keepdims=True)
+    E = np.exp(S)                                        # exp(-inf) = 0 on the diagonal
+    return E / E.sum(1, keepdims=True), U
+
+
+def _sample_corruption(leaves: np.ndarray, C: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Draw a replacement symbol for each leaf from its corruption row ``C[leaf,:]``
+    (vectorized inverse-CDF sampling)."""
+    cdf = np.cumsum(C[leaves], axis=1)                   # (n, v)
+    u = rng.random(len(leaves))
+    return (u[:, None] <= cdf).argmax(1)
+
+
 def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
-                      n_trees: int = 200, seed: int = 0, grammar_seed: int = 0) -> float:
+                      n_trees: int = 200, seed: int = 0, grammar_seed: int = 0,
+                      corruption: np.ndarray | None = None) -> float:
     """The SFW **class-overlap** order parameter on the RHM grammar, via exact
     rule-BP. For each sampled tree: generate leaves from a root class, corrupt each
-    leaf through the uniform channel (keep w.p. ``theta``, else uniform over ``v``),
+    leaf (keep w.p. ``theta``, else replace — uniform over ``v`` if ``corruption``
+    is ``None``, else drawn from the row-stochastic channel ``corruption[leaf,:]``),
     run rule-BP → posterior on the true root. Returns the normalized overlap
     ``(v·E[posterior(root)] − 1)/(v − 1)`` (0 = no class info, 1 = certain).
     Sweeping ``theta`` traces the genuine diffusion phase transition."""
@@ -92,25 +141,29 @@ def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
         root = int(rng.integers(v))
         leaves = np.array(_generate(root, depth, rules, rng))
         keep = rng.random(len(leaves)) < theta
-        y = np.where(keep, leaves, rng.integers(0, v, size=len(leaves)))
-        tot += _bp_belief(y, depth, rules, v, theta)[root]
+        repl = (rng.integers(0, v, size=len(leaves)) if corruption is None
+                else _sample_corruption(leaves, corruption, rng))
+        y = np.where(keep, leaves, repl)
+        tot += _bp_belief(y, depth, rules, v, theta, corruption)[root]
     mean_p = tot / n_trees
     return float((v * mean_p - 1.0) / (v - 1))
 
 
 def rhm_transition_scan(v: int, s: int, m: int, depth: int, *,
                         theta_grid: np.ndarray | None = None, n_trees: int = 250,
-                        seed: int = 0, grammar_seed: int = 0, n_reps: int = 1) -> dict:
+                        seed: int = 0, grammar_seed: int = 0, n_reps: int = 1,
+                        corruption: np.ndarray | None = None) -> dict:
     """Scan corruption θ (exact rule-BP on sampled trees): class-overlap +
     susceptibility ``dm/dθ``. The **susceptibility peak** locates the transition
     ``theta_star``. ``n_reps > 1`` averages the overlap curve over independent
     tree-sampling seeds — cheaper noise reduction than deepening trees (whose cost
     grows as ``s**depth``), used by ``rhm_fss_collapse`` to stabilize the fit.
+    ``corruption`` threads a structured channel through (``None`` = uniform).
     Returns ``{theta, overlap, susceptibility, theta_star}``."""
     theta_grid = np.linspace(0.3, 0.98, 16) if theta_grid is None else np.asarray(theta_grid, float)
     m_ov = np.mean([
         [rhm_class_overlap(v, s, m, depth, float(t), n_trees=n_trees,
-                           seed=seed + rep, grammar_seed=grammar_seed)
+                           seed=seed + rep, grammar_seed=grammar_seed, corruption=corruption)
          for t in theta_grid]
         for rep in range(n_reps)
     ], axis=0)
@@ -265,3 +318,38 @@ def rhm_fss_collapse(v: int, s: int, m: int, depths, *, theta_grid: np.ndarray |
 
     return {"theta_c": float(theta_c), "nu": float(nu), "beta_over_nu": float(beta_over_nu),
             "collapse_residual": collapse_residual, "theta_stars": theta_stars, "widths": widths}
+
+
+def structured_corruption_shift(v: int, s: int, m: int, depth: int, *, r: int = 4,
+                                beta: float = 6.0, n_trees: int = 250, seed: int = 0,
+                                grammar_seed: int = 0, n_reps: int = 1,
+                                features: np.ndarray | None = None) -> dict:
+    """How does a CONCENTRATED (low-rank) corruption channel change the transition vs
+    the structure-free (uniform-over-others) baseline? Both use the same zero-diagonal
+    corruption-matrix code path with the SAME features ``U`` — only ``beta`` differs
+    (``beta = 0`` = uniform-over-others), isolating the effect of concentration.
+
+    **Finding (why the headline metric is the floor, not theta_star).** A concentrated
+    channel does not merely *shift* the transition — it can *wash it out*: a corrupted
+    leaf still points at a small neighbourhood of similar symbols, so it stays
+    informative and the root class survives even under heavy corruption (low θ). The
+    overlap curve goes flat and high, so its susceptibility ``theta_star`` is
+    ill-defined (peak at the grid edge). The meaningful quantity is the **overlap
+    floor** at heaviest corruption (θ = min of the grid): concentrated corruption
+    *lifts the floor* (class stays recoverable). This parallels the founding
+    observation of this line — the symmetric broadcast has no transition because it
+    amplifies; concentrated corruption removes the transition because it fails to
+    destroy leaf information. Returns ``{overlap_floor_uniform,
+    overlap_floor_structured, floor_lift, theta_star_uniform, susc_peak_at_edge}``."""
+    C0, U = make_lowrank_corruption(v, r, beta=0.0, seed=seed, features=features)
+    C1, _ = make_lowrank_corruption(v, r, beta=beta, seed=seed, features=U)
+    r0 = rhm_transition_scan(v, s, m, depth, corruption=C0, n_trees=n_trees,
+                             seed=seed, grammar_seed=grammar_seed, n_reps=n_reps)
+    r1 = rhm_transition_scan(v, s, m, depth, corruption=C1, n_trees=n_trees,
+                             seed=seed, grammar_seed=grammar_seed, n_reps=n_reps)
+    peak = int(np.argmax(r1["susceptibility"]))
+    return {"overlap_floor_uniform": float(r0["overlap"][0]),
+            "overlap_floor_structured": float(r1["overlap"][0]),
+            "floor_lift": float(r1["overlap"][0] - r0["overlap"][0]),
+            "theta_star_uniform": r0["theta_star"],
+            "susc_peak_at_edge": bool(peak in (0, len(r1["susceptibility"]) - 1))}
