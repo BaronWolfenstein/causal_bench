@@ -7,6 +7,7 @@ from causal_bench.diagnostics.rhm_grammar import (
     make_rhm, rhm_class_overlap, rhm_transition_scan, rhm_finite_size,
     rhm_bp_density_evolution, rhm_fss_collapse, rhm_density_evolution_threshold,
     make_lowrank_corruption, _sample_corruption, structured_corruption_shift,
+    make_product_grammar, make_block_corruption, grammar_alignment_scan,
 )
 from causal_bench.diagnostics.tree_reconstruction import diffusion_class_overlap
 
@@ -136,3 +137,41 @@ def test_concentrated_corruption_washes_out_the_transition():
         assert r["overlap_floor_uniform"] < 0.1                 # uniform: class destroyed
         assert r["overlap_floor_structured"] > 0.5             # structured: class survives
         assert r["floor_lift"] > 0.5                           # large, positive, consistent
+
+
+# ─── grammar-ALIGNED corruption (#138 follow-up) ─────────────────────────────
+def test_product_grammar_group_coordinate_evolves_by_its_own_rhm():
+    # The defining property: all members of a group share the same child-GROUP
+    # pattern (group evolves by rules_g alone), so group is a self-contained coarse
+    # RHM while member identity still propagates — both coordinates identifiable.
+    rules, groups = make_product_grammar(4, 3, 2, 2, seed=0)
+    assert rules.shape == (12, 2, 2)
+    assert (groups == np.arange(12) // 3).all()
+    for gg in range(4):
+        members = [a for a in range(12) if groups[a] == gg]
+        child_groups = [rules[a] // 3 for a in members]
+        assert all(np.array_equal(child_groups[0], c) for c in child_groups)
+
+
+def test_block_corruption_modes_are_valid_and_respect_groups():
+    groups = np.arange(12) // 3
+    for mode in ("within", "across", "all"):
+        C = make_block_corruption(groups, mode)
+        assert np.allclose(C.sum(1), 1.0) and np.allclose(np.diag(C), 0.0)
+    Cw = make_block_corruption(groups, "within")
+    Ca = make_block_corruption(groups, "across")
+    # within keeps replacements in-group; across sends them out-of-group
+    assert Cw[0, 1] > 0 and Cw[0, 5] == 0                        # 0,1,2 same group; 5 not
+    assert Ca[0, 5] > 0 and Ca[0, 1] == 0
+
+
+def test_aligned_corruption_preserves_more_class_than_uniform():
+    # THE #138-followup finding: corruption aligned with the FINE coordinate
+    # (within-group) preserves the COARSE group coordinate, so more class survives
+    # heavy corruption than under uniform corruption — a partial, group-level
+    # survival that RELOCATES the transition rather than washing it out (contrast
+    # #138's near-full washout from accidental self-information).
+    r = grammar_alignment_scan(4, 3, 2, 2, 6, n_trees=200, seed=0, grammar_seed=0, n_reps=2)
+    assert r["within"]["ceil"] > 0.6                            # grammar identifiable when clean
+    assert r["within"]["floor"] > r["all"]["floor"] + 0.03      # aligned preserves the coarse coord
+    assert r["all"]["floor"] < 0.2                              # uniform: class largely destroyed

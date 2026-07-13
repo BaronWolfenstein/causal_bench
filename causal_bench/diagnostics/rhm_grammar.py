@@ -47,6 +47,18 @@ informative, and the root class survives even under heavy corruption (the overla
 floor lifts from ~0 to ~0.75). The transition needs corruption that genuinely
 destroys leaf information (uniform/masking); this parallels the broadcast having no
 transition because it *amplifies*. Gates the trainable low-rank channel (see #131).
+
+**Grammar-ALIGNED corruption (#138 follow-up).** ``make_product_grammar`` factors
+each symbol as (group, member), each evolving by its own identifiable RHM — so both
+coordinates propagate (clean recovery is full) while group is a genuinely coarse
+coordinate. ``grammar_alignment_scan`` + ``make_block_corruption`` (within / across /
+all) then separate *alignment* from *concentration*: corruption aligned with the fine
+(within-group) coordinate preserves the coarse group coordinate, so more class
+survives heavy corruption than under uniform (``within`` floor > ``all`` floor,
+robust across seeds) — a partial, group-level survival that RELOCATES the transition
+to the coarse coordinate rather than washing it out. The exact group-level floor is
+noisy (needs matched group/member transition rates + more averaging); the robust,
+tested claim is the ordering.
 """
 from __future__ import annotations
 
@@ -126,15 +138,18 @@ def _sample_corruption(leaves: np.ndarray, C: np.ndarray, rng: np.random.Generat
 
 def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
                       n_trees: int = 200, seed: int = 0, grammar_seed: int = 0,
-                      corruption: np.ndarray | None = None) -> float:
+                      corruption: np.ndarray | None = None,
+                      rules: np.ndarray | None = None) -> float:
     """The SFW **class-overlap** order parameter on the RHM grammar, via exact
     rule-BP. For each sampled tree: generate leaves from a root class, corrupt each
     leaf (keep w.p. ``theta``, else replace — uniform over ``v`` if ``corruption``
     is ``None``, else drawn from the row-stochastic channel ``corruption[leaf,:]``),
     run rule-BP → posterior on the true root. Returns the normalized overlap
     ``(v·E[posterior(root)] − 1)/(v − 1)`` (0 = no class info, 1 = certain).
-    Sweeping ``theta`` traces the genuine diffusion phase transition."""
-    rules = make_rhm(v, s, m, seed=grammar_seed)
+    Sweeping ``theta`` traces the genuine diffusion phase transition. ``rules`` lets
+    a caller pass a pre-built grammar (e.g. ``make_block_grammar``); ``None`` = a
+    fresh random grammar from ``grammar_seed``."""
+    rules = make_rhm(v, s, m, seed=grammar_seed) if rules is None else rules
     rng = np.random.default_rng(seed)
     tot = 0.0
     for _ in range(n_trees):
@@ -152,18 +167,21 @@ def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
 def rhm_transition_scan(v: int, s: int, m: int, depth: int, *,
                         theta_grid: np.ndarray | None = None, n_trees: int = 250,
                         seed: int = 0, grammar_seed: int = 0, n_reps: int = 1,
-                        corruption: np.ndarray | None = None) -> dict:
+                        corruption: np.ndarray | None = None,
+                        rules: np.ndarray | None = None) -> dict:
     """Scan corruption θ (exact rule-BP on sampled trees): class-overlap +
     susceptibility ``dm/dθ``. The **susceptibility peak** locates the transition
     ``theta_star``. ``n_reps > 1`` averages the overlap curve over independent
     tree-sampling seeds — cheaper noise reduction than deepening trees (whose cost
     grows as ``s**depth``), used by ``rhm_fss_collapse`` to stabilize the fit.
-    ``corruption`` threads a structured channel through (``None`` = uniform).
+    ``corruption`` threads a structured channel through (``None`` = uniform);
+    ``rules`` threads a pre-built grammar through (``None`` = random).
     Returns ``{theta, overlap, susceptibility, theta_star}``."""
     theta_grid = np.linspace(0.3, 0.98, 16) if theta_grid is None else np.asarray(theta_grid, float)
     m_ov = np.mean([
         [rhm_class_overlap(v, s, m, depth, float(t), n_trees=n_trees,
-                           seed=seed + rep, grammar_seed=grammar_seed, corruption=corruption)
+                           seed=seed + rep, grammar_seed=grammar_seed, corruption=corruption,
+                           rules=rules)
          for t in theta_grid]
         for rep in range(n_reps)
     ], axis=0)
@@ -353,3 +371,86 @@ def structured_corruption_shift(v: int, s: int, m: int, depth: int, *, r: int = 
             "floor_lift": float(r1["overlap"][0] - r0["overlap"][0]),
             "theta_star_uniform": r0["theta_star"],
             "susc_peak_at_edge": bool(peak in (0, len(r1["susceptibility"]) - 1))}
+
+
+# ─── grammar-ALIGNED corruption (#138 follow-up): is it alignment, not just
+#     concentration, that governs whether the class survives? ────────────────────
+def make_product_grammar(g: int, b_size: int, s: int, m: int, *, seed: int = 0):
+    """A **product** grammar over ``v = g·b_size`` symbols, each factored as
+    ``a = (group, member)`` with ``group = a // b_size``. Group and member each evolve
+    by their OWN identifiable RHM (``rules_g`` over ``g`` symbols, ``rules_m`` over
+    ``b_size`` symbols) sharing the rule index, so the child of ``a`` under rule ``r``
+    slot ``i`` is ``rules_g[group,r,i]·b_size + rules_m[member,r,i]``.
+
+    Unlike a naive block grammar (where making group redundant kills within-group
+    identifiability), BOTH coordinates propagate cleanly here: clean recovery is full,
+    yet group is a genuinely coarse coordinate (its own RHM transition) and member a
+    fine one. This is the construction needed to separate *alignment* from mere
+    *concentration* (#138). Returns ``(rules, groups)`` with ``rules`` shape ``(v, m, s)``."""
+    rng = np.random.default_rng(seed)
+    rules_g = rng.integers(0, g, size=(g, m, s))
+    rules_m = rng.integers(0, b_size, size=(b_size, m, s))
+    v = g * b_size
+    groups = np.arange(v) // b_size
+    rules = np.empty((v, m, s), dtype=int)
+    for a in range(v):
+        gg, mm = a // b_size, a % b_size
+        rules[a] = rules_g[gg] * b_size + rules_m[mm]
+    return rules, groups
+
+
+def make_block_corruption(groups: np.ndarray, mode: str = "within") -> np.ndarray:
+    """A zero-diagonal, row-stochastic corruption matrix keyed to the group structure.
+    ``mode='within'`` = replace with a uniform *other member of the same group*
+    (aligned: destroys fine detail, PRESERVES the coarse group coordinate);
+    ``mode='across'`` = replace with a uniform member of a *different* group
+    (anti-aligned: destroys the group coordinate); ``mode='all'`` = uniform over all
+    other symbols (the structure-free baseline). Singleton within-group falls back to
+    'all' for that row."""
+    v = len(groups)
+    C = np.zeros((v, v))
+    for a in range(v):
+        if mode == "within":
+            cand = np.where(groups == groups[a])[0]
+        elif mode == "across":
+            cand = np.where(groups != groups[a])[0]
+        elif mode == "all":
+            cand = np.arange(v)
+        else:
+            raise ValueError(f"unknown mode {mode!r}")
+        cand = cand[cand != a]
+        if len(cand) == 0:                               # singleton group under 'within'
+            cand = np.delete(np.arange(v), a)
+        C[a, cand] = 1.0 / len(cand)
+    return C
+
+
+def grammar_alignment_scan(g: int, b_size: int, s: int, m: int, depth: int, *,
+                           n_trees: int = 300, seed: int = 0, grammar_seed: int = 0,
+                           n_reps: int = 1) -> dict:
+    """Does **alignment** (not mere concentration) govern class survival under
+    corruption? On a ``make_product_grammar`` (group + member each an identifiable
+    RHM), compare three corruptions of matched strength:
+
+    - ``within`` (aligned to the fine coordinate): replace with an in-group member →
+      destroys the MEMBER channel, preserves the GROUP channel → class survives to the
+      **group level**, floor ≈ ``(g-1)/(v-1)`` (coarse recovered, fine uniform).
+    - ``across``: replace across groups → destroys the GROUP channel.
+    - ``all``: uniform over all others → destroys both.
+
+    The point (vs #138): #138's random-feature concentration lifted the floor to
+    near-FULL (~0.75) by accidental self-information; here corruption aligned with the
+    grammar's coarse coordinate gives interpretable **partial, group-level** survival —
+    it RELOCATES the transition to the coarse coordinate rather than washing it out.
+    Returns per-mode ``{floor, ceil, theta_star}`` plus ``group_floor_pred``."""
+    v = g * b_size
+    rules, groups = make_product_grammar(g, b_size, s, m, seed=grammar_seed)
+    out = {}
+    for name in ("all", "within", "across"):
+        C = make_block_corruption(groups, name)
+        r = rhm_transition_scan(v, s, m, depth, corruption=C, rules=rules, n_trees=n_trees,
+                                seed=seed, grammar_seed=grammar_seed, n_reps=n_reps)
+        out[name] = {"floor": float(r["overlap"][0]), "ceil": float(r["overlap"][-1]),
+                     "theta_star": r["theta_star"]}
+    out["group_floor_pred"] = (g - 1) / (v - 1)
+    return out
