@@ -164,6 +164,13 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | `causal_bench/generative/tangent_dsm.py` | Tangent-space-penalty DSM + gap-sampler on synthetic curved manifolds (arc R², Swiss roll R³, helix R³ codim-2) with learned-metric (local-PCA) normals — closed-form, numpy-only. Cuts gap-region off-manifold error ~70–90% vs plain DSM. Demo: `experiments/demo_tangent_dsm.py` |
 | `causal_bench/generative/score_net.py`, `checkpoint.py` | Torch DDPM score net (diffuse_directly T8) + training checkpoints (save/load/resume/rollback; cross-device-safe). Device-agnostic (`resolve_device` cuda→mps→cpu); `[gpu]` extra, lazy-imported |
 | `causal_bench/estimators/three_level_bhm.py` | Three-level BHM (PyMC + NumPyro/JAX) + two-vs-three-level OC fidelity harness (#40, exp36). `[bayes]`+`[bayes-gpu]`, 3.12-only |
+| `causal_bench/diagnostics/tree_reconstruction.py` | Broadcasting-on-trees reconstruction (Sclocchi–Favero–Wyart / Kesten–Stigum): magnetization order parameter, susceptibility, linear-stability multiplier `b·λ²`; q-ary Potts + KS-vs-reconstruction gap; D3PM large-K note. numpy, exact belief propagation (no torch) |
+| `causal_bench/diagnostics/rhm_grammar.py` | Random Hierarchy Model grammar + exact rule-BP — the canonical SFW class-overlap phase transition (#131): FSS collapse + exponent (#136), density-evolution threshold, structured / grammar-aligned (product-grammar) corruption channels (#138). numpy |
+| `causal_bench/diagnostics/hierarchy_probe.py` | Gaussian multiscale **crossover** probe (phenomenological, honestly *not* BP): coarse/fine MAP-recovery transition along the VP-SDE — the embedding-channel diagnostic used where no discrete grammar is available |
+| `causal_bench/diagnostics/theta_time_map.py` | θ ↔ VP-SDE-time mapping (#137): token channel (closed-form `θ = alpha_bar(t)`) vs frozen-encoder embedding channel; class-overlap order parameters (nearest-class-mean + linear-probe posterior) |
+| `causal_bench/diagnostics/borrowing_informativeness.py` | Per-level identifiability report → manual hierarchical-borrowing `tau_sd` suggestions (#137): embedding `t_star` map + correctly-signed canonical decode-accuracy map (#144). Informs, does **not** set shrinkage (that stays the hierarchical fit's job) |
+| `causal_bench/dgp/joint_hierarchy.py` | Joint hierarchical DGP (#144 prereq): product-grammar identifiability (exact rule-BP thresholds) + per-level effect heterogeneity + coupling knob + BP-decoded subgroup labels at working corruption θ₀. numpy |
+| `causal_bench/validation/rct_blinding.py` | RCT-blinding validation of the OC-sim / synthetic comparator (#139): does the counterfactual control branch recover a held-out RCT's effect / survival curves? Flags naive or unmeasured-confounded comparators. Generator-agnostic, numpy |
 
 **Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 37 distinct numbers → 38 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
 
@@ -175,6 +182,7 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
 | exp36 | **Built** — two-vs-three-level OC fidelity (`exp36_three_level_fidelity.py`, #40); reclaimed from the released z_anatomy slot (#73 dropped its exp number) |
 | exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |
+| exp41 | Borrowing calibration — identifiability-set `tau_sd` Type-I/power on the joint DGP with BP-decoded labels (#144); specced, unbuilt |
 
 ---
 
