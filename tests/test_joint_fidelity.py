@@ -36,15 +36,19 @@ def test_subgroup_estimates_recover_mean_difference_and_drop_sparse():
 
 
 def test_policy_tau_sd_flat_oracle_canonical():
+    from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
     spec = make_joint_hierarchy(4, 3, 2, 2, w_group=1.5, w_member=0.3, seed=0)
     dec = {"group_decode_acc": 0.92, "member_decode_acc": 0.75}
-    flat = _policy_tau_sd("flat", "group", spec, dec, flat_tau_sd=0.5, tau_sd_min=0.05, tau_sd_max=1.0)
-    orc = _policy_tau_sd("oracle", "group", spec, dec, flat_tau_sd=0.5, tau_sd_min=0.05, tau_sd_max=1.0)
-    can = _policy_tau_sd("canonical", "group", spec, dec, flat_tau_sd=0.5, tau_sd_min=0.05, tau_sd_max=1.0)
+    kw = dict(flat_tau_sd=0.5, tau_base=0.5, tau_sd_min=0.05)
+    flat = _policy_tau_sd("flat", "group", spec, dec, **kw)
+    orc = _policy_tau_sd("oracle", "group", spec, dec, **kw)
+    can = _policy_tau_sd("canonical", "group", spec, dec, **kw)
     assert flat == 0.5
     from causal_bench.dgp.joint_hierarchy import true_tau_by_level
     assert abs(orc - true_tau_by_level(spec)["tau_group"]) < 1e-9
-    assert 0.05 <= can <= 1.0 and can > 0.5                     # high group acc ⇒ weak pooling
+    # canonical = tau_base · discount — a DISCOUNT on the base scale, never above it
+    assert abs(can - 0.5 * canonical_tau_discount(0.92, 4)) < 1e-9
+    assert 0.0 < can < 0.5
 
 
 def test_joint_fidelity_runs_and_global_null_is_not_inflated():

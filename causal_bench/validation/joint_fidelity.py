@@ -11,8 +11,9 @@ known μ for scoring.
 ``tau_policy``:
 - ``flat``    — a fixed ``tau_sd`` (the naive baseline);
 - ``oracle``  — the true between-subgroup effect SD at the level (best case);
-- ``canonical`` — set from the level's **decode accuracy** at θ₀ via
-  ``canonical_tau_prior`` (the identifiability-informed prior under test).
+- ``canonical`` — ``tau_base · canonical_tau_discount(decode_acc)``: the analyst's base
+  effect-scale prior, *discounted* by the level's decode accuracy at θ₀ (the
+  identifiability-informed prior under test — a discount, not an absolute setter).
 
 This is the ENGINE (a library function); the exp41 experiment script sweeps regimes ×
 θ₀ × grammar configs × policies and compares reject/coverage curves. Requires the 3.12
@@ -25,7 +26,7 @@ import numpy as np
 from causal_bench.dgp.joint_hierarchy import (
     make_joint_hierarchy, sample_joint_cohort, decode_cohort_labels, true_tau_by_level,
 )
-from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_prior
+from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
 
 
 def population_effect(spec: dict) -> float:
@@ -52,7 +53,7 @@ def _subgroup_estimates(Y, A, sub, n_sub, *, min_per_arm=3):
     return np.asarray(th), np.asarray(se)
 
 
-def _policy_tau_sd(policy, level, spec, decoded, *, flat_tau_sd, tau_sd_min, tau_sd_max):
+def _policy_tau_sd(policy, level, spec, decoded, *, flat_tau_sd, tau_base, tau_sd_min):
     if policy == "flat":
         return flat_tau_sd
     if policy == "oracle":
@@ -61,14 +62,16 @@ def _policy_tau_sd(policy, level, spec, decoded, *, flat_tau_sd, tau_sd_min, tau
     if policy == "canonical":
         acc = decoded["group_decode_acc" if level == "group" else "member_decode_acc"]
         k = spec["g"] if level == "group" else spec["b_size"]
-        return canonical_tau_prior(acc, k, tau_sd_min=tau_sd_min, tau_sd_max=tau_sd_max)
+        # tau_sd = tau_base · learnability-discount (NOT an absolute map — see #144/exp41):
+        # a well-decoded level recovers the base scale; a poorly-decoded one pools harder.
+        return max(tau_base * canonical_tau_discount(acc, k), tau_sd_min)
     raise ValueError(f"unknown policy {policy!r}")
 
 
 def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical",
                    theta0: float = 0.7, n_reps: int = 20, n_units: int = 4000,
                    depth: int = 7, sigma: float = 0.5, flat_tau_sd: float = 0.5,
-                   tau_sd_min: float = 0.05, tau_sd_max: float = 1.0, draws: int = 500,
+                   tau_base: float = 0.5, tau_sd_min: float = 0.05, draws: int = 500,
                    tune: int = 500, chains: int = 2, seed: int = 0,
                    tail_ess_threshold: float = 100.0) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
@@ -89,7 +92,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         if len(th) < 2:
             continue
         tau_sd = _policy_tau_sd(policy, level, spec, dec, flat_tau_sd=flat_tau_sd,
-                                tau_sd_min=tau_sd_min, tau_sd_max=tau_sd_max)
+                                tau_base=tau_base, tau_sd_min=tau_sd_min)
         fit = fit_three_level_meta(th, se, tau_sd=tau_sd, true_effect=mu_true,
                                    draws=draws, tune=tune, chains=chains, seed=seed + r)
         if not tail_ess_ok(fit, threshold=tail_ess_threshold):

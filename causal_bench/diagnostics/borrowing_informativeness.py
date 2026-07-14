@@ -184,3 +184,23 @@ def recommend_tau_priors_from_decode(decode_result: dict, g: int, b_size: int, *
                    "tau_sd": canonical_tau_prior(decode_result["member_decode_acc"], b_size,
                                                  tau_sd_min=tau_sd_min, tau_sd_max=tau_sd_max)},
     }
+
+
+def canonical_tau_discount(decode_acc: float, n_classes: int) -> float:
+    """Learnability **discount** in [0, 1] from a level's decode accuracy at θ₀ —
+    the *correctly-structured* identifiability input to a borrowing prior (#144, exp41).
+
+    Chance-adjusted: ``r = clip((acc − 1/K)/(1 − 1/K), 0, 1)``. The prior is then
+    ``tau_sd = tau_base · discount``, where ``tau_base`` is the analyst's
+    effect-heterogeneity scale prior. Identifiability **discounts** that base scale for
+    imperfect subgroup resolution (perfect decode → 1 → use the full base scale; near
+    chance → 0 → pool), it does NOT set the scale — because identifiability ≠ τ magnitude
+    (a well-resolved partition can still have tiny effects).
+
+    This fixes the exp41 power loss: the absolute ``canonical_tau_prior`` mapped high
+    decode accuracy straight to a large ``tau_sd`` (≈ ``tau_sd_max``) regardless of the
+    true τ, over-widening the μ posterior and killing power at well-decoded levels. As a
+    *discount* on a base scale, a well-decoded level recovers the base prior (≈ flat)
+    while a poorly-decoded level still pools harder — the honest learnability role."""
+    chance = 1.0 / n_classes
+    return float(np.clip((decode_acc - chance) / (1.0 - chance), 0.0, 1.0))
