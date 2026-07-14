@@ -54,3 +54,30 @@ def test_report_flags_unresolved_split_when_levels_have_equal_t_star():
     assert abs(rep["separation_gaps"][0]) < 0.05
     assert rep["well_separated"] is False
     assert ("A", "B") in rep["unresolved_splits"]
+
+
+# ─── wiring to the hierarchical fit's borrowing knob (tau_sd) ─────────────────
+def test_suggest_tau_prior_is_monotone_and_bounded():
+    from causal_bench.diagnostics.borrowing_informativeness import suggest_tau_prior
+    assert suggest_tau_prior(0.0, tau_sd_min=0.05, tau_sd_max=1.0) == 0.05   # min at t*=0
+    assert suggest_tau_prior(1.0, tau_sd_min=0.05, tau_sd_max=1.0) == 1.0    # max at t*=1
+    assert suggest_tau_prior(-5) == suggest_tau_prior(0.0)                   # clipped
+    assert suggest_tau_prior(0.8) > suggest_tau_prior(0.4)                   # monotone ↑
+
+
+def test_recommend_tau_priors_maps_robust_levels_to_weaker_pooling():
+    from causal_bench.diagnostics.borrowing_informativeness import recommend_tau_priors
+    # robust coarse (high t*) → larger tau_sd (weak pooling); starved fine → smaller.
+    levels = [_mk("coarse", 0.90), _mk("mid", 0.55), _mk("fine", 0.20)]
+    rec = recommend_tau_priors(levels)
+    taus = [rec["per_level"][n]["tau_sd"] for n in ("coarse", "mid", "fine")]
+    assert taus[0] > taus[1] > taus[2]                                      # weaker→stronger pooling
+    assert all(t > 0 for t in taus)                                         # valid HalfNormal scales
+    assert rec["well_separated"] is True
+
+
+def test_recommend_tau_priors_carries_unresolved_split_warning():
+    from causal_bench.diagnostics.borrowing_informativeness import recommend_tau_priors
+    rec = recommend_tau_priors([_mk("A", 0.80), _mk("B", 0.79)], sep_tol=0.05)
+    assert ("A", "B") in rec["unresolved_splits"]                           # don't fit as distinct
+    assert rec["well_separated"] is False
