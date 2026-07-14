@@ -51,3 +51,35 @@ def test_reconstruction_overlaps_rise_with_retention():
     scan = joint_reconstruction_scan(spec, depth=6, n_trees=200, seed=3)
     assert np.all(np.diff(scan["group_overlap"]) > -0.05)      # ~monotone in theta
     assert np.all(np.diff(scan["member_overlap"]) > -0.05)
+
+
+# ─── BP-decoded labels at θ₀ (the #144 label-observation model) ───────────────
+def test_decode_labels_near_perfect_at_theta0_one():
+    from causal_bench.dgp.joint_hierarchy import decode_cohort_labels
+    spec = make_joint_hierarchy(4, 3, 2, 2, seed=0)
+    coh = sample_joint_cohort(spec, 1500, depth=7, seed=1)
+    d = decode_cohort_labels(spec, coh, theta0=1.0, seed=2)
+    assert d["group_decode_acc"] > 0.85 and d["member_decode_acc"] > 0.85
+    assert set(np.unique(d["group_decoded"])) <= set(range(4))
+    assert set(np.unique(d["member_decoded"])) <= set(range(3))
+
+
+def test_decode_accuracy_declines_with_corruption():
+    from causal_bench.dgp.joint_hierarchy import decode_cohort_labels
+    spec = make_joint_hierarchy(4, 3, 2, 2, seed=0)
+    coh = sample_joint_cohort(spec, 1500, depth=7, seed=1)
+    hi = decode_cohort_labels(spec, coh, theta0=0.9, seed=2)
+    lo = decode_cohort_labels(spec, coh, theta0=0.5, seed=2)
+    assert hi["group_decode_acc"] > lo["group_decode_acc"]      # less corruption ⇒ better
+
+
+def test_coarse_coordinate_is_more_learnable_than_fine():
+    # In the informative regime, the coarse (group) coordinate is decoded at least as
+    # accurately as the fine (member) one — the learnability ordering that makes
+    # identifiability bite on the fine-level effect (the #144 license).
+    from causal_bench.dgp.joint_hierarchy import decode_cohort_labels
+    spec = make_joint_hierarchy(4, 3, 2, 2, seed=0)
+    coh = sample_joint_cohort(spec, 2000, depth=7, seed=1)
+    d = decode_cohort_labels(spec, coh, theta0=0.7, seed=2)
+    assert d["group_decode_acc"] >= d["member_decode_acc"] - 0.03
+    assert d["group_decode_acc"] > 1.0 / 4 and d["member_decode_acc"] > 1.0 / 3  # above chance

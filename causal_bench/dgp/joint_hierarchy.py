@@ -70,6 +70,35 @@ def sample_joint_cohort(spec: dict, n: int, depth: int, *, treatment_frac: float
             "effect": effect, "leaves": leaves, "depth": depth}
 
 
+def decode_cohort_labels(spec: dict, cohort: dict, *, theta0: float, seed: int = 0) -> dict:
+    """The **label-observation model** for #144 B/C: the estimator does NOT see true
+    subgroup labels — it sees labels **BP-decoded from the representation at a working
+    corruption θ₀** (see the #144 decision). For each unit, corrupt its clean leaves at
+    ``theta0``, run exact rule-BP, and take the MAP root → decoded ``group`` / ``member``.
+
+    This is what makes identifiability *bite* on estimation (misclassification at θ₀
+    attenuates the recoverable between-subgroup variance) while staying orthogonal to the
+    outcome — decoding reads only the leaves, never Y/A/effects. ``theta0 = 1`` ⇒ decoded
+    ≈ true; lower ``theta0`` ⇒ more misclassification, with the coarse (group) coordinate
+    decoded better than the fine (member) one. The per-level **decode accuracy** is the
+    operating-point learnability scalar the ``tau_sd`` prior should track (measured at the
+    SAME θ₀ used for decoding — non-circular). True labels are retained by the caller for
+    oracle-τ and scoring only. Returns ``{group_decoded, member_decoded, theta0,
+    group_decode_acc, member_decode_acc}``."""
+    rng = np.random.default_rng(seed)
+    rules, b_size, v, depth = spec["rules"], spec["b_size"], spec["v"], cohort["depth"]
+    n = len(cohort["leaves"])
+    dg, dm = np.empty(n, int), np.empty(n, int)
+    for i, leaves in enumerate(cohort["leaves"]):
+        keep = rng.random(len(leaves)) < theta0
+        y = np.where(keep, leaves, rng.integers(0, v, size=len(leaves)))
+        root_hat = int(np.argmax(_bp_belief(y, depth, rules, v, float(theta0))))
+        dg[i], dm[i] = root_hat // b_size, root_hat % b_size
+    return {"group_decoded": dg, "member_decoded": dm, "theta0": theta0,
+            "group_decode_acc": float((dg == cohort["group"]).mean()),
+            "member_decode_acc": float((dm == cohort["member"]).mean())}
+
+
 def true_tau_by_level(spec: dict) -> dict:
     """The ground-truth between-subgroup effect SD contributed at each level:
     ``tau_group = |w_group|·std(group_effect)``, ``tau_member = |w_member|·std(member_
