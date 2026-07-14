@@ -24,6 +24,22 @@ The story to look for:
 
 Requires the 3.12 `[bayes]` stack (PyMC/NumPyro) — run in `.venv312` (or the box).
 
+**Scope caveats (independent review, #144).**
+- At the default g=4/b=3 there are only 3–4 subgroups, so τ is barely identified and the
+  credible-interval-as-test is deeply conservative: ``reject ≈ 0`` in the nulls is a
+  **size-≈0** result, NOT a certification of 0.05-level Type-I. The sweep can catch
+  *catastrophic* over-pooling (a real hetero-null τ pooled to ~0 → μ SE collapses →
+  inflation), not fine size control. Read **interval width + coverage** as the primary
+  operating characteristics, and put K on the grid before trusting "nominal".
+- This engine decides only on the **population μ**; the per-subgroup partial-null size
+  (the borrowing-inflation mechanism) is not yet exercised.
+- **This experiment licenses NOTHING about the frozen-encoder embedding pipeline.** It is
+  an internal-validity result about *this* grammar DGP with exact BP and known labels.
+  Transfer to embeddings requires (among others) subgroups DECODED from the
+  representation (not observed covariates), an estimable decode accuracy, near-symmetric
+  Y-independent misclassification, and an encoder preserving the coarse→fine ordering —
+  none checked here. Only the structural guidance transfers. See #144.
+
 Run: python -m experiments.exp41_borrowing_calibration          # small illustrative grid
      python -m experiments.exp41_borrowing_calibration --full   # the real run
 """
