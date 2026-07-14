@@ -142,3 +142,45 @@ def recommend_tau_priors(levels: list[dict], *, tau_sd_min: float = 0.05,
     }
     return {"per_level": per_level, "unresolved_splits": rep["unresolved_splits"],
             "well_separated": rep["well_separated"]}
+
+
+def canonical_tau_prior(decode_acc: float, n_classes: int, *, tau_sd_min: float = 0.05,
+                        tau_sd_max: float = 1.0) -> float:
+    """Correctly-signed canonical map for the BP-decoded-labels pipeline (#144).
+
+    Takes the per-level **decode accuracy** at the working θ₀ (the operating-point
+    learnability scalar from ``dgp.joint_hierarchy.decode_cohort_labels``), NOT the
+    embedding ``t_star`` and NOT ``theta_c``. Chance-adjusted:
+    ``r = clip((acc − 1/K)/(1 − 1/K), 0, 1)``; ``tau_sd = tau_sd_min + r·(tau_sd_max −
+    tau_sd_min)``.
+
+    Monotone **increasing** in accuracy: a well-decoded level (``r → 1``) → large
+    ``tau_sd`` (weak pooling — its between-group differences are trustworthy); a level
+    decoded near chance (``r → 0``) → ``tau_sd_min`` (strong pooling — the differences
+    are mostly misclassification noise). Grounded in the misclassification-attenuation
+    argument, not the ``suggest_tau_prior`` convention.
+
+    SIGN WARNING: do NOT feed ``theta_c`` (the reconstruction threshold, where *lower* =
+    more robust) into this or ``suggest_tau_prior`` — both expect a higher-is-more-robust
+    scalar. Decode accuracy is the correct, higher-is-robust operating-point input; a
+    ``theta_c`` plug-in would set priors backwards."""
+    chance = 1.0 / n_classes
+    r = float(np.clip((decode_acc - chance) / (1.0 - chance), 0.0, 1.0))
+    return tau_sd_min + r * (tau_sd_max - tau_sd_min)
+
+
+def recommend_tau_priors_from_decode(decode_result: dict, g: int, b_size: int, *,
+                                     tau_sd_min: float = 0.05, tau_sd_max: float = 1.0) -> dict:
+    """Per-level ``tau_sd`` from a ``decode_cohort_labels`` result via
+    ``canonical_tau_prior``. The coarse (group) level, decoded more accurately, gets a
+    larger ``tau_sd`` (weak pooling) than the fine (member) level. Returns
+    ``{group: {decode_acc, n_classes, tau_sd}, member: {...}}`` — the analyst feeds each
+    ``tau_sd`` to ``fit_three_level_meta`` for that level. Informs, does not set."""
+    return {
+        "group": {"decode_acc": decode_result["group_decode_acc"], "n_classes": g,
+                  "tau_sd": canonical_tau_prior(decode_result["group_decode_acc"], g,
+                                                tau_sd_min=tau_sd_min, tau_sd_max=tau_sd_max)},
+        "member": {"decode_acc": decode_result["member_decode_acc"], "n_classes": b_size,
+                   "tau_sd": canonical_tau_prior(decode_result["member_decode_acc"], b_size,
+                                                 tau_sd_min=tau_sd_min, tau_sd_max=tau_sd_max)},
+    }

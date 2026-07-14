@@ -81,3 +81,33 @@ def test_recommend_tau_priors_carries_unresolved_split_warning():
     rec = recommend_tau_priors([_mk("A", 0.80), _mk("B", 0.79)], sep_tol=0.05)
     assert ("A", "B") in rec["unresolved_splits"]                           # don't fit as distinct
     assert rec["well_separated"] is False
+
+
+# ─── correctly-signed canonical map for the BP-decoded pipeline (#144) ────────
+def test_canonical_tau_prior_chance_adjusted_and_monotone():
+    from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_prior
+    assert canonical_tau_prior(0.25, 4) == 0.05                 # chance (1/4) → min
+    assert canonical_tau_prior(1.0, 4) == 1.0                   # perfect → max
+    assert canonical_tau_prior(0.10, 4) == 0.05                 # below chance clips to min
+    assert canonical_tau_prior(0.8, 4) > canonical_tau_prior(0.5, 4)   # monotone ↑
+    # chance-adjusted: same raw accuracy maps differently for different K
+    assert canonical_tau_prior(0.6, 4) != canonical_tau_prior(0.6, 3)
+
+
+def test_canonical_map_gives_robust_level_weaker_pooling():
+    from causal_bench.diagnostics.borrowing_informativeness import recommend_tau_priors_from_decode
+    # group decoded better than member → larger tau_sd (weaker pooling) for group.
+    dr = {"group_decode_acc": 0.92, "member_decode_acc": 0.75}
+    rec = recommend_tau_priors_from_decode(dr, g=4, b_size=3)
+    assert rec["group"]["tau_sd"] > rec["member"]["tau_sd"]
+    assert rec["group"]["tau_sd"] > 0 and rec["member"]["tau_sd"] > 0
+
+
+def test_canonical_map_correct_sign_vs_theta_c():
+    # Guard the review's sign bug: decode ACCURACY (higher=robust) → larger tau_sd.
+    # A theta_c value (lower=robust) fed to suggest_tau_prior would invert this; the
+    # canonical map takes accuracy precisely to avoid that.
+    from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_prior
+    robust = canonical_tau_prior(0.95, 4)                       # well-decoded → weak pool
+    fragile = canonical_tau_prior(0.35, 4)                      # near chance → strong pool
+    assert robust > fragile
