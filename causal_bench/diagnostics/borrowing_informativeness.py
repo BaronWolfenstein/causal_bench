@@ -94,3 +94,51 @@ def borrowing_report(levels: list[dict], *, sep_tol: float = 0.05) -> dict:
                   for i, g in enumerate(gaps) if g <= sep_tol]
     return {"levels": out, "separation_gaps": gaps,
             "well_separated": well_separated, "unresolved_splits": unresolved}
+
+
+def suggest_tau_prior(t_star: float, *, tau_sd_min: float = 0.05,
+                      tau_sd_max: float = 1.0) -> float:
+    """Map a level's identifiability ``t_star`` (VP-SDE schedule fraction in [0,1]) to a
+    suggested between-group SD prior scale ``tau_sd``. Monotone increasing: a
+    well-identified level (high ``t_star``) → **larger** ``tau_sd`` (weak pooling, let
+    subgroups differ); an information-starved level (low ``t_star``) → **smaller**
+    ``tau_sd`` (strong pooling, borrow heavily toward the parent)."""
+    r = float(np.clip(t_star, 0.0, 1.0))
+    return tau_sd_min + r * (tau_sd_max - tau_sd_min)
+
+
+def recommend_tau_priors(levels: list[dict], *, tau_sd_min: float = 0.05,
+                         tau_sd_max: float = 1.0, sep_tol: float = 0.05) -> dict:
+    """Wire the per-level identifiability report to the hierarchical fit's borrowing
+    knob. For each level, suggest a ``tau_sd`` (the HalfNormal scale on the
+    between-subgroup SD τ) for ``estimators.three_level_bhm.fit_three_level_meta`` /
+    ``fit_three_level_bhm``: high ``t_star`` (robust) → larger ``tau_sd`` (weak pooling);
+    low ``t_star`` (info-starved) → smaller ``tau_sd`` (strong pooling).
+
+    This **informs** the borrowing decision — it does NOT set the shrinkage (that stays
+    the hierarchical fit's job) and is not an automatic override. It also surfaces
+    ``unresolved_splits``: adjacent levels whose ``t_star`` are ≈equal are not separated
+    in the representation and should not be fit as distinct levels — pool them.
+
+    Usage::
+
+        levels = level_identifiability(X, level_labels)
+        rec = recommend_tau_priors(levels)
+        # analyst reviews rec, then (in the pymc .venv312 stack):
+        fit_three_level_meta(theta_hat, se, tau_sd=rec["per_level"]["L3"]["tau_sd"])
+
+    Returns ``{per_level: {name: {t_star, n_classes, tau_sd, recommendation}},
+    unresolved_splits, well_separated}``."""
+    rep = borrowing_report(levels, sep_tol=sep_tol)
+    rec_by_name = {L["name"]: L["recommendation"] for L in rep["levels"]}
+    per_level = {
+        L["name"]: {
+            "t_star": L["t_star"], "n_classes": L["n_classes"],
+            "tau_sd": suggest_tau_prior(L["t_star"], tau_sd_min=tau_sd_min,
+                                        tau_sd_max=tau_sd_max),
+            "recommendation": rec_by_name[L["name"]],
+        }
+        for L in levels
+    }
+    return {"per_level": per_level, "unresolved_splits": rep["unresolved_splits"],
+            "well_separated": rep["well_separated"]}
