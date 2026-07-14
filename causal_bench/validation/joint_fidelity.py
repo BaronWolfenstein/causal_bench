@@ -39,10 +39,11 @@ def population_effect(spec: dict) -> float:
 
 
 def _subgroup_estimates(Y, A, sub, n_sub, *, min_per_arm=3):
-    """Per-decoded-subgroup treatment-effect estimates (mean-difference) and SEs.
-    Subgroups without at least ``min_per_arm`` units in each arm are dropped (can't form
-    a stable estimate) — returns only the resolvable subgroups' ``(theta_hat, se)``."""
-    th, se = [], []
+    """Per-decoded-subgroup treatment-effect estimates (mean-difference), SEs, and the
+    surviving subgroup indices. Subgroups without at least ``min_per_arm`` units in each
+    arm are dropped — ``kept`` maps rows of ``(theta_hat, se)`` back to subgroup ids (so a
+    partial-null test can locate the null subgroup after drops)."""
+    th, se, kept = [], [], []
     for k in range(n_sub):
         m = sub == k
         y1, y0 = Y[m & (A == 1)], Y[m & (A == 0)]
@@ -50,7 +51,8 @@ def _subgroup_estimates(Y, A, sub, n_sub, *, min_per_arm=3):
             continue
         th.append(y1.mean() - y0.mean())
         se.append(np.sqrt(y1.var(ddof=1) / len(y1) + y0.var(ddof=1) / len(y0)))
-    return np.asarray(th), np.asarray(se)
+        kept.append(k)
+    return np.asarray(th), np.asarray(se), np.asarray(kept, int)
 
 
 def _policy_tau_sd(policy, level, spec, decoded, *, flat_tau_sd, tau_base, tau_sd_min):
@@ -73,38 +75,57 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                    depth: int = 7, sigma: float = 0.5, flat_tau_sd: float = 0.5,
                    tau_base: float = 0.5, tau_sd_min: float = 0.05, draws: int = 500,
                    tune: int = 500, chains: int = 2, seed: int = 0,
-                   tail_ess_threshold: float = 100.0) -> dict:
+                   tail_ess_threshold: float = 100.0, null_subgroup: int | None = None) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
-    cell. Returns ``{reject_rate, coverage, mean_tau_sd, mu_true, tau_true, n_flagged,
-    n_used}`` — under a null spec (μ=0) ``reject_rate`` is Type-I; under an alt it is
-    power. Subgroups = the DECODED labels at ``level``; the prior is set by ``policy``."""
+    cell. ``reject_rate`` is the population-μ decision (Type-I under a null spec, power
+    under an alt). When ``null_subgroup`` is set (a partial-null spec, e.g.
+    ``make_partial_null_spec``), also reports ``subgroup_reject_rate`` — the per-subgroup
+    Type-I of that truly-null subgroup, the estimand where strong borrowing inflates size
+    by dragging it toward non-null siblings.
+
+    Reports (per the #144 review): ``mean_ci_width`` (μ CI width — the primary honest OC,
+    since reject≈0 at small K is a size-≈0 test, not "nominal"), ``coverage``, and BOTH
+    the tail-ESS-gated ``reject_rate`` and the flagged-included ``reject_rate_uncond``
+    (dropping flagged fits is selection-on-data). Subgroups = the DECODED labels at
+    ``level``; the prior is set by ``policy``."""
     from causal_bench.estimators.three_level_bhm import fit_three_level_meta, tail_ess_ok
 
     mu_true = population_effect(spec)
     tau_true = true_tau_by_level(spec)["tau_group" if level == "group" else "tau_member"]
-    rejects, covers, taus, n_flagged, n_used = [], [], [], 0, 0
+    rejects, covers, taus, widths, sub_rejects = [], [], [], [], []
+    rejects_all, n_flagged, n_used = [], 0, 0
     for r in range(n_reps):
         coh = sample_joint_cohort(spec, n_units, depth, sigma=sigma, seed=seed + r)
         dec = decode_cohort_labels(spec, coh, theta0=theta0, seed=seed + 1000 + r)
         sub = dec["group_decoded" if level == "group" else "member_decoded"]
         n_sub = spec["g"] if level == "group" else spec["b_size"]
-        th, se = _subgroup_estimates(coh["Y"], coh["A"], sub, n_sub)
+        th, se, kept = _subgroup_estimates(coh["Y"], coh["A"], sub, n_sub)
         if len(th) < 2:
             continue
         tau_sd = _policy_tau_sd(policy, level, spec, dec, flat_tau_sd=flat_tau_sd,
                                 tau_base=tau_base, tau_sd_min=tau_sd_min)
         fit = fit_three_level_meta(th, se, tau_sd=tau_sd, true_effect=mu_true,
-                                   draws=draws, tune=tune, chains=chains, seed=seed + r)
+                                   draws=draws, tune=tune, chains=chains, seed=seed + r,
+                                   return_theta=null_subgroup is not None)
+        rejects_all.append(fit["rejects_null"])                 # flagged-included sensitivity
         if not tail_ess_ok(fit, threshold=tail_ess_threshold):
             n_flagged += 1
             continue
         rejects.append(fit["rejects_null"])
         covers.append(fit["covers_truth"])
         taus.append(tau_sd)
+        widths.append(fit["ci_hi"] - fit["ci_lo"])
+        if null_subgroup is not None:
+            pos = np.where(kept == null_subgroup)[0]
+            if len(pos):                                        # null subgroup survived drops
+                sub_rejects.append(bool(fit["theta_g_rejects"][pos[0]]))
         n_used += 1
     return {
         "reject_rate": float(np.mean(rejects)) if rejects else float("nan"),
+        "reject_rate_uncond": float(np.mean(rejects_all)) if rejects_all else float("nan"),
+        "subgroup_reject_rate": float(np.mean(sub_rejects)) if sub_rejects else float("nan"),
         "coverage": float(np.mean(covers)) if covers else float("nan"),
+        "mean_ci_width": float(np.mean(widths)) if widths else float("nan"),
         "mean_tau_sd": float(np.mean(taus)) if taus else float("nan"),
         "mu_true": mu_true, "tau_true": float(tau_true),
         "n_flagged": n_flagged, "n_used": n_used,
@@ -132,3 +153,20 @@ def make_null_spec(g, b_size, s, m, *, level: str, tau_scale: float, seed: int =
     """Backward-compatible wrapper: a null spec (μ = 0) with between-subgroup SD
     ``tau_scale``. See ``make_scenario_spec``."""
     return make_scenario_spec(g, b_size, s, m, level=level, mu=0.0, tau=tau_scale, seed=seed)
+
+
+def make_partial_null_spec(g, b_size, s, m, *, level: str, sibling_effect: float,
+                           null_idx: int = 0, seed: int = 0) -> dict:
+    """A **partial null**: subgroup ``null_idx`` is truly null (θ = 0) while every sibling
+    has the SAME-sign effect ``sibling_effect`` (same sign maximizes the population mean μ,
+    hence the borrowing drag on the null subgroup — the adversarial case for per-subgroup
+    Type-I). Pass ``null_subgroup=null_idx`` to ``joint_fidelity`` to measure whether
+    borrowing makes the null subgroup's posterior reject θ = 0."""
+    spec = make_joint_hierarchy(g, b_size, s, m, w_group=0.0, w_member=0.0, seed=seed)
+    key, w = ("group_effect", "w_group") if level == "group" else ("member_effect", "w_member")
+    k = g if level == "group" else b_size
+    e = np.full(k, float(sibling_effect))
+    e[null_idx] = 0.0                                           # the truly-null subgroup
+    spec[key] = e
+    spec[w] = 1.0
+    return spec

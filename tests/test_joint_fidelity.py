@@ -31,8 +31,9 @@ def test_subgroup_estimates_recover_mean_difference_and_drop_sparse():
     Y = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 5.0])
     A = np.array([1, 1, 1, 0, 0, 0, 1])
     sub = np.array([0, 0, 0, 0, 0, 0, 1])                       # subgroup 1 has 1 unit (dropped)
-    th, se = _subgroup_estimates(Y, A, sub, n_sub=2, min_per_arm=3)
+    th, se, kept = _subgroup_estimates(Y, A, sub, n_sub=2, min_per_arm=3)
     assert len(th) == 1 and abs(th[0] - 1.0) < 1e-9            # only subgroup 0 survives, effect=1
+    assert list(kept) == [0]                                   # kept maps rows back to subgroup ids
 
 
 def test_policy_tau_sd_flat_oracle_canonical():
@@ -69,3 +70,11 @@ def test_make_scenario_spec_sets_mu_and_tau():
     assert abs(population_effect(spec) - 0.5) < 1e-9            # μ = mu
     assert abs(true_tau_by_level(spec)["tau_member"] - 0.3) < 1e-9   # τ = tau
     assert true_tau_by_level(spec)["tau_group"] == 0.0         # other level carries none
+
+
+def test_make_partial_null_spec_one_null_rest_effect():
+    from causal_bench.validation.joint_fidelity import make_partial_null_spec
+    spec = make_partial_null_spec(4, 3, 2, 2, level="group", sibling_effect=0.8, null_idx=0, seed=0)
+    e = spec["group_effect"]
+    assert e[0] == 0.0                                          # subgroup 0 truly null
+    assert np.allclose(e[1:], 0.8)                             # siblings same-sign effect
