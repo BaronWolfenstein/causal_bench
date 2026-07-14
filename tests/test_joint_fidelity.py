@@ -56,3 +56,12 @@ def test_joint_fidelity_runs_and_global_null_is_not_inflated():
     assert r["n_used"] >= 1
     # a global-null Type-I should not be grossly inflated (loose bound for a tiny run)
     assert np.isnan(r["reject_rate"]) or r["reject_rate"] <= 0.5
+
+
+def test_make_scenario_spec_sets_mu_and_tau():
+    from causal_bench.validation.joint_fidelity import make_scenario_spec
+    from causal_bench.dgp.joint_hierarchy import true_tau_by_level
+    spec = make_scenario_spec(4, 3, 2, 2, level="member", mu=0.5, tau=0.3, seed=0)
+    assert abs(population_effect(spec) - 0.5) < 1e-9            # μ = mu
+    assert abs(true_tau_by_level(spec)["tau_member"] - 0.3) < 1e-9   # τ = tau
+    assert true_tau_by_level(spec)["tau_group"] == 0.0         # other level carries none

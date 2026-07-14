@@ -108,15 +108,24 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
     }
 
 
-def make_null_spec(g, b_size, s, m, *, level: str, tau_scale: float, seed: int = 0) -> dict:
-    """A spec with population effect μ = 0 at ``level`` but between-subgroup SD τ =
-    ``tau_scale`` (heterogeneous null — the case where borrowing threatens Type I). The
-    level's effect table is centered (mean 0) and scaled to unit SD then ×``tau_scale``;
-    the other level carries no effect. ``tau_scale = 0`` ⇒ the global null (μ=τ=0)."""
+def make_scenario_spec(g, b_size, s, m, *, level: str, mu: float = 0.0, tau: float = 0.0,
+                       seed: int = 0) -> dict:
+    """A spec with a KNOWN population effect μ = ``mu`` and between-subgroup SD τ =
+    ``tau`` at ``level`` (the other level carries no effect). The level's effect table is
+    standardized (mean 0, unit SD) then set to mean ``mu`` and SD ``tau``, weight 1.
+    Scenarios: global null ``(mu=0, tau=0)``; heterogeneous null ``(mu=0, tau>0)`` — the
+    case where borrowing threatens Type I; alternative ``(mu≠0, ...)``."""
     spec = make_joint_hierarchy(g, b_size, s, m, w_group=0.0, w_member=0.0, seed=seed)
     key, w = ("group_effect", "w_group") if level == "group" else ("member_effect", "w_member")
     e = spec[key] - spec[key].mean()
     sd = e.std()
-    spec[key] = (e / sd) if sd > 1e-9 else e                    # unit SD, mean 0
-    spec[w] = tau_scale                                         # τ_true = tau_scale·1 = tau_scale
+    z = (e / sd) if sd > 1e-9 else e                            # mean 0, unit SD
+    spec[key] = mu + tau * z                                    # mean μ, SD τ
+    spec[w] = 1.0
     return spec
+
+
+def make_null_spec(g, b_size, s, m, *, level: str, tau_scale: float, seed: int = 0) -> dict:
+    """Backward-compatible wrapper: a null spec (μ = 0) with between-subgroup SD
+    ``tau_scale``. See ``make_scenario_spec``."""
+    return make_scenario_spec(g, b_size, s, m, level=level, mu=0.0, tau=tau_scale, seed=seed)
