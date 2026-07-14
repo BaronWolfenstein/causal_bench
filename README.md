@@ -175,6 +175,7 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
 | exp36 | **Built** — two-vs-three-level OC fidelity (`exp36_three_level_fidelity.py`, #40); reclaimed from the released z_anatomy slot (#73 dropped its exp number) |
 | exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |
+| exp41 | Borrowing calibration — identifiability-set `tau_sd` Type-I/power on the joint DGP with BP-decoded labels (#144); specced, unbuilt |
 
 ---
 
