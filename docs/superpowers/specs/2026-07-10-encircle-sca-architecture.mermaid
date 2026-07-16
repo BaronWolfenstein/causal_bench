@@ -22,10 +22,16 @@ flowchart TD
     end
     SFALL["Fallback: flat / non-hierarchical comparator\n(no depth-tuned architecture licensed)"]
 
-    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB JEPA)"]
+    %% NOTE (2026-07): current encoder is structured-EHR ONLY, but M3 is a MITRAL device
+    %% whose disease signature is echocardiographic. Imaging encoders are candidate
+    %% (gated on diffuse_directly resume). Auto-Contour (JACC Adv 2026, S2772963X26002887)
+    %% is ICE = INTRA-PROCEDURAL segmentation, NOT a patient-level screening encoder →
+    %% out of scope for this layer (procedural-guidance tooling, not a representation).
+    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB JEPA, EHR-only today)"]
         direction LR
         JEPA["JEPA EHR World Model (frozen)\nSMB-v1-1.7B-Structure"]
         SIGEPS["Σ_ε (encoder-side): MC-dropout K passes\nper-patient embedding covariance → versioned artifact"]
+        MV_ENC["CANDIDATE (gated) — imaging encoder\nMitralVision: spatiotemporal ViT, TTE A4C B-mode → MR-severity embedding\n(JASE 2026, S0894-7317(26)00360-3)\ndisease-tuned: could pass Test A localization for rare mitral\nphenotypes the EHR encoder misses. Modality ≠ SMB JEPA (EHR)."]
     end
 
     subgraph SIGREG["Embedding-Geometry Pre-processing"]
@@ -186,6 +192,7 @@ flowchart TD
     class TVT,ENCIRCLE data
     class SSCAN,SCTRL,SGATE,SFALL structgate
     class JEPA encoder
+    class MV_ENC gated
     class EP,GCHECK,SPROJ,LSPACE,ZCA,SEP1,SEP2 sigreg
     class Z_TVT,Z_TMVR,POS,LOC latent
     class DIFF_Z,DIFF_TAIL,DIFF_LAT,CFG,TWIST,ESS_SMC,SYNTH generative
