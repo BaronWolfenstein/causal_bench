@@ -40,21 +40,37 @@ def main() -> None:
                                             np.random.default_rng(args.seed))]
         local_x = torch.as_tensor(full_x[rank*Nl:(rank+1)*Nl], device=dev)
         local_w = torch.as_tensor(full_w[rank*Nl:(rank+1)*Nl], device=dev, dtype=torch.float32)
-        out = all_to_all_resample(local_x, local_w, args.seed, rank, world).cpu().numpy()
         ref = serial[rank*Nl:(rank+1)*Nl]
-        ok = np.array_equal(out, ref)
-        flag = torch.tensor([1 if ok else 0], device=dev)
-        dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+        oks = {}
+        for plan in ("cpu", "gpu"):
+            out = all_to_all_resample(local_x, local_w, args.seed, rank, world,
+                                      plan_on=plan).cpu().numpy()
+            ok = np.array_equal(out, ref)
+            flag = torch.tensor([1 if ok else 0], device=dev)
+            dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+            oks[plan] = int(flag) == 1
         ess = distributed_ess(torch.log(local_w))
         if rank == 0:
-            print(f"[N={N:7d}] distributed all_to_all == serial: "
-                  f"{'OK' if int(flag)==1 else 'MISMATCH'}   ESS={ess:.1f}")
-        assert int(flag) == 1
+            print(f"[N={N:7d}] all_to_all==serial  cpu-plan:{'OK' if oks['cpu'] else 'X'} "
+                  f"gpu-plan:{'OK' if oks['gpu'] else 'X'}   ESS={ess:.1f}")
+        assert oks["cpu"] and oks["gpu"]
 
-    # ---- NVLink throughput profile (§1d): all_to_all payload / time ----------
+    # ---- NVLink throughput profile (§1d): cpu-plan vs gpu-plan ---------------
+    def bench(local_x, local_w, plan):
+        for _ in range(2):
+            all_to_all_resample(local_x, local_w, args.seed, rank, world, plan_on=plan)
+        torch.cuda.synchronize(); dist.barrier()
+        reps = 10
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            all_to_all_resample(local_x, local_w, args.seed, rank, world, plan_on=plan)
+        torch.cuda.synchronize(); dist.barrier()
+        return (time.perf_counter() - t0) / reps * 1e3
+
     if rank == 0:
-        print(f"\n[profile] all_to_all resample, world={world}")
-        print(f"  {'N':>9s} {'dim':>4s} {'payload_MB':>11s} {'ms/call':>9s} {'GB/s':>8s}")
+        print(f"\n[profile] all_to_all resample, world={world}  (cpu-plan vs GPU-native plan)")
+        print(f"  {'N':>9s} {'dim':>4s} {'payload_MB':>11s} {'cpu ms':>8s} {'gpu ms':>8s} "
+              f"{'speedup':>8s} {'gpu GB/s':>9s}")
     for N in (1 << 16, 1 << 18, 1 << 20):
         if N % world:
             continue
@@ -64,25 +80,18 @@ def main() -> None:
             full_w = g.random(N); full_w /= full_w.sum()
             local_x = torch.randn(Nl, d, device=dev, dtype=torch.float32)
             local_w = torch.as_tensor(full_w[rank*Nl:(rank+1)*Nl], device=dev, dtype=torch.float32)
-            # warmup
-            for _ in range(2):
-                all_to_all_resample(local_x, local_w, args.seed, rank, world)
-            torch.cuda.synchronize(); dist.barrier()
-            reps = 10
-            t0 = time.perf_counter()
-            for _ in range(reps):
-                all_to_all_resample(local_x, local_w, args.seed, rank, world)
-            torch.cuda.synchronize(); dist.barrier()
-            ms = (time.perf_counter() - t0) / reps * 1e3
-            payload_mb = N * d * 4 / 1e6                       # ~all rows moved once
-            gbps = payload_mb / 1e3 / (ms / 1e3)
+            ms_cpu = bench(local_x, local_w, "cpu")
+            ms_gpu = bench(local_x, local_w, "gpu")
+            payload_mb = N * d * 4 / 1e6
+            gbps = payload_mb / 1e3 / (ms_gpu / 1e3)
             if rank == 0:
-                print(f"  {N:9d} {d:4d} {payload_mb:11.1f} {ms:9.2f} {gbps:8.1f}")
+                print(f"  {N:9d} {d:4d} {payload_mb:11.1f} {ms_cpu:8.2f} {ms_gpu:8.2f} "
+                      f"{ms_cpu/ms_gpu:7.1f}x {gbps:9.1f}")
 
     if rank == 0:
-        print("\n[note] time includes the all_gather(w)+cpu index plan; the pure "
-              "NVLink all_to_all is the O(N*dim) row transfer. Larger dim -> the "
-              "transfer dominates the fixed plan cost (roofline: minimize movement).")
+        print("\n[note] GPU-native plan keeps the systematic resample + send/recv "
+              "planning on-device (cupy CUB); only world-length split lists cross to "
+              "host. The O(N*dim) NVLink all_to_all then dominates (spec §1d roofline).")
     dist.destroy_process_group()
 
 

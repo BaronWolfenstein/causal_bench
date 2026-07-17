@@ -104,29 +104,70 @@ def distributed_ess(local_log_w, group=None) -> float:
     return (sw * sw) / sw2
 
 
-def all_to_all_resample(local_x, local_w, seed: int, rank: int, world: int, group=None):
+def _plan_gpu(idx, rank: int, world: int, n_local: int):
+    """cupy version of plan_all_to_all — the O(N) index work stays on-GPU (CUB
+    bincount/argsort), only the world-length split lists cross to host.  ``idx``
+    is a cupy int array.  Returns (in_split list, out_split list, send_local
+    cupy, place_order cupy)."""
+    import cupy as cp
+    owner_all = idx // n_local
+    A_me = idx[rank * n_local:(rank + 1) * n_local]
+    owner_me = A_me // n_local
+    out_split = cp.bincount(owner_me, minlength=world)
+    dest_all = cp.arange(idx.size) // n_local          # which dest-slice each pos is in
+    mine = owner_all == rank
+    in_split = cp.bincount(dest_all[mine], minlength=world)
+    send_local = idx[mine] - rank * n_local            # natural order == (dest, pos) order
+    place_order = cp.argsort(owner_me, kind="stable")  # recv (src,pos) order -> output pos
+    return in_split.get().tolist(), out_split.get().tolist(), send_local, place_order
+
+
+def all_to_all_resample(local_x, local_w, seed: int, rank: int, world: int,
+                        group=None, plan_on: str = "gpu"):
     """Distributed global resample. local_x: (n_local, d) torch cuda tensor;
     local_w: (n_local,) local (unnormalized) weights.  Returns this rank's
-    resampled output slice (n_local, d), reproducing the serial resample."""
+    resampled output slice (n_local, d), reproducing the serial resample.
+
+    plan_on="gpu" keeps the all-gathered weights, systematic resample, and the
+    send/recv plan on-GPU (cupy via DLPack, zero-copy from the torch tensors) so
+    the only host traffic is the world-length split lists — the NVLink all_to_all
+    then dominates (spec §1d).  plan_on="cpu" is the numpy reference path."""
     import torch
     import torch.distributed as dist
     n_local, d = int(local_x.shape[0]), int(local_x.shape[1])
 
-    # 1) all_gather weights -> full w
+    # 1) all_gather local weights -> full w (stays on device)
     wbufs = [torch.empty_like(local_w) for _ in range(world)]
     dist.all_gather(wbufs, local_w, group=group)
-    full_w = torch.cat(wbufs).detach().cpu().numpy().astype(float)
+    full_w_t = torch.cat(wbufs)
 
-    # 2) shared-seed global indices + plan (pure numpy, identical on every rank)
-    idx = global_indices(full_w, seed)
-    in_split, out_split, send_local, place_order = plan_all_to_all(idx, rank, world, n_local)
+    use_gpu = plan_on == "gpu" and local_x.is_cuda
+    if use_gpu:
+        try:
+            import cupy as cp
+        except Exception:
+            use_gpu = False
+
+    if use_gpu:
+        torch.cuda.synchronize()                       # torch stream done before cupy reads
+        w_cp = cp.from_dlpack(full_w_t)                # zero-copy torch->cupy
+        w_cp = (w_cp / w_cp.sum()).astype(cp.float64)
+        idx = systematic_resample(w_cp, np.random.default_rng(seed))   # cupy CUB path
+        in_split, out_split, send_local_cp, place_order_cp = _plan_gpu(idx, rank, world, n_local)
+        cp.cuda.get_current_stream().synchronize()     # cupy plan done before torch reads
+        send_idx = torch.from_dlpack(send_local_cp).long()
+        place_order = torch.from_dlpack(place_order_cp).long()
+    else:
+        idx = global_indices(full_w_t.detach().cpu().numpy().astype(float), seed)
+        in_split, out_split, send_local, place_order_np = plan_all_to_all(idx, rank, world, n_local)
+        send_idx = torch.as_tensor(send_local, device=local_x.device, dtype=torch.long)
+        place_order = torch.as_tensor(place_order_np, device=local_x.device, dtype=torch.long)
 
     # 3) all_to_all only the moved particles
-    send_idx = torch.as_tensor(send_local, device=local_x.device, dtype=torch.long)
     send_buf = local_x.index_select(0, send_idx).contiguous()
     recv_buf = torch.empty((int(sum(out_split)), d), dtype=local_x.dtype, device=local_x.device)
     dist.all_to_all_single(recv_buf, send_buf, out_split, in_split, group=group)
 
     out = torch.empty_like(local_x)
-    out[torch.as_tensor(place_order, device=local_x.device, dtype=torch.long)] = recv_buf
+    out[place_order] = recv_buf
     return out
