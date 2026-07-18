@@ -106,13 +106,17 @@ def _perf_setup(precision, dev):
 
 def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
                 epochs: int = 20, rng=None, device: str = "auto", opt=None,
-                _loss_log=None, precision: str = "fp32", compile: bool = False):
+                _loss_log=None, precision: str = "fp32", compile: bool = False,
+                compile_mode: str = "default"):
     import torch
     dev = resolve_device(device)
     model.to(dev)
     autocast, _ = _perf_setup(precision, dev)
     if compile and dev.type == "cuda":
-        model = torch.compile(model)                      # graph fusion; params unchanged
+        # 'default' fuses; 'max-autotune' searches kernels (slow warmup, faster
+        # steady state); 'reduce-overhead' uses CUDA graphs (kills launch overhead
+        # for the fixed-shape training loop). Params unchanged either way.
+        model = torch.compile(model, mode=compile_mode)
     rng = rng or np.random.default_rng(0)
     X = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=dev)
     w = (torch.as_tensor(np.asarray(weights), dtype=torch.float32, device=dev)
