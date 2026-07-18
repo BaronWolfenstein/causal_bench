@@ -122,10 +122,12 @@ def _plan_gpu(idx, rank: int, world: int, n_local: int):
     return in_split.get().tolist(), out_split.get().tolist(), send_local, place_order
 
 
-def all_to_all_resample(local_x, local_w, seed: int, rank: int, world: int,
+def all_to_all_resample(local_x, local_w, seed, rank: int, world: int,
                         group=None, plan_on: str = "gpu"):
     """Distributed global resample. local_x: (n_local, d) torch cuda tensor;
-    local_w: (n_local,) local (unnormalized) weights.  Returns this rank's
+    local_w: (n_local,) local (unnormalized) weights.  ``seed`` is an int OR a
+    numpy Generator (pass a SHARED, advancing Generator from the SMC loop so the
+    per-resample uniform matches the serial rng stream).  Returns this rank's
     resampled output slice (n_local, d), reproducing the serial resample.
 
     plan_on="gpu" keeps the all-gathered weights, systematic resample, and the
@@ -134,12 +136,13 @@ def all_to_all_resample(local_x, local_w, seed: int, rank: int, world: int,
     then dominates (spec §1d).  plan_on="cpu" is the numpy reference path."""
     import torch
     import torch.distributed as dist
-    n_local, d = int(local_x.shape[0]), int(local_x.shape[1])
+    rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
 
     # 1) all_gather local weights -> full w (stays on device)
     wbufs = [torch.empty_like(local_w) for _ in range(world)]
     dist.all_gather(wbufs, local_w, group=group)
     full_w_t = torch.cat(wbufs)
+    n_local = int(local_x.shape[0])
 
     use_gpu = plan_on == "gpu" and local_x.is_cuda
     if use_gpu:
@@ -152,22 +155,32 @@ def all_to_all_resample(local_x, local_w, seed: int, rank: int, world: int,
         torch.cuda.synchronize()                       # torch stream done before cupy reads
         w_cp = cp.from_dlpack(full_w_t)                # zero-copy torch->cupy
         w_cp = (w_cp / w_cp.sum()).astype(cp.float64)
-        idx = systematic_resample(w_cp, np.random.default_rng(seed))   # cupy CUB path
+        idx = systematic_resample(w_cp, rng)           # cupy CUB path (shared host uniform)
+    else:
+        full_w = full_w_t.detach().cpu().numpy().astype(float)
+        idx = systematic_resample(full_w / full_w.sum(), rng)
+    return _scatter_by_index(local_x, idx, rank, world, n_local, group, use_gpu)
+
+
+def _scatter_by_index(local_x, idx, rank, world, n_local, group, use_gpu):
+    """Given the global ancestor vector ``idx`` (cupy if use_gpu else numpy),
+    all_to_all only the moved particles and return this rank's output slice."""
+    import torch
+    import torch.distributed as dist
+    d = int(local_x.shape[1])
+    if use_gpu:
+        import cupy as cp
         in_split, out_split, send_local_cp, place_order_cp = _plan_gpu(idx, rank, world, n_local)
-        cp.cuda.get_current_stream().synchronize()     # cupy plan done before torch reads
+        cp.cuda.get_current_stream().synchronize()
         send_idx = torch.from_dlpack(send_local_cp).long()
         place_order = torch.from_dlpack(place_order_cp).long()
     else:
-        idx = global_indices(full_w_t.detach().cpu().numpy().astype(float), seed)
         in_split, out_split, send_local, place_order_np = plan_all_to_all(idx, rank, world, n_local)
         send_idx = torch.as_tensor(send_local, device=local_x.device, dtype=torch.long)
         place_order = torch.as_tensor(place_order_np, device=local_x.device, dtype=torch.long)
-
-    # 3) all_to_all only the moved particles
     send_buf = local_x.index_select(0, send_idx).contiguous()
     recv_buf = torch.empty((int(sum(out_split)), d), dtype=local_x.dtype, device=local_x.device)
     dist.all_to_all_single(recv_buf, send_buf, out_split, in_split, group=group)
-
     out = torch.empty_like(local_x)
     out[place_order] = recv_buf
     return out
