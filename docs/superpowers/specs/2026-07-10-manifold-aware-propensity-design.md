@@ -243,6 +243,58 @@ a wrong tangent there. Gated as above.
   real. So we can *observe* flat-approximation failure cheaply, before paying for
   Riemannian machinery.
 
+## Computational realization — one Laplacian, two solvers
+
+The "one metric `g`" principle has a concrete computational payoff: with `g` the
+diffusion / heat-kernel metric (the preferred choice above), **every geometric
+object is a spectral filter `h(L)` of a single graph Laplacian** `L` on the k-NN
+embedding graph — so they share one operator (and one GPU backend, the
+`heat_kernel_cost` CuPy/cuGraph path):
+
+| object | filter `h(L)` |
+|---|---|
+| Layer-3 heat-kernel corruption / metric `g` | `exp(−t L)` |
+| Matérn propensity covariance (Whittle–Matérn SPDE) | `(κ² I − L)^(−ν/2)`, the smoothness `ν` tuning tolerance for sharp anatomical edge cases |
+| geodesic transport / reward | distances under the same `L` |
+
+The dense route — solving `L φ = λ φ` — is the **O(N³) wall**: intractable at a
+100k-patient cohort. Two matrix-free solvers avoid it, and they are **not
+interchangeable**:
+
+- **Chebyshev (default).** Approximate `h(L)` as a matrix polynomial applied to a
+  signal — no eigen-decomposition, **O(non-zero edges) per apply**, linear in the
+  sparse k-NN graph. This covers everything that *applies a filter to data*: the
+  heat/geodesic propensity features, the Layer-3 corruption, and applying the Matérn
+  covariance. It never materializes eigenvectors, so it is strictly the right tool
+  for the propensity and the generator.
+- **Lanczos top-`k` (only when eigen*vectors* are needed).** Chebyshev cannot return
+  the low-frequency **coordinates** themselves. Two cases need them: a truncated
+  Matérn *basis*, and — decisively — **multimodal manifold alignment**, the
+  generalized problem `L_joint f = λ D_joint f` that maps EHR and ICE-imaging
+  features into a shared latent frame. There is no filter-apply shortcut for `f`;
+  use a sparse Lanczos solver for the top-`k` smallest eigenpairs, `O(k · edges)`.
+
+**Two consistency caveats the solvers must respect:**
+
+- **The estimand is defined at `(g, t)`.** Restoring positivity by smoothing is only
+  sound if the smoothing is the **manifold heat-kernel** `exp(−t L)` (smoothing
+  *along* the manifold, surfacing genuine **geodesic near-overlap**), not ambient
+  isotropic diffusion (which *leaves* the manifold and, at large `t`, manufactures
+  overlap between truly-disjoint treated/untreated sheets — silent bias, a diffused
+  effect rather than the causal one). Whatever `(g, t)` defines the propensity's
+  `R`, generation must use the identical `(g, t)`, or the two `R`s diverge. The
+  diffusion time `t` is a *declared* smoothing scale, not a free knob.
+- **Alignment lifts "one `g`" to the joint manifold.** The generalized eigenproblem
+  fuses two metrics into one aligned space, so "one `g`" becomes "one `g` on the
+  *aligned* manifold." The alignment must be computed **before**, and shared by,
+  generation, propensity, **and** the estimand definition — align-then-generate and
+  align-then-score must use the *same* `f`, or the inconsistency this note prevents
+  reappears one level up.
+
+All of the above is paid **only when the decision-rule trigger fires**; Chebyshev
+keeps even the triggered cost linear in graph edges, so the gate is about evidence
+(does the flat approximation fail?), not about affordability.
+
 ## Decision rule — when to go Riemannian
 
 - **Default: flat (ZCA-Euclidean).** ZCA is chosen precisely to flatten toward
