@@ -40,10 +40,28 @@ def test_curved_fires_via_intrinsic_dim():
     s = D.screen(_curved())
     assert s["curved"] and s["flat_approx_fails"]
     assert s["intrinsic_dim"] < 2.6                          # swiss roll is 2D
-    assert s["n_components"] == 1                            # connected
+    assert s["n_components"] == 1 and s["n_sheets"] == 1     # connected, one sheet
 
 
-def test_stratified_fires_via_components():
+def test_disjoint_fires_via_components():
     s = D.screen(_stratified())
     assert s["stratified"] and s["flat_approx_fails"]
-    assert s["n_components"] >= 2                            # disjoint sheets
+    assert s["n_components"] >= 2 and s["n_sheets"] >= 2     # disjoint sheets
+
+
+def _weakly_bridged(n=1500, dim=8, seed=3, n_bridge=20):
+    rng = np.random.default_rng(seed)
+    m = (n - n_bridge) // 2
+    a = rng.standard_normal((m, dim)) * 0.3
+    b = rng.standard_normal((n - n_bridge - m, dim)) * 0.3; b[:, 0] += 8.0
+    br = rng.standard_normal((n_bridge, dim)) * 0.15
+    br[:, 0] = np.linspace(0.5, 7.5, n_bridge)              # thin bridge
+    return np.vstack([a, b, br])
+
+
+def test_eigengap_catches_weakly_bridged():
+    """One connected component but two sheets: exact-count misses it (==1); the
+    eigengap must catch it (>=2) — the whole point of adding the eigengap."""
+    s = D.screen(_weakly_bridged())
+    assert s["n_components"] == 1                            # connected via the bridge
+    assert s["n_sheets"] >= 2 and s["stratified"]            # eigengap fires anyway

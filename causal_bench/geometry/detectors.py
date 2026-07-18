@@ -66,18 +66,31 @@ def geodesic_euclidean_divergence(X, k: int = 12, n_src: int = 80, seed: int = 0
     return growth, frac_finite
 
 
-def spectral_stratification(X, k: int = 12, n_eig: int = 10, tol: float = 1e-6):
-    """STRUCT-S / S2: the number of ~zero eigenvalues of the normalized k-NN
-    Laplacian == the number of connected components (disjoint sheets).  A
-    connected manifold (even a highly curved one) has EXACTLY one zero; `tol` is
-    a true numerical-zero threshold (not the algebraic-connectivity scale).
-    Returns (n_components, gap-to-first-nonzero, eigenvalues)."""
+def spectral_stratification(X, k: int = 12, n_eig: int = 10, tol: float = 1e-6,
+                            gap_sig: float = 4.0):
+    """STRUCT-S / S2 via the eigengap heuristic on the normalized k-NN Laplacian.
+
+    Two counts:
+      * `n_components` = #eigenvalues below `tol` (true numerical zeros) = fully
+        DISCONNECTED sheets.  Misses weakly-bridged sheets (one exact zero, a
+        tiny algebraic-connectivity λ₁, then a jump).
+      * `n_sheets` = the eigengap heuristic (von Luxburg): the largest relative
+        gap `λ_{i+1}/λ_i` in the low spectrum marks the sheet boundary, IF that
+        gap is significant (max gap ≫ median gap).  Catches BOTH clean-disjoint
+        and weakly-bridged; a connected structureless manifold stays at 1.
+    Returns (n_components, n_sheets, gap_significance, eigenvalues)."""
     L = build_knn_laplacian(X, k=k, normalized=True)
     vals, _ = lanczos_smallest(L, k=min(n_eig, X.shape[0] - 1))
     vals = np.sort(np.real(vals))
     n_zero = int(np.sum(vals < tol))
-    first_nz = vals[n_zero] if n_zero < len(vals) else np.inf     # algebraic connectivity
-    return n_zero, float(first_nz), vals
+    # eigengap = largest ADDITIVE gap in the LOW spectrum (sheet boundaries live
+    # there); ratios are avoided because the trivial ~0 eigenvalue blows them up.
+    d_all = np.diff(vals)
+    win = d_all[:min(6, len(d_all))]               # low-spectrum gaps only
+    kstar = int(np.argmax(win)) + 1                # #eigenvalues before the largest gap
+    sig = float(win.max() / (np.median(np.abs(d_all)) + 1e-12))   # vs typical gap
+    n_sheets = kstar if sig > gap_sig else 1
+    return n_zero, n_sheets, sig, vals
 
 
 def screen(X, ambient_dim=None, k: int = 12):
@@ -86,17 +99,17 @@ def screen(X, ambient_dim=None, k: int = 12):
         ambient_dim = X.shape[1]
     d_hat, mu_spread = local_intrinsic_dim(X)
     geo_growth, geo_frac_finite = geodesic_euclidean_divergence(X, k=k)
-    n_comp, connectivity, _ = spectral_stratification(X, k=k)
+    n_comp, n_sheets, gap_sig, _ = spectral_stratification(X, k=k)
     # GATES (robust): curved = intrinsic dim materially below ambient;
-    # stratified = >1 connected component. geodesic growth is a reported
-    # diagnostic (it corroborates curvature but is noisy in high-D, so it does
-    # not gate). NaN geodesic (disjoint sheets) is itself a stratification hint.
+    # stratified = >1 sheet via the eigengap heuristic (catches clean-disjoint AND
+    # weakly-bridged; a connected structureless manifold stays at 1). geodesic
+    # growth is a reported diagnostic only (noisy in high-D).
     curved = d_hat < 0.85 * ambient_dim
-    stratified = n_comp >= 2
+    stratified = n_sheets >= 2
     return dict(
         intrinsic_dim=d_hat, ambient_dim=float(ambient_dim), mu_spread=mu_spread,
         geodesic_growth=geo_growth, geodesic_frac_finite=geo_frac_finite,
-        n_components=n_comp, algebraic_connectivity=connectivity,
+        n_components=n_comp, n_sheets=n_sheets, gap_significance=gap_sig,
         curved=bool(curved), stratified=bool(stratified),
         flat_approx_fails=bool(curved or stratified),
     )
