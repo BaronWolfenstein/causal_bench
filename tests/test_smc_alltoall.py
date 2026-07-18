@@ -27,6 +27,30 @@ def test_all_to_all_equals_serial(world, N):
     assert np.array_equal(serial, dist)
 
 
+def test_dedup_mapping_reconstructs_resample():
+    """Ancestor-index indirection: fetching each UNIQUE ancestor once and
+    replicating locally (unique + searchsorted) reconstructs full_x[idx] exactly
+    — including the degeneracy regime where one survivor is duplicated massively."""
+    world, N = 4, 4096
+    Nl = N // world
+    full_x = np.random.default_rng(2).standard_normal((N, 3))
+    w = np.full(N, 1e-9); w[0] = 1.0                      # peaked -> one survivor
+    idx = systematic_resample(w / w.sum(), np.random.default_rng(7))
+    out = np.empty_like(full_x)
+    for r in range(world):
+        A_r = idx[r * Nl:(r + 1) * Nl]; owner = A_r // Nl
+        uniq = [np.unique(A_r[owner == s]) for s in range(world)]
+        recv = np.concatenate([full_x[u] for u in uniq], axis=0)   # unique rows only
+        off = np.concatenate([[0], np.cumsum([len(u) for u in uniq])])[:-1]
+        sl = np.empty((Nl, 3))
+        for s in range(world):
+            m = owner == s
+            sl[m] = recv[off[s] + np.searchsorted(uniq[s], A_r[m])]
+        out[r * Nl:(r + 1) * Nl] = sl
+    assert np.array_equal(out, full_x[idx])
+    assert sum(len(np.unique(idx[r*Nl:(r+1)*Nl])) for r in range(world)) < N   # fewer rows moved
+
+
 def test_plan_splits_are_consistent():
     """Every row sent by some rank is received by exactly one rank: the global
     send matrix is the transpose of the receive matrix."""

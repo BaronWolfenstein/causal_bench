@@ -55,6 +55,32 @@ def main() -> None:
                   f"gpu-plan:{'OK' if oks['gpu'] else 'X'}   ESS={ess:.1f}")
         assert oks["cpu"] and oks["gpu"]
 
+    # ---- ancestor-index indirection (§1d): dedup == serial + comm savings ----
+    # Degeneracy regime: one survivor takes ~all the weight -> resample duplicates
+    # it massively -> dedup ships it once instead of N times.
+    N = world * 4096; Nl, d = N // world, 8
+    g = np.random.default_rng(args.seed)
+    full_x = g.standard_normal((N, d)).astype(np.float32)
+    w = np.full(N, 1e-9); w[0] = 1.0; w /= w.sum()               # peaked -> 1 survivor
+    serial = full_x[systematic_resample(w / w.sum(), np.random.default_rng(args.seed))]
+    lx = torch.as_tensor(full_x[rank*Nl:(rank+1)*Nl], device=dev)
+    lw = torch.as_tensor(w[rank*Nl:(rank+1)*Nl], device=dev, dtype=torch.float32)
+    out_d = all_to_all_resample(lx, lw, args.seed, rank, world, dedup=True).cpu().numpy()
+    out_n = all_to_all_resample(lx, lw, args.seed, rank, world, dedup=False).cpu().numpy()
+    ref = serial[rank*Nl:(rank+1)*Nl]
+    okd = np.array_equal(out_d, ref) and np.array_equal(out_n, ref)
+    # rows this rank RECEIVES: dedup = #unique ancestors it needs; naive = Nl
+    idx = systematic_resample(w / w.sum(), np.random.default_rng(args.seed))
+    A_me = idx[rank*Nl:(rank+1)*Nl]
+    dedup_rows = len(np.unique(A_me)); naive_rows = Nl
+    tot = torch.tensor([dedup_rows, naive_rows], device=dev); dist.all_reduce(tot)
+    flag = torch.tensor([1 if okd else 0], device=dev); dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+    if rank == 0:
+        print(f"[dedup] degeneracy N={N}: dedup==naive==serial: "
+              f"{'OK' if int(flag)==1 else 'X'}   rows moved dedup={int(tot[0])} "
+              f"vs naive={int(tot[1])}  ({int(tot[1])/max(int(tot[0]),1):.0f}x less)")
+    assert int(flag) == 1
+
     # ---- NVLink throughput profile (§1d): cpu-plan vs gpu-plan ---------------
     def bench(local_x, local_w, plan):
         for _ in range(2):
