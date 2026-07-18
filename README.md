@@ -2,7 +2,7 @@
 
 Monte Carlo benchmarking of causal estimators for clinical trials with survival outcomes.
 
-Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 36 experiments.
+Generates synthetic randomized and observational trial data under controlled assumption violations — informative censoring, positivity violations, unmeasured confounding, time-varying post-treatment confounders, treatment crossover, enrollment drift, competing risks, and stratified randomization — then measures each estimator's bias, RMSE, coverage, and SE calibration across 38 experiments.
 
 The core finding: the "right" estimator depends entirely on what's wrong with your data. This framework makes that concrete.
 
@@ -103,7 +103,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 
 ---
 
-## Experiments (36)
+## Experiments (38)
 
 | Script | Swept parameter | Key story | Estimators |
 |--------|-----------------|-----------|------------|
@@ -133,6 +133,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp19_hierarchical_oc.py` | Hierarchical borrowing operating characteristics |
 | `exp20_tipping_point_borrowing.py` | Tipping-point sweep × borrowing strength |
 | `exp21_hte_subgroup.py` | HTE subgroup benchmark — EffectXShift CV-TMLE vs BCF/BART posterior tree |
+| `exp22_mbias_sensitivity.py` | M-bias sensitivity — adjusting for a pre-treatment **collider** *introduces* bias (coverage → 0); collider-aware backdoor set stays unbiased. Estimand-side handling of the zero-flow-CI collider caveat |
 | `exp24_site_clustering.py` | Site clustering in registry comparator — undercoverage demonstration |
 | `exp25_ordinal_pro.py` | Win ratio vs Bayesian CLMM on ordinal PROs — efficiency & coverage under PO violation |
 | `exp26_user_sim_detection.py` | Exogenous-shock detection in a user simulator |
@@ -144,6 +145,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp32_clever_covariate_me.py` | Σ_x measurement error propagated into the TMLE clever covariate |
 | `exp33_donsker_learners.py` | Do Donsker-class learners license AIPW/TMLE without cross-fitting? |
 | `exp33b_donsker_nuisance_tmle.py` | TMLE+IPCW with Donsker-class nuisance learners (phase-2 wiring) |
+| `exp36_three_level_fidelity.py` | Two-vs-three-level OC fidelity (#40): conjugate two-level kernel (drops between-subgroup τ) vs three-level BHM via MCMC (PyMC + NumPyro/JAX). Shows the conjugate approximation is anti-conservative under heterogeneity. `--dgp exp19` runs on exp19's real registry DGP. **Requires the 3.12 `[bayes]`+`[bayes-gpu]` stack** |
 | `exp37_compounding_shift.py` | Compounding covariate shift — unmeasured confounding × enrollment drift |
 | `exp38_frozen_model_shift.py` | Positivity/propensity under train-vs-deploy covariate shift |
 | `exp39_zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery |
@@ -157,18 +159,30 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 |-----------------|-----------|
 | `causal_bench/diagnostics/localization.py` | Rare-detail localization decision procedure (Tests A/B/B′/B″/C) for the synthetic-control-arm architecture; CPU-only. Demo: `experiments/demo_localization.py` |
 | `causal_bench/sampling/` | Twisted-diffusion SMC core with IPCW survival-weight bookkeeping (numpy, CPU-first; multi-GPU port specced in the A100 deployment spec). Demo: `experiments/demo_smc_ipcw.py` |
-| `causal_bench/detectors/zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery (numpy/sklearn, no torch) |
+| `causal_bench/detectors/zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery (numpy/sklearn, no torch). Note the collider caveat: the MB includes collider-induced spouses and the CI oracle is *fooled* by a collider in the conditioning set, so the MB is never an adjustment set — see `exp22_mbias_sensitivity.py` |
+| `causal_bench/diagnostics/struct_s.py` | STRUCT-S stratification battery — S1 event-aligned displacement bimodality (decisive; size-invariant Z-Dip principle), S2 spectral eigengap, S3 local intrinsic dimension, S4 MST density gap. Flags whether an embedding is stratified / event-jump-structured before geometry-aware modelling. CPU. Demo: `experiments/demo_struct_s.py` |
+| `causal_bench/generative/tangent_dsm.py` | Tangent-space-penalty DSM + gap-sampler on synthetic curved manifolds (arc R², Swiss roll R³, helix R³ codim-2) with learned-metric (local-PCA) normals — closed-form, numpy-only. Cuts gap-region off-manifold error ~70–90% vs plain DSM. Demo: `experiments/demo_tangent_dsm.py` |
+| `causal_bench/generative/score_net.py`, `checkpoint.py` | Torch DDPM score net (diffuse_directly T8) + training checkpoints (save/load/resume/rollback; cross-device-safe). Device-agnostic (`resolve_device` cuda→mps→cpu); `[gpu]` extra, lazy-imported |
+| `causal_bench/estimators/three_level_bhm.py` | Three-level BHM (PyMC + NumPyro/JAX) + two-vs-three-level OC fidelity harness (#40, exp36). `[bayes]`+`[bayes-gpu]`, 3.12-only |
+| `causal_bench/diagnostics/tree_reconstruction.py` | Broadcasting-on-trees reconstruction (Sclocchi–Favero–Wyart / Kesten–Stigum): magnetization order parameter, susceptibility, linear-stability multiplier `b·λ²`; q-ary Potts + KS-vs-reconstruction gap; D3PM large-K note. numpy, exact belief propagation (no torch) |
+| `causal_bench/diagnostics/rhm_grammar.py` | Random Hierarchy Model grammar + exact rule-BP — the canonical SFW class-overlap phase transition (#131): FSS collapse + exponent (#136), density-evolution threshold, structured / grammar-aligned (product-grammar) corruption channels (#138). numpy |
+| `causal_bench/diagnostics/hierarchy_probe.py` | Gaussian multiscale **crossover** probe (phenomenological, honestly *not* BP): coarse/fine MAP-recovery transition along the VP-SDE — the embedding-channel diagnostic used where no discrete grammar is available |
+| `causal_bench/diagnostics/theta_time_map.py` | θ ↔ VP-SDE-time mapping (#137): token channel (closed-form `θ = alpha_bar(t)`) vs frozen-encoder embedding channel; class-overlap order parameters (nearest-class-mean + linear-probe posterior) |
+| `causal_bench/diagnostics/borrowing_informativeness.py` | Per-level identifiability report → manual hierarchical-borrowing `tau_sd` suggestions (#137): embedding `t_star` map + correctly-signed canonical decode-accuracy map (#144). Informs, does **not** set shrinkage (that stays the hierarchical fit's job) |
+| `causal_bench/dgp/joint_hierarchy.py` | Joint hierarchical DGP (#144 prereq): product-grammar identifiability (exact rule-BP thresholds) + per-level effect heterogeneity + coupling knob + BP-decoded subgroup labels at working corruption θ₀. numpy |
+| `causal_bench/validation/rct_blinding.py` | RCT-blinding validation of the OC-sim / synthetic comparator (#139): does the counterfactual control branch recover a held-out RCT's effect / survival curves? Flags naive or unmeasured-confounded comparators. Generator-agnostic, numpy |
 
-**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 35 distinct numbers → 36 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
+**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 37 distinct numbers → 38 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
 
 | Number | Status |
 |--------|--------|
-| exp22 | Immortal-time-bias honest-null — design-level, unbuilt (#21) |
-| exp23 | Unassigned gap |
+| exp22 | **Built** — M-bias sensitivity (`exp22_mbias_sensitivity.py`, #104) |
+| exp23 | Immortal-time-bias honest-null — design-level, unbuilt (#21; renumbered from exp22) |
 | exp34 | Pooled-Q subgroup event rates for single-arm ENCIRCLE — candidate, unbuilt (#77) |
 | exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
-| exp36 | Released — #73 was renamed off this slot (z_anatomy embedding-diagnostics substrate) |
+| exp36 | **Built** — two-vs-three-level OC fidelity (`exp36_three_level_fidelity.py`, #40); reclaimed from the released z_anatomy slot (#73 dropped its exp number) |
 | exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |
+| exp41 | Borrowing calibration — identifiability-set `tau_sd` Type-I/power on the joint DGP with BP-decoded labels (#144); specced, unbuilt |
 
 ---
 

@@ -1,0 +1,199 @@
+%% ENCIRCLE synthetic-control-arm (SCA) architecture — in-repo refresh of the
+%% ~/Downloads/encircle_sca_architecture.mermaid. Structure preserved; the parts
+%% touched by this session's build are updated: the TWIST node now reflects the
+%% BUILT twisted-SMC (make_twist / run_twisted_smc / annealed β_t / distributed LSE —
+%% see 2026-07-10-twisted-smc-architecture.mermaid) with the two unverifiable
+%% citations removed; the #88 guard is complete across ALL fidelity gates; the
+%% generative core is marked built. Gated design axes are a DASHED design-only
+%% pointer (see 2026-07-10-geometry-discreteness-axes.mermaid), not integrated.
+flowchart TD
+    %% DESIGN FACT: ENCIRCLE is single-arm vs a 45% performance goal. TVT registry
+    %% + synthetic augmentation is the ENTIRE comparator. No real patient-level OMT
+    %% control arm exists anywhere in this pipeline.
+    TVT["TVT Registry — TAVR cohort (longitudinal EHR)\nsource of the COMPARATOR (real + synthetic)"]
+    ENCIRCLE["ENCIRCLE trial — TMVR (SAPIEN M3)\nSINGLE-ARM, treated-only, vs 45% performance goal\n— contributes TREATED patients, NOT a comparator"]
+
+    subgraph STRUCT["Stage 0 — Trajectory-Structure Screen (STRUCT gate)"]
+        direction TB
+        SSCAN["Statistical screen on MEDS sequences\ncorrelation decay C(2); conditional entropy H(next|k); MDL\nontology held fixed — measures composition, not taxonomy depth"]
+        SCTRL["Negative controls (mandatory)\ntime-shuffled + code-permuted; real must separate"]
+        SGATE{"Structure present?\nreal curves != shuffled controls"}
+        SSCAN --> SCTRL --> SGATE
+    end
+    SFALL["Fallback: flat / non-hierarchical comparator\n(no depth-tuned architecture licensed)"]
+
+    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB JEPA)"]
+        direction LR
+        JEPA["JEPA EHR World Model (frozen)\nSMB-v1-1.7B-Structure"]
+        SIGEPS["Σ_ε (encoder-side): MC-dropout K passes\nper-patient embedding covariance → versioned artifact"]
+    end
+
+    subgraph SIGREG["Embedding-Geometry Pre-processing"]
+        direction TB
+        ZCA["ZCA whitening (always) — invertible, AUC-preserving\n(BUILT: generative/whiten.py)"]
+        EP["SIGReg (Epps-Pulley on random projections — Gaussianity)"]
+        SEP1["Separation check — logistic AUC rare vs common (must match pre-ZCA)"]
+        GCHECK{"~ isotropic Gaussian?"}
+        SPROJ["SIGReg projection head (only if non-Gaussian)"]
+        SEP2["Separation check after projection (revert if AUC degrades)"]
+        LSPACE["Z_ready (ZCA default, or projection if Gaussian AND AUC preserved)"]
+        ZCA --> EP
+        ZCA --> SEP1
+        EP --> GCHECK
+        SEP1 --> GCHECK
+        GCHECK -->|"Gaussian"| LSPACE
+        GCHECK -->|"non-Gaussian — try projection"| SPROJ
+        SPROJ --> SEP2
+        SEP2 -->|"AUC preserved / degrades→revert"| LSPACE
+    end
+
+    subgraph LATENT["Layer 2 — Latent Space + localization diagnostic"]
+        direction TB
+        Z_TVT["Z_TVT — TAVR embeddings"]
+        Z_TMVR["Z_TMVR — TMVR embeddings"]
+        POS["Positivity diagnostic — Kish ESS map identifies sparse region R"]
+        LOC["RARE-DETAIL LOCALIZATION DIAGNOSTIC (run_diagnostic)\nA/B/B'/B''/C decision tree → terminal\n(see 2026-07-10-localization-diagnostic.mermaid)"]
+        LOCGATE{"Where is rare detail lost?\n= terminal"}
+        Z_TVT --> LOC
+        Z_TMVR --> LOC
+        LOC --> LOCGATE
+    end
+
+    subgraph GEN["Layer 3 — Latent Diffusion (arch set by the diagnostic terminal)"]
+        direction TB
+        DIFF_Z["diffuse_directly — score diffusion on Z_ready\n(BUILT: generative/{vpsde,roundtrip}.py; analytic score CPU-validated)"]
+        DIFF_TAIL["tail_aware — 1/p(z) importance-weighted training\n(BUILT: generative/tail_aware.py)"]
+        DIFF_LAT["separate_latent_justified — learned latent Z' (round-trip gated)"]
+        CFG["CFG guidance (default; biased far from mass)\ngated by Test B'' landing; scale tunable/annealed\n(BUILT: generative/{guidance,calibrate}.py)"]
+        TWIST["smc_required → TWISTED-DIFFUSION SMC (BUILT)\ninference-time twist SAMPLER steers particles into R.\nmake_twist: analytic-vs-learned score_fn gate + Tweedie reward\n+ tempered/bounded + annealed β_t; run_twisted_smc telescoping.\n(Wu et al. 2023 TDS; see twisted-SMC architecture diagram)"]
+        ESS_SMC["ESS / resample — Kish (Σw)²/Σw²; should_resample ESS < ess_frac·N\nmulti-GPU: island resampling + two-scalar distributed LSE (A100-gated)"]
+        DIFF_Z --> CFG
+        DIFF_TAIL --> CFG
+        DIFF_LAT --> CFG
+        CFG -->|"landing passes: bare CFG suffices"| ESS_SMC
+        CFG -->|"landing fails: smc_required"| TWIST
+        TWIST --> ESS_SMC
+        ESS_SMC -->|"resample when ESS < ess_frac·N"| TWIST
+    end
+
+    LOCGATE -->|"encoder-bound (AUC poor at Z)"| SCOPE["BOUND SCOPE — rare region under-resolved by encoder"]
+    LOCGATE -->|"training imbalance"| DIFF_TAIL
+    LOCGATE -->|"Z good, direct diffusion fine"| DIFF_Z
+    LOCGATE -->|"latent geometry (least likely)"| DIFF_LAT
+
+    SYNTH["Synthetic TVT-comparable patients in R (Z* → decoded)"]
+    AUG["Augmented dataset — observed TVT + synthetic (provenance-tagged)"]
+    ESS_SMC --> SYNTH
+    SYNTH --> AUG
+
+    AUGNOTE["PRIMARY vs VALIDATION split (borrowing-spec §9):\nPrimary estimand = REAL TVT external control + borrowing (real patients only).\nSynthetic augmentation = positivity/robustness instrument, NOT primary evidence.\nAUG→BENCH is validation; AUG→FCI/TMLE stays REAL-only unless the OC Type-I sim\nruns augmentation→estimation→borrowing END-TO-END."]
+    AUG -.-> AUGNOTE
+
+    subgraph EST["Layer 4 — Causal Estimation"]
+        direction TB
+        FCI["FCI causal discovery → adjustment set S"]
+        TMLE["concrete::doConcrete — continuous-time TMLE, competing risks\nICH E9(R1) treatment-policy estimand"]
+        HAL["HAL nuisance — propensity + cause-specific hazards (proper scoring)"]
+        EIC["EIC convergence diagnostics"]
+        SIM["simultaneous family — Gaussian multiplier bootstrap (crit ~2.67)"]
+    end
+
+    subgraph VAL["Layer 5 — Validation"]
+        direction TB
+        BENCH["estimator suite — bias · SE · per-estimand coverage"]
+        SIMCOV["Exp12 — simultaneous coverage + fold-aware CV under augmentation"]
+        NULL["Exp3 honest null — all fail under unmeasured confounding"]
+        RIPPIN["estimand-alignment sensitivity (TMVR vs TAVR SoC)"]
+        RTRIP["ROUND-TRIP VALIDATOR (separate-latent path only)"]
+        LAND["TWIST-LANDING CHECK (always) — decoded Z* land in R"]
+        EVAL_ENC["#88 DECOUPLED-EVAL GUARD — E_eval != E_gen (Van Assel 2606.00514)\nrender to MEDS via ELF final-step → re-encode in E_eval;\nmetric_hacking_flag NOW ON ALL FIDELITY GATES: B/B'/C recon\nAND the B'' landing gate (_landing_test). Not Test A."]
+    end
+
+    OUT["CMS evidence package — simultaneous bands, ICH E9(R1) estimand report\n+ explicit scope: single-arm vs 45% PG; TVT + synthetic = ENTIRE comparator"]
+
+    %% Data flow
+    TVT --> SSCAN
+    ENCIRCLE --> SSCAN
+    SGATE -->|"pass — hierarchy confirmed"| JEPA
+    SGATE -->|"fail — premise rejected"| SFALL
+    JEPA --> ZCA
+    LSPACE --> Z_TVT
+    LSPACE --> Z_TMVR
+    Z_TVT --> POS
+    Z_TMVR --> POS
+    POS -->|"flags sparse region R"| TWIST
+    POS -->|"defines R for landing check"| LAND
+    TVT --> AUG
+    AUG --> FCI
+    Z_TVT --> HAL
+    Z_TMVR --> HAL
+    FCI -->|"adjustment set S"| TMLE
+    HAL --> TMLE
+    TMLE --> EIC
+    TMLE --> SIM
+    AUG --> BENCH
+    BENCH --> SIMCOV
+    BENCH --> NULL
+    BENCH --> RIPPIN
+    DIFF_LAT -.->|"validate before trusting samples"| RTRIP
+    SYNTH --> LAND
+    SIM --> OUT
+    SIMCOV --> OUT
+    NULL -->|"bounds scope"| OUT
+    RIPPIN -->|"sensitivity bounds"| OUT
+    RTRIP -.->|"re-check fidelity in E_eval"| EVAL_ENC
+    LAND -.->|"re-check landing in E_eval"| EVAL_ENC
+    RTRIP -->|"gate: pass before use"| OUT
+    LAND -->|"gate: pass before use"| OUT
+    EVAL_ENC -->|"decoupled gate: pass before use"| OUT
+    SCOPE -->|"scope limitation"| OUT
+
+    %% ESS disambiguation
+    POS -. "same Kish formula (positivity map ↔ particle weights)" .-> ESS_SMC
+    ESSNOTE["ESS ≠ ESS ≠ ESS (3 objects, same name):\nKish particle/positivity ESS (here); Morita-Thall-Müller prior-ESS (borrowing);\nMCMC bulk/tail-ESS (3-level OC fits — tail-ESS load-bearing, Type I = tail event)."]
+    ESS_SMC -.-> ESSNOTE
+
+    %% Adjustment-set collider caveat (zero_flow_ci / Markov-blanket)
+    SNOTE["COLLIDER CAVEAT on S: adjustment set S ≠ Markov blanket.\nA CI oracle (zero_flow_ci) DETECTS colliders (v-structure: X⟂Y, X⟂̸Y|C)\nand is FOOLED by them (collider/descendant in Z opens the path → spurious\ndependence). MB includes collider-induced spouses by construction. So S is\nchosen by FCI backdoor-validity (colliders + descendants EXCLUDED) restricted\nto PRE-TREATMENT covariates (ICH E9(R1)); MB feeds discovery, never selection.\nM-bias (adjust-and-still-open) carried as sensitivity: exp22."]
+    FCI -.-> SNOTE
+
+    %% Measurement-error hand-offs (encoder repo → causal_bench)
+    JEPA -.-> SIGEPS
+    SIGEPS -.->|"Σ_ε artifact"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε"]
+    HAL -.->|"noisy anatomical covariates"| COVME["Covariate measurement-error sensitivity (causal_bench)\nΣ_x; regression calibration / SIMEX → residual-confounding readout"]
+
+    %% GATED design axes — design-only pointer, NOT built, NOT on the primary path
+    AXES["GATED DESIGN AXES (design-only — nothing built)\ngeometry (Riemannian TDS + manifold propensity) &\ndiscreteness (jump-diffusion; ICEs = jump markers).\nAdopt only when a detector fires (curvature / STRUCT-S), same state\nspace both sides. See 2026-07-10-geometry-discreteness-axes.mermaid."]
+    LOC -.->|"future axes (gated)"| AXES
+    TWIST -.->|"metric-aware reward if Riemannian (gated)"| AXES
+
+    %% Styling
+    classDef data fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef encoder fill:#ede9fe,stroke:#7c3aed,color:#2e1065
+    classDef sigreg fill:#fff1f2,stroke:#e11d48,color:#881337
+    classDef structgate fill:#fef2f2,stroke:#b91c1c,color:#7f1d1d,stroke-width:2px,stroke-dasharray: 4 2
+    classDef latent fill:#f0fdf4,stroke:#16a34a,color:#14532d
+    classDef generative fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+    classDef estimation fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef validation fill:#fdf2f8,stroke:#a21caf,color:#4a044e
+    classDef output fill:#f0f9ff,stroke:#0284c7,color:#082f49
+    classDef gate fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+    classDef encoderrepo fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-dasharray: 3 2
+    classDef causalrepo fill:#fef9c3,stroke:#ca8a04,color:#713f12,stroke-dasharray: 3 2
+    classDef annotation fill:#f8fafc,stroke:#64748b,color:#0f172a,stroke-dasharray: 2 2
+    classDef gated fill:#fff3cd,stroke:#d39e00,color:#222,stroke-dasharray: 4 2
+
+    class TVT,ENCIRCLE data
+    class SSCAN,SCTRL,SGATE,SFALL structgate
+    class JEPA encoder
+    class EP,GCHECK,SPROJ,LSPACE,ZCA,SEP1,SEP2 sigreg
+    class Z_TVT,Z_TMVR,POS,LOC latent
+    class DIFF_Z,DIFF_TAIL,DIFF_LAT,CFG,TWIST,ESS_SMC,SYNTH generative
+    class FCI,TMLE,HAL,EIC,SIM,AUG estimation
+    class BENCH,SIMCOV,NULL,RIPPIN,RTRIP,LAND,EVAL_ENC validation
+    class OUT output
+    class LOCGATE,SCOPE gate
+    class SIGEPS encoderrepo
+    class MESENS,COVME causalrepo
+    class ESSNOTE,AUGNOTE,SNOTE annotation
+    class AXES gated

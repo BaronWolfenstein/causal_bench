@@ -47,3 +47,27 @@ def island_resample(w: np.ndarray, k: int, seed: int) -> np.ndarray:
         local_idx = systematic_resample(local_w, rng)   # indices into the local slice
         out.append(b[local_idx])                         # map local -> global
     return np.concatenate(out)
+
+
+def sharded_logsumexp(shards) -> float:
+    """CPU simulation of the two-scalar distributed log-sum-exp over log-weights
+    sharded across k ranks. The numerically-stable cross-rank reduction is:
+
+        global_max = MAX over ranks of local_max          # all_reduce(op=MAX)
+        global_sum = SUM over ranks of sum(exp(local - global_max))  # all_reduce(op=SUM)
+        lse        = global_max + log(global_sum)
+
+    Subtracting the GLOBAL max before exponentiating is what keeps it overflow-free
+    (the distributed analogue of `weights.normalize_log_weights`). Two scalar
+    all-reduces suffice, so this folds into the ESS-reduction barrier the SMC step
+    already has. Returns a value equal (to fp tolerance) to the serial
+    `logsumexp` over the concatenation — the distributed==serial invariant the
+    on-box NCCL `all_reduce(MAX)` + `all_reduce(SUM)` must reproduce.
+    """
+    local_maxes = [float(np.max(s)) if len(s) else -np.inf for s in shards]
+    global_max = max(local_maxes)
+    if not np.isfinite(global_max):
+        return float(global_max)                     # all -inf collapse (or +inf leak)
+    total = sum(float(np.exp(np.asarray(s, dtype=float) - global_max).sum())
+                for s in shards)
+    return float(global_max + np.log(total))

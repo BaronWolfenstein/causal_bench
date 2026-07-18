@@ -1,4 +1,4 @@
-# diffuse_directly Implementation Plan (deferred; gated on the localization terminal)
+# diffuse_directly Implementation Plan (core + CPU-torch buildable now; architecture + real run gated on the localization terminal)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Do not start this plan until the localization diagnostic returns `diffuse_directly` (or `tail_aware`) on real embeddings.** It is architecturally downstream of Step 1: the diagnostic decides whether a separate latent is needed at all. Building the generator ahead of that verdict is out of order.
+- **Gate (refined 2026-07-09, see `docs/superpowers/specs/2026-07-09-diffuse-directly-refinement-design.md` Decision 5):** two layers. **Buildable now (verdict-independent, CPU-validatable on the stand-in encoder):** the numpy core (Tasks 1–7), the CPU-torch score net (Task 8, via `importorskip`), and the ELF render / #88 bridge (Task 9). **Gated on the real-embedding localization verdict:** the architectural commitment (whether a separate latent is warranted — the diagnostic's job) and the real MOTOR/CLMBR + A100 run. Build and CPU-validate the machinery ahead of the verdict; do not commit the architecture or run the real encoder until the diagnostic returns `diffuse_directly`/`tail_aware`.
 - Python `>=3.11`; **numpy/scipy/sklearn only** for the core — torch is deferred and optional.
 - Additive package `causal_bench/generative/`; the only cross-module contract is that it emits arrays matching `run_diagnostic`'s inputs: `recon_b=(rare_recon, common_recon)`, `rare_guided`, `common_ref`.
 - Two representation spaces are a *design axis*, not a default (see #87): generate/decode in reconstruction space, optionally match in a semantic space; keep the evaluation encoder decoupled (#88).
@@ -687,6 +687,8 @@ git commit -m "feat(generative): torch score net (eps-pred, tail-aware, importor
 
 The ELF final-step: a generated embedding is projected to the nearest codebook entry (shared-weight discretization), decoded to raw features, then re-encoded by the DECOUPLED `E_eval`. This is the render→re-encode bridge that makes the Tier-2 #88 guard real — and it works entirely on stand-in encoders.
 
+**Refinement Decision 2 (2026-07-09) — complete the guard across ALL gates.** `run_diagnostic` already consumes decoupled-`E_eval` arrays for every fidelity gate (`recon_b_eval`, `recon_b_prime_eval`, `recon_c_eval`, and `rare_guided_eval`/`common_ref_eval` for the B″ twist-landing) and raises `metric_hacking_flag` on each — the consumer side is done. So `eval_space_inputs(...)` must emit **all five** eval-space arrays (not just `recon_b_eval`), and this task must add tests asserting `metric_hacking_flag` fires on **Test B′ and the B″ landing gate**, not only Test B, so the guard is real end-to-end.
+
 - [ ] **Step 1: Failing test** — a reconstruction that is faithful in `E_gen` but collapses after render→re-encode through `E_eval` raises `metric_hacking_flag` in `run_diagnostic`.
 
 ```python
@@ -777,12 +779,13 @@ git commit -m "feat(generative): ELF render->re-encode + #88 guard, MOTOR-free"
 
 ## Remaining deferred (own plans; genuinely gated)
 
-1. **Two-space matching (#87).** Optional Sinkhorn-divergence matching loss in a *semantic* space distinct from the decode space; feature-family selection by matching stability. Design axis — gate on the diagnostic verdict.
-2. **Real MOTOR/CLMBR pipeline.** The Lambda GPU script: swap `RandomProjectionEncoder` for the frozen EHR encoder behind the same `FrozenEncoder` signature; render real MEDS tokens. Only this step needs the real model/GPU — everything above (torch net included, via CPU-torch) runs without it.
+1. **Two-space matching (#87) — training objective only** (refinement Decision 3). The paper's *validation correction* (decoupled `E_eval`) is already delivered by the Task 9 render→re-encode guard, so only the two-space **Sinkhorn matching training loss** in a semantic space remains deferred — a training-space change with no near-term need, warranted only if matching stability becomes an observed problem. (A CPU Sinkhorn/GW OT engine now lives in the SGA repo, `agent_graph.spectral.transport`, if a matching loss is ever wired here.)
+2. **Dispersive loss (refinement Decision 4) — cheap anti-collapse regularizer, reached for only on observed collapse.** A training-time regularizer countering representation collapse (embeddings condensing into a narrow cone → mode collapse / poor rare-region coverage). Given a batch of representations `{h_i}`, it adds a **repulsion term** penalizing over-similarity — an InfoNCE-style loss with **no positive pairs**, only the repulsive denominator (e.g. penalize `log Σ_{i≠j} exp(−‖h_i − h_j‖²/τ)`). Self-contained: **no external data, no labels, no pretrained reference encoder** (its advantage over REPA), just the model's own batch activations — one extra loss term. Origin: "Diffuse-and-Disperse" (image diffusion) / "LM-Dispersion" (autoregressive LMs; the cross-modality transfer is the de-risking evidence). Relevant because condensation is exactly the SCA's support-risk / rare-region-coverage failure. **Try only IF `diffuse_directly` synthetic patients show diversity/coverage collapse — not preemptively** (reported gains are modest, "hard to separate from noise"); orthogonal to the estimator and to inference-time guidance (CFG / twisted-SMC).
+3. **Real MOTOR/CLMBR pipeline.** The Lambda GPU script: swap `RandomProjectionEncoder` for the frozen EHR encoder behind the same `FrozenEncoder` signature; render real MEDS tokens. Only this step needs the real model/GPU — everything above (torch net included, via CPU-torch) runs without it.
 
 ## Self-Review
 
-**Spec coverage:** ZCA invertible+AUC-preserving (T1), VP-SDE forward/score/Tweedie/reverse (T2), round-trip emitting recon arrays (T3), tail-aware 1/p(z) Test-B′ fix (T4), CFG rare_guided (T5), end-to-end into `run_diagnostic` (T6); torch net / two-space / ELF+E_eval / real-encoder deferred. Every CPU-validatable piece of the generator is tasked; the gate (diagnostic terminal first) is stated up front. ✅
+**Spec coverage:** ZCA invertible+AUC-preserving (T1), VP-SDE forward/score/Tweedie/reverse (T2), round-trip emitting recon arrays (T3), tail-aware 1/p(z) Test-B′ fix (T4), CFG rare_guided (T5), end-to-end into `run_diagnostic` (T6), stand-in frozen encoder (T7), CPU-torch score net (T8), ELF render / #88 bridge (T9) — all CPU-validatable on the stand-in encoder. Genuinely deferred/gated: the two-space Sinkhorn **training** loss (#87), dispersive loss, the architectural commitment (separate latent?), and the real MOTOR/CLMBR + A100 run. Per refinement Decision 5 the gate is **two-layer** — the machinery (T1–T9) is buildable now; only the architecture commitment and the real-encoder run wait on the localization verdict — stated up front in Global Constraints. ✅
 
 **Placeholder scan:** real numpy in every step; deferred items are explicitly scoped, not hand-waved inside core tasks. ✅
 

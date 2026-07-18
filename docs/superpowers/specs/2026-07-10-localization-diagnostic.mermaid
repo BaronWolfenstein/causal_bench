@@ -1,0 +1,47 @@
+%% Localization diagnostic — the run_diagnostic decision procedure (Tests A/B/B'/B''/C).
+%% Reflects causal_bench/diagnostics/localization.py, incl. the #88 metric-hacking
+%% guard now COMPLETE across ALL fidelity gates: B/B'/C reconstruction AND the B''
+%% CFG-landing gate (via _landing_test, gen-vs-eval). Terminals + pending_* as coded.
+%% blue = test, green = terminal, grey = pending, red = #88 guard, purple = SMC.
+flowchart TD
+    classDef test fill:#cce5ff,stroke:#004085,color:#222
+    classDef term fill:#d4edda,stroke:#28a745,color:#222
+    classDef pend fill:#e2e3e5,stroke:#6c757d,color:#222
+    classDef guard fill:#f8d7da,stroke:#721c24,color:#222
+    classDef smc fill:#e2d4f0,stroke:#6f42c1,color:#222
+
+    START(["run_diagnostic(rare_emb, common_emb, recon_*, rare_guided, ..., *_eval)"])
+    START --> TA
+
+    TA["TEST A — encoder capacity\nclassifier rare-vs-common in embedding space; ROC-AUC\n(legitimately probes E_gen — NOT guarded)"]:::test
+    TA -->|"AUC below threshold"| ESC["ESCALATE / bound scope\nencoder is the real limit, or rare region information-poor"]:::term
+    TA -->|"AUC pass"| TB
+
+    TB["TEST B — direct-on-embedding faithfulness\nper-mode round-trip recon (rare vs common) + separation AUC"]:::test
+    TB -->|"recon not supplied"| PB[["pending_B"]]:::pend
+    TB -->|"recon pass"| L
+    TB -->|"recon fail"| TBP
+
+    TBP["TEST B' — tail-aware retraining (the fix, not a new map)\n1/p(z) importance-weighted loss; re-run per-mode recon"]:::test
+    TBP -->|"recon not supplied"| PBP[["pending_B_prime"]]:::pend
+    TBP -->|"recon pass"| L
+    TBP -->|"recon fail"| TC
+
+    TC["TEST C — residual: separate LEARNED latent\nencode Z->Z', diffuse, decode; round-trip validator = permanent gate"]:::test
+    TC -->|"recon not supplied"| PC[["pending_C"]]:::pend
+    TC -->|"round-trip pass"| SEP["separate_latent_justified"]:::term
+    TC -->|"fail"| ESC
+
+    L{"B'' CFG-landing samples supplied?"}
+    L -->|"no"| PL[["pending_cfg_landing_check"]]:::pend
+    L -->|"yes"| BPP
+
+    BPP["TEST B'' — CFG generative landing\nrare_guided vs REAL rare: fidelity AUC (LOW = lands in R)\n+ drift AUC (HIGH = not collapsed to the bulk)"]:::test
+    BPP -->|"lands: fidelity low AND drift high"| DIR["diffuse_directly / tail_aware\n(awards the pending terminal from B or B')"]:::term
+    BPP -->|"recon faithful but CFG cannot land in R"| SMC["smc_required\ntwisted-diffusion SMC SAMPLER (resampling steers particles into R)\ninference-time twist — see the twisted-SMC architecture diagram"]:::smc
+
+    GUARD["#88 DECOUPLED-EVAL GUARD — E_eval != E_gen (Van Assel 2606.00514)\nrender generated samples to MEDS (ELF final-step) -> re-encode in E_eval;\nmetric_hacking_flag = generation space PASSES but E_eval FAILS.\nNOW ON ALL FIDELITY GATES: B, B', C recon AND the B'' landing gate (_landing_test)."]:::guard
+    GUARD -.->|guards| TB
+    GUARD -.->|guards| TBP
+    GUARD -.->|guards| TC
+    GUARD -.->|guards| BPP

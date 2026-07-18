@@ -49,6 +49,32 @@ class RegistrySummary:
 _MAP_EXACT_THRESHOLD = 0.95  # map_weight above this → conjugate_exact regime
 
 
+# ─── Cloglog borrowing scale (issue #43) ────────────────────────────────────
+
+def to_cloglog(rate: float, se_rate: float) -> tuple[float, float]:
+    """Map a cumulative incidence and its rate-scale SE to the cloglog scale.
+
+    The KM 1-yr composite is a cumulative incidence F ∈ [0,1], not naturally
+    Normal. Borrowing is performed on θ = cloglog(F) = log(-log(1-F)), the
+    survival-standard variance-stabilizing link. The SE is propagated by the
+    delta method: SE_θ = SE_F · |dθ/dF|, with dθ/dF = 1 / [(1-F)·(-log(1-F))].
+
+    Returns (theta, se_theta) — the cloglog point estimate and its SE, the `s`
+    fed to size_calibrated_z on the borrowing scale.
+    """
+    log_surv = np.log(1.0 - rate)  # log(1-F) < 0 for F ∈ (0,1)
+    theta = np.log(-log_surv)
+    dtheta_drate = 1.0 / ((1.0 - rate) * (-log_surv))
+    return float(theta), float(se_rate * dtheta_drate)
+
+
+def from_cloglog(theta: float) -> float:
+    """Inverse cloglog: F = 1 - exp(-exp(θ)). Maps a pooled cloglog-scale
+    estimate (or CI bound) back to the native cumulative-incidence rate scale
+    for the decision vs the 45% performance goal."""
+    return float(1.0 - np.exp(-np.exp(theta)))
+
+
 # ─── Size-calibrated decision cutoff ─────────────────────────────────────────
 
 def size_calibrated_z(
@@ -292,8 +318,13 @@ def robust_map_posterior(
     tau_prior_sd: float = 0.10,
     robust_weight: float = 0.10,
     vague_sd: float = 0.50,
+    vague_mean: float = 0.0,
 ) -> tuple[float, float, float, float]:
     """Robust MAP prior (Schmidli et al. 2014) for the target registry.
+
+    vague_mean centers the robust-mixture's escape component. Default 0.0 is the
+    null on the ATE scale; on the cloglog rate scale (issue #43) 0 is F≈0.63, so
+    the escape must be centered explicitly (see pg_test_borrow).
 
     Returns (posterior_mean, posterior_sd, map_weight, sigma2_map) where
     sigma2_map is the MAP component prior variance — pass to compute_ess as
@@ -350,16 +381,16 @@ def robust_map_posterior(
         mu_map, sigma2_map, y, se_y2
     )
 
-    # Component 2 (vague): prior N(0, vague_sd²), likelihood N(y, se_y²)
+    # Component 2 (vague): prior N(vague_mean, vague_sd²), likelihood N(y, se_y²)
     post_mean_vague, post_var_vague = _normal_normal_posterior(
-        0.0, vague_sd ** 2, y, se_y2
+        vague_mean, vague_sd ** 2, y, se_y2
     )
 
     # Prior predictive density for each component (for weight update)
     pred_var_map   = sigma2_map + se_y2
     pred_var_vague = vague_sd ** 2 + se_y2
-    log_lik_map   = float(norm.logpdf(y, loc=mu_map, scale=np.sqrt(pred_var_map)))
-    log_lik_vague = float(norm.logpdf(y, loc=0.0,    scale=np.sqrt(pred_var_vague)))
+    log_lik_map   = float(norm.logpdf(y, loc=mu_map,     scale=np.sqrt(pred_var_map)))
+    log_lik_vague = float(norm.logpdf(y, loc=vague_mean, scale=np.sqrt(pred_var_vague)))
 
     # Posterior weight on MAP component
     w_map_prior = 1.0 - robust_weight
@@ -533,6 +564,104 @@ def population_level_borrow(
         r_ratio=r,
         calibrated_z=cal_z,
         influence_factor=if_val,
+    )
+
+
+# ─── Single-arm cumulative-incidence borrow vs performance goal (issue #43) ──
+
+@dataclass(frozen=True)
+class PgTestResult:
+    """Single-arm KM cumulative-incidence borrow vs a performance goal (cloglog scale)."""
+    rate_posterior: float       # pooled cumulative incidence, native rate scale
+    ci_lower: float             # rate-scale CI (from inverting the cloglog posterior)
+    ci_upper: float
+    concludes_below_pg: bool    # size-calibrated decision: incidence < PG
+    theta_posterior: float      # posterior on the cloglog scale
+    se_theta_posterior: float
+    r_ratio: float              # τ / s on the cloglog scale
+    calibrated_z: float
+    map_weight: float
+    conjugacy_regime: str       # "conjugate_exact" (c* exact) | "local_approximation"
+    approximation_deviation: float
+
+
+def _cloglog_summary(name: str, rate: float, se_rate: float, n: int) -> RegistrySummary:
+    theta, s_theta = to_cloglog(rate, se_rate)
+    return RegistrySummary(
+        name=name, n=n, n_treated=n // 2, n_control=n - n // 2,
+        ate_hat=theta, se_hat=s_theta, true_ate=float("nan"),
+    )
+
+
+def pg_test_borrow(
+    target_rate: float,
+    target_se: float,
+    target_n: int,
+    donor_rate: float,
+    donor_se: float,
+    donor_n: int = 1000,
+    performance_goal: float = 0.45,
+    tau_prior_sd: float = 0.10,
+    robust_weight: float = 0.10,
+    alpha: float = 0.05,
+) -> PgTestResult:
+    """Borrow the TVT-registry rate into a single-arm trial rate on the cloglog
+    scale, then decide vs the performance goal with the size-calibrated cutoff.
+
+    θ = cloglog(F); the informative (MAP) prior is the donor (TVT registry) rate,
+    the likelihood is the trial rate, both with delta-method SEs. The robust-mixture
+    escape is a **unit-information** vague component (ESS≈1) centered at the target,
+    so under prior-data conflict the posterior reverts to the trial data rather than
+    the registry (issue #43 vague-center decision). The pooled θ is inverted back to
+    the native rate scale for the PG decision and reporting.
+    """
+    theta_t, s_t = to_cloglog(target_rate, target_se)
+    theta_pg, _ = to_cloglog(performance_goal, 0.0)
+
+    donor_summary = _cloglog_summary("donor_tvt", donor_rate, donor_se, donor_n)
+    target_summary = _cloglog_summary("target", target_rate, target_se, target_n)
+
+    # Unit-information vague component (ESS≈1): per-observation variance ≈ s_t²·n.
+    vague_sd = float(s_t * np.sqrt(target_n))
+
+    post_mean, post_sd, map_w, *_ = robust_map_posterior(
+        donor_summaries=[donor_summary],
+        target_summary=target_summary,
+        tau_prior_sd=tau_prior_sd,
+        robust_weight=robust_weight,
+        vague_sd=vague_sd,
+        vague_mean=theta_t,
+    )
+
+    cal_z, r = size_calibrated_z(tau_prior_sd, s_t, alpha)
+    z_ci = norm.ppf(1.0 - alpha / 2.0)
+
+    # Regime: c* is exact when the MAP component dominates (Normal-Normal on the
+    # cloglog scale); when the mixture escapes it is a local approximation (#16).
+    regime, deviation = _conjugacy_diagnostic(
+        post_mean=post_mean,
+        map_weight=map_w,
+        target_ate=theta_t,
+        target_se=s_t,
+        vague_sd=vague_sd,
+    )
+
+    # cloglog is monotone increasing: F < PG  ⇔  θ_post < θ_PG.
+    test_stat = (theta_pg - post_mean) / max(post_sd, 1e-12)
+    concludes = bool(test_stat > cal_z)
+
+    return PgTestResult(
+        rate_posterior=from_cloglog(post_mean),
+        ci_lower=from_cloglog(post_mean - z_ci * post_sd),
+        ci_upper=from_cloglog(post_mean + z_ci * post_sd),
+        concludes_below_pg=concludes,
+        theta_posterior=float(post_mean),
+        se_theta_posterior=float(post_sd),
+        r_ratio=float(r),
+        calibrated_z=float(cal_z),
+        map_weight=float(map_w),
+        conjugacy_regime=regime,
+        approximation_deviation=float(deviation),
     )
 
 
