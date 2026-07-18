@@ -19,7 +19,8 @@ import numpy as np
 
 def run_smc_distributed(x0_local, propagate, log_weight_fn, n_steps, seed,
                         ess_frac: float = 0.5, rank: int = 0, world: int = 1,
-                        group=None, mode: str = "global", plan_on: str = "gpu"):
+                        group=None, mode: str = "global", plan_on: str = "gpu",
+                        dedup: bool = False):
     """x0_local: this rank's (n_local, d) torch tensor.  propagate(x, step) and
     log_weight_fn(x, step) are per-particle.  Returns (final_local_particles,
     resample_steps)."""
@@ -46,7 +47,9 @@ def run_smc_distributed(x0_local, propagate, log_weight_fn, n_steps, seed,
                 dist.all_reduce(m, op=dist.ReduceOp.MAX, group=group)   # global max scaling
             w = torch.exp(log_w - m)                  # consistently scaled across ranks
             if mode == "global" and active:
-                x = all_to_all_resample(x, w, rng, rank, world, group, plan_on)
+                # dedup = ancestor-index indirection (§1d): ship each surviving
+                # ancestor once, replicate locally — big win under degeneracy.
+                x = all_to_all_resample(x, w, rng, rank, world, group, plan_on, dedup)
             else:
                 # island (any world), OR global on a single rank: this rank's
                 # slice is resampled locally.  For world==1 the slice IS the whole

@@ -116,14 +116,18 @@ def _plan_gpu(idx, rank: int, world: int, n_local: int):
     out_split = cp.bincount(owner_me, minlength=world)
     dest_all = cp.arange(idx.size) // n_local          # which dest-slice each pos is in
     mine = owner_all == rank
-    in_split = cp.bincount(dest_all[mine], minlength=world)
+    sel = dest_all[mine]
+    # cupy.bincount raises on an empty input (a rank owning zero survivors, e.g. in
+    # extreme weight degeneracy); numpy tolerates it — guard for parity.
+    in_split = (cp.bincount(sel, minlength=world) if sel.size
+                else cp.zeros(world, dtype=cp.int64))
     send_local = idx[mine] - rank * n_local            # natural order == (dest, pos) order
     place_order = cp.argsort(owner_me, kind="stable")  # recv (src,pos) order -> output pos
     return in_split.get().tolist(), out_split.get().tolist(), send_local, place_order
 
 
 def all_to_all_resample(local_x, local_w, seed, rank: int, world: int,
-                        group=None, plan_on: str = "gpu"):
+                        group=None, plan_on: str = "gpu", dedup: bool = False):
     """Distributed global resample. local_x: (n_local, d) torch cuda tensor;
     local_w: (n_local,) local (unnormalized) weights.  ``seed`` is an int OR a
     numpy Generator (pass a SHARED, advancing Generator from the SMC loop so the
@@ -159,7 +163,48 @@ def all_to_all_resample(local_x, local_w, seed, rank: int, world: int,
     else:
         full_w = full_w_t.detach().cpu().numpy().astype(float)
         idx = systematic_resample(full_w / full_w.sum(), rng)
+    if dedup:
+        idx_np = idx.get() if hasattr(idx, "get") else np.asarray(idx)
+        return _scatter_by_index_dedup(local_x, idx_np, rank, world, n_local, group)
     return _scatter_by_index(local_x, idx, rank, world, n_local, group, use_gpu)
+
+
+def _scatter_by_index_dedup(local_x, idx, rank, world, n_local, group):
+    """Ancestor-index indirection (spec §1d): communicate each UNIQUE surviving
+    ancestor exactly once and replicate locally, instead of shipping duplicated
+    rows.  Big win in the rare-event degeneracy regime (few distinct survivors
+    duplicated massively); ~neutral when weights are near-uniform.  ``idx`` is a
+    host numpy vector; reproduces the same output as _scatter_by_index."""
+    import torch
+    import torch.distributed as dist
+    d = int(local_x.shape[1])
+    A_me = idx[rank * n_local:(rank + 1) * n_local]
+    owner_me = A_me // n_local
+
+    recv_split, uniq_by_src = [], []
+    for s in range(world):
+        us = np.unique(A_me[owner_me == s])            # sorted unique globals owned by s
+        uniq_by_src.append(us); recv_split.append(len(us))
+    send_split, send_local = [], []
+    for dd in range(world):                            # what each dest needs from me (unique)
+        A_d = idx[dd * n_local:(dd + 1) * n_local]
+        ud = np.unique(A_d[(A_d // n_local) == rank])   # matches dest dd's recv order (sorted)
+        send_local.append(ud - rank * n_local); send_split.append(len(ud))
+    send_local = (np.concatenate(send_local).astype(np.int64)
+                  if send_local else np.empty(0, np.int64))
+
+    send_buf = local_x.index_select(0, torch.as_tensor(send_local, device=local_x.device,
+                                                       dtype=torch.long)).contiguous()
+    recv_buf = torch.empty((int(sum(recv_split)), d), dtype=local_x.dtype, device=local_x.device)
+    dist.all_to_all_single(recv_buf, send_buf, recv_split, send_split, group=group)
+
+    # local replication: each output pos -> its unique row in recv_buf
+    recv_off = np.concatenate([[0], np.cumsum(recv_split)])[:-1]
+    place = np.empty(n_local, dtype=np.int64)
+    for s in range(world):
+        mask = owner_me == s
+        place[mask] = recv_off[s] + np.searchsorted(uniq_by_src[s], A_me[mask])
+    return recv_buf.index_select(0, torch.as_tensor(place, device=local_x.device, dtype=torch.long))
 
 
 def _scatter_by_index(local_x, idx, rank, world, n_local, group, use_gpu):
