@@ -1,0 +1,47 @@
+%% Gated design axes for diffuse_directly — geometry (curvature) and discreteness
+%% (stratification). Companion to docs/superpowers/specs/2026-07-10-manifold-aware-
+%% propensity-design.md. DESIGN-ONLY: nothing here is built; each component is
+%% adopted only when ITS detector fires, on the SAME state space for generation and
+%% propensity. Green = built default; yellow = gated design; blue = detector.
+flowchart TD
+    classDef built fill:#d4edda,stroke:#28a745,color:#222
+    classDef gated fill:#fff3cd,stroke:#d39e00,color:#222
+    classDef detector fill:#cce5ff,stroke:#004085,color:#222
+    classDef principle fill:#f8d7da,stroke:#721c24,color:#222
+
+    DEFAULT["DEFAULT — BUILT\nflat continuous Euclidean: ZCA-whitened embedding,\nDDPM/VP-SDE, continuous score_fn, twist in R^d"]:::built
+
+    PRIN["LOAD-BEARING PRINCIPLE\nGeneration state space ≡ propensity/estimand state space.\nAdopt geometry AND/OR jumps on BOTH sides or NEITHER.\nMixing = silent-bias generator."]:::principle
+
+    DEFAULT --> PRIN
+
+    subgraph AXA["Axis A — geometry / curvature (GATED)"]
+      DA["DETECTOR: curvature signals\npersistent #88 E_eval metric_hacking flags;\nE_gen-only reconstruction fidelity;\ngeodesic-vs-Euclidean divergence; local intrinsic dim"]:::detector
+      RA["TRIGGER → Riemannian TDS\n1. Riemannian SDE (manifold score, Frechet-mean Tweedie)\n2. geodesic transport — Riemannian Neural OT (2602.03566)\n3. metric-aware reward = geodesic distance to R"]:::gated
+      PA["+ manifold-aware PROPENSITY\ne(X) via heat-kernel / geodesic features;\npositivity region R = geodesic-neighborhood overlap"]:::gated
+      DA -->|fires| RA
+      DA -->|fires| PA
+    end
+
+    subgraph AXB["Axis B — discreteness / stratification (GATED)"]
+      DB["DETECTOR: STRUCT-S\nS1 displacement bimodality + ICE-event alignment (DECISIVE, on-box)\nS2 spectral component count (reuses spectral_gap)\nS3 local-ID heterogeneity   S4 density-gap"]:::detector
+      RB["TRIGGER (S1 pass) → hybrid JUMP-DIFFUSION\ncontinuous SDE within a sheet + discrete jumps between sheets;\njump markers = INTERCURRENT EVENTS (ICH E9 R1):\ndeath / discontinuation / rescue / HF-rehospitalization"]:::gated
+      PB["+ ICE-strategy CONSISTENCY\njump handling must match the estimand's ICE strategy\n(treatment-policy / hypothetical / composite / ...);\nreuse the IPCW / censoring ICE typing — do not reinvent"]:::gated
+      DB -->|S1 fires| RB
+      RB --> PB
+    end
+
+    PRIN --> DA
+    PRIN --> DB
+
+    RA --> MAX
+    PA --> MAX
+    RB --> MAX
+    PB --> MAX
+    MAX["MAXIMAL MODEL — both axes fire\nStratified Riemannian jump-diffusion:\ncurvature on both sides + event-driven jumps,\nsame curved+stratified state space for generation and propensity"]:::gated
+
+    REFS["references\nRNOT 2602.03566 — geodesic transport; discrete manifold-OT is curse-bound\ndiscrete diffusion 2607.05381 — score param -> twist/TDS carries over\ntransport-geometry (E_gen != E_eval) ; ELF (continuous-embedding bet)"]
+    MAX -.-> REFS
+
+    NOTE["DESIGN-ONLY / GATED — nothing here is built.\nDefault stays flat-continuous until a detector fires."]:::principle
+    NOTE -.-> DEFAULT
