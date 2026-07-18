@@ -45,12 +45,16 @@ def test_bf16_forward_close_to_fp32():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
-def test_bf16_and_compile_train_runs():
-    """bf16 + torch.compile training path runs end-to-end and stays finite."""
+@pytest.mark.parametrize("mode", ["default", "reduce-overhead"])
+def test_bf16_and_compile_train_runs(mode):
+    """bf16 + torch.compile (default and CUDA-graph modes) run end-to-end finite.
+    (Perf finding: compile adds ~0 over eager bf16 for this MLP — bf16/TF32 are
+    the win; this test just guards that the modes don't crash.)"""
     sch = Schedule(n_steps=50)
     X = np.random.default_rng(0).standard_normal((512, 64)).astype(np.float32)
     torch.manual_seed(0)
     m = ScoreMLP(64, 256)
     log = []
-    train_score(m, X, sch, epochs=4, device="cuda", precision="bf16", compile=True, _loss_log=log)
+    train_score(m, X, sch, epochs=4, device="cuda", precision="bf16", compile=True,
+                compile_mode=mode, _loss_log=log)
     assert np.isfinite(log).all() and len(log) == 4
