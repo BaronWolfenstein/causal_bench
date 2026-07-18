@@ -28,3 +28,9 @@ def test_run_smc_cpu_device_returns_numpy():
     res = run_smc(x0, prop, lw, len(betas), rng, device="cpu")
     assert isinstance(res.state.particles, np.ndarray)
     assert isinstance(res.state.log_weights, np.ndarray)
+
+
+def test_get_namespace_returns_numpy_for_numpy_arrays():
+    from causal_bench.sampling.backend import get_namespace
+    assert get_namespace(np.zeros(3)) is np
+    assert get_namespace(np.zeros(3), np.ones(2)) is np
