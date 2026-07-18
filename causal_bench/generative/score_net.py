@@ -57,14 +57,16 @@ def ScoreMLP(dim: int, hidden: int = 128):
     return _Net()
 
 
-def make_torch_score_fn(model, sch, device: str = "auto") -> Callable[[np.ndarray, int], np.ndarray]:
+def make_torch_score_fn(model, sch, device: str = "auto",
+                        precision: str = "fp32") -> Callable[[np.ndarray, int], np.ndarray]:
     import torch
     dev = resolve_device(device)
     model.to(dev)
+    autocast, _ = _perf_setup(precision, dev)
 
     def score_fn(x_t: np.ndarray, t: int) -> np.ndarray:
         model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), autocast():                 # bf16 inference (or no-op)
             xt = torch.as_tensor(np.asarray(x_t), dtype=torch.float32, device=dev)
             # inference: every particle is at the same step t -> per-sample t_frac
             # vector of shape (B,), matching the batched time embedding
@@ -73,7 +75,7 @@ def make_torch_score_fn(model, sch, device: str = "auto") -> Callable[[np.ndarra
             eps = model(xt, t_frac)                       # eps-prediction
             a = float(sch.alphas_bar[t])
             score = -eps / np.sqrt(1 - a)                 # score = -eps/sqrt(1-abar)
-        return score.detach().cpu().numpy()               # always hand numpy back to the SDE loop
+        return score.detach().float().cpu().numpy()       # bf16 -> fp32 numpy to the SDE loop
 
     return score_fn
 
@@ -86,12 +88,31 @@ def make_optimizer(model, lr: float = 1e-3):
     return torch.optim.Adam(model.parameters(), lr=lr)
 
 
+def _perf_setup(precision, dev):
+    """Return (autocast context factory, using_amp).  precision: 'fp32' (default,
+    unchanged), 'tf32' (fp32 matmuls on Tensor Cores), 'bf16' (autocast).  bf16
+    needs no GradScaler (fp32 dynamic range); TF32/bf16 are cuda-only no-ops
+    elsewhere."""
+    import torch
+    from contextlib import nullcontext
+    if precision in ("tf32", "bf16") and dev.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+    if precision == "bf16" and dev.type == "cuda":
+        return (lambda: torch.autocast("cuda", dtype=torch.bfloat16)), True
+    return nullcontext, False
+
+
 def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
                 epochs: int = 20, rng=None, device: str = "auto", opt=None,
-                _loss_log=None):
+                _loss_log=None, precision: str = "fp32", compile: bool = False):
     import torch
     dev = resolve_device(device)
     model.to(dev)
+    autocast, _ = _perf_setup(precision, dev)
+    if compile and dev.type == "cuda":
+        model = torch.compile(model)                      # graph fusion; params unchanged
     rng = rng or np.random.default_rng(0)
     X = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=dev)
     w = (torch.as_tensor(np.asarray(weights), dtype=torch.float32, device=dev)
@@ -118,9 +139,10 @@ def train_score(model, X, sch, *, weights: Optional[np.ndarray] = None,
         eps = torch.randn_like(X)
         xt = torch.sqrt(a)[:, None] * X + torch.sqrt(1 - a)[:, None] * eps
         t_frac = torch.as_tensor(t / sch.n_steps, dtype=torch.float32, device=dev)
-        pred = model(xt, t_frac)
-        loss = (w * ((pred - eps) ** 2).mean(dim=1)).mean()   # tail-aware weighted
-        opt.zero_grad(); loss.backward(); opt.step()
+        with autocast():                                  # bf16 Tensor Cores (or no-op)
+            pred = model(xt, t_frac)
+            loss = (w * ((pred - eps) ** 2).mean(dim=1)).mean()   # tail-aware weighted
+        opt.zero_grad(); loss.backward(); opt.step()      # bf16: no GradScaler needed
         if _loss_log is not None:
             _loss_log.append(float(loss.item()))
     return model
