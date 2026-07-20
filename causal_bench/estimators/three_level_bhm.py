@@ -75,7 +75,7 @@ def _diagnostics(idata, var: str) -> dict:
 
 def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
                         chains: int = 2, seed: int = 0,
-                        sampler: str = "numpyro") -> dict:
+                        sampler: str = "numpyro", chain_method: str = "sequential") -> dict:
     """Three-level BHM in PyMC: population ``mu``, subgroup effects
     ``~ N(mu, τ²)`` with ``τ ~ HalfNormal`` (non-conjugate), patient obs
     ``~ N(subgroup_effect, σ²)``. Sampled via ``nuts_sampler=sampler`` (default
@@ -96,6 +96,7 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
         idata = pm.sample(draws=draws, tune=tune, chains=chains,
                           nuts_sampler=sampler, progressbar=False,
                           random_seed=seed,
+                          chain_method=chain_method,
                           nuts_sampler_kwargs={"target_accept": 0.9},
                           idata_kwargs={"log_likelihood": False})
     post = idata.posterior["mu"]
@@ -107,6 +108,7 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
 
 def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
                          chains: int = 2, seed: int = 0, sampler: str = "numpyro",
+                         chain_method: str = "sequential",
                          true_effect: float = 0.0, mu_sd: float = 1.0,
                          tau_sd: float = 0.5, return_theta: bool = False) -> dict:
     """Three-level model on **subgroup summaries** (the exp19-compatible form): a
@@ -133,6 +135,7 @@ def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
         idata = pm.sample(draws=draws, tune=tune, chains=chains,
                           nuts_sampler=sampler, progressbar=False,
                           random_seed=seed,
+                          chain_method=chain_method,
                           nuts_sampler_kwargs={"target_accept": 0.9},
                           idata_kwargs={"log_likelihood": False})
     post = idata.posterior["mu"]

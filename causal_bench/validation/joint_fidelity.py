@@ -75,6 +75,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                    depth: int = 7, sigma: float = 0.5, flat_tau_sd: float = 0.5,
                    tau_base: float = 0.5, tau_sd_min: float = 0.05, draws: int = 500,
                    tune: int = 500, chains: int = 2, seed: int = 0,
+                   chain_method: str = "sequential",
                    tail_ess_threshold: float = 100.0, null_subgroup: int | None = None) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
     cell. ``reject_rate`` is the population-μ decision (Type-I under a null spec, power
@@ -106,6 +107,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                                 tau_base=tau_base, tau_sd_min=tau_sd_min)
         fit = fit_three_level_meta(th, se, tau_sd=tau_sd, true_effect=mu_true,
                                    draws=draws, tune=tune, chains=chains, seed=seed + r,
+                                   chain_method=chain_method,
                                    return_theta=null_subgroup is not None)
         rejects_all.append(fit["rejects_null"])                 # flagged-included sensitivity
         if not tail_ess_ok(fit, threshold=tail_ess_threshold):
