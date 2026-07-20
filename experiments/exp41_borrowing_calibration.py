@@ -66,7 +66,7 @@ def iter_cells(levels, thetas):
 
 def run_grid(*, levels, thetas, n_reps, n_units, depth, draws, tune, chains, seed,
              tail_ess_threshold=100.0, g=4, b_size=3, s=2, m=2,
-             chain_method="sequential", shard=None) -> list[dict]:
+             chain_method="sequential", shard=None, fast=False) -> list[dict]:
     """Sweep level × θ₀ × scenario × policy, one fidelity run per cell. `shard`
     = (worker_id, n_workers): run only cells with `cell_index % n_workers ==
     worker_id` (the multi-GPU partition). `chain_method` threads to the NumPyro
@@ -80,7 +80,8 @@ def run_grid(*, levels, thetas, n_reps, n_units, depth, draws, tune, chains, see
         r = joint_fidelity(spec, level=level, policy=policy, theta0=theta0,
                            n_reps=n_reps, n_units=n_units, depth=depth,
                            draws=draws, tune=tune, chains=chains, seed=seed,
-                           chain_method=chain_method, tail_ess_threshold=tail_ess_threshold)
+                           chain_method=chain_method, fast=fast,
+                           tail_ess_threshold=tail_ess_threshold)
         rows.append({"cell": idx, "level": level, "theta0": theta0, "scenario": scen,
                      "policy": policy, **r})
     return rows
@@ -116,6 +117,8 @@ def main():
                    help="NumPyro chain method; 'vectorized' runs chains in one vmap on the device")
     p.add_argument("--shard", default=None,
                    help="'i/n' — run only cells with cell_index %% n == i (multi-GPU partition)")
+    p.add_argument("--fast", action="store_true",
+                   help="compile-once direct-NumPyro fit (fit_three_level_meta_fast, ~2.3x)")
     p.add_argument("--out", default=None,
                    help="write raw rows as JSON here (worker mode, for the multi-GPU sharder)")
     a = p.parse_args()
@@ -134,7 +137,8 @@ def main():
           + (f" | shard {shard[0]}/{shard[1]}" if shard else ""))
     rows = run_grid(levels=a.levels, thetas=thetas, n_reps=n_reps, n_units=a.n_units,
                     depth=a.depth, draws=draws, tune=tune, chains=a.chains, seed=a.seed,
-                    tail_ess_threshold=tail_ess, chain_method=a.chain_method, shard=shard)
+                    tail_ess_threshold=tail_ess, chain_method=a.chain_method, shard=shard,
+                    fast=a.fast)
 
     if a.out:                                   # worker mode: dump raw rows for the sharder
         import json

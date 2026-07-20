@@ -159,6 +159,66 @@ def tail_ess_ok(fit: dict, *, threshold: float = 100.0) -> bool:
     return bool(fit["tail_ess"] >= threshold)
 
 
+# ── compile-once direct-NumPyro path (the OC-loop fast path) ─────────────────────
+# pymc rebuilds the model graph and re-JITs every fit_three_level_meta call (~22s
+# steady, dominated by recompilation). This path builds ONE NumPyro MCMC per
+# (n_pad, draws, tune, chains) and reuses its compiled sampler across reps: only
+# the FIRST fit pays compilation, the rest are warmup+sampling. Variable decoded
+# subgroup counts are padded to a fixed n_pad with an uninformative se, so shape
+# stays constant (no recompile) and padded subgroups don't move the mu/tau posterior.
+_NUMPYRO_MCMC_CACHE: dict = {}
+
+
+def _meta_model_numpyro(theta_hat, se, mu_sd, tau_sd):
+    import numpyro
+    import numpyro.distributions as dist
+    n = theta_hat.shape[0]
+    mu = numpyro.sample("mu", dist.Normal(0.0, mu_sd))
+    tau = numpyro.sample("tau", dist.HalfNormal(tau_sd))
+    z = numpyro.sample("z", dist.Normal(0.0, 1.0).expand([n]))   # non-centered
+    theta = mu + tau * z
+    numpyro.sample("obs", dist.Normal(theta, se), obs=theta_hat)
+
+
+def fit_three_level_meta_fast(theta_hat, se, *, draws: int = 500, tune: int = 500,
+                              chains: int = 2, seed: int = 0, tau_sd: float = 0.5,
+                              mu_sd: float = 1.0, true_effect: float = 0.0,
+                              n_pad: int | None = None, chain_method: str = "vectorized",
+                              return_theta: bool = False) -> dict:
+    """Statistically equivalent to `fit_three_level_meta` but compiles once and
+    reuses across reps (validated against it). `n_pad` fixes the subgroup dimension
+    (default = len(theta_hat)); pass the level's max (e.g. spec['g']) so all reps
+    share one compiled sampler. mu_sd/tau_sd are passed as arrays so changing the
+    prior between reps does NOT recompile."""
+    import jax
+    import jax.numpy as jnp
+    import arviz as az
+    from numpyro.infer import MCMC, NUTS
+    th = np.asarray(theta_hat, float)
+    s = np.asarray(se, float)
+    n_g = len(th)
+    n_pad = int(n_pad) if n_pad else n_g
+    if n_pad < n_g:
+        raise ValueError(f"n_pad {n_pad} < n_g {n_g}")
+    thp = np.zeros(n_pad, float); thp[:n_g] = th
+    sp = np.full(n_pad, 1e6, float); sp[:n_g] = s              # padded rows uninformative
+
+    # Fresh MCMC each call (reusing the object breaks on re-run with vectorized
+    # chains). jax's global compile cache keys on the model fn + shapes, so with a
+    # fixed n_pad every rep hits the cache — only the first pays compilation.
+    mcmc = MCMC(NUTS(_meta_model_numpyro, target_accept_prob=0.9),
+                num_warmup=tune, num_samples=draws, num_chains=chains,
+                chain_method=chain_method, progress_bar=False)
+    mcmc.run(jax.random.PRNGKey(int(seed)), jnp.asarray(thp), jnp.asarray(sp),
+             jnp.asarray(float(mu_sd)), jnp.asarray(float(tau_sd)))
+    mu_cd = np.asarray(mcmc.get_samples(group_by_chain=True)["mu"])   # (chains, draws)
+    out = _decision(float(mu_cd.mean()), float(mu_cd.std()), true_effect)
+    out.update({"r_hat": float(az.rhat(mu_cd)),                       # (chain, draw) array
+                "bulk_ess": float(az.ess(mu_cd, method="bulk")),
+                "tail_ess": float(az.ess(mu_cd, method="tail", prob=(0.05, 0.95)))})
+    return out
+
+
 def run_fidelity(*, n_reps: int = 20, tau: float = 0.3, effect_alt: float = 0.5,
                  n_subgroups: int = 10, n_per: int = 30, draws: int = 500,
                  tune: int = 500, chains: int = 2, seed: int = 0,
