@@ -27,16 +27,40 @@ def _kish(w: np.ndarray) -> float:
 
 
 def propensity_scores(target: pd.DataFrame, baseline: pd.DataFrame, covs: list[str],
-                      method: str = "hal", seed: int = 0):
+                      method: str = "hal", seed: int = 0, *,
+                      outcome=None, screen_instruments: bool = False, era=None):
     """Estimate P(Target | X) for both groups. Returns ``(e_target, e_baseline)``.
 
     method='hal' uses the production HAL classifier (requires the hal9001 R
     package); method='logistic' is the fast standardized-logistic fallback used
     in tests and where HAL is unavailable.
+
+    ENCIRCLE external-control guards (opt-in, both off by default):
+    - ``screen_instruments`` (#174, bias amplification): drop covariates that are
+      instruments — kept only if associated with ``outcome`` (the pooled clinical
+      outcome, target rows THEN baseline rows). Screened on the covariate–outcome
+      association, never on membership (that opens a collider). Conditioning a
+      propensity on instruments amplifies residual unmeasured-confounding bias.
+    - ``era`` (#173, calendar): pass calendar/era (pooled, target-then-baseline)
+      to enter it as an EXPLICIT propensity column, so it is adjusted for directly
+      rather than laundered through the (embedding) covariates. If ``covs`` are
+      embedding features, first check/residualize with ``propensity_guards.
+      era_contamination`` / ``residualize_era`` — era can leak into the embedding.
     """
+    covs = list(covs)
     Xt, Xb = target[covs].to_numpy(float), baseline[covs].to_numpy(float)
     X = np.vstack([Xt, Xb])
     y = np.r_[np.ones(len(Xt)), np.zeros(len(Xb))]
+    if screen_instruments:
+        if outcome is None:
+            raise ValueError("screen_instruments=True needs `outcome` "
+                             "(pooled clinical outcome, target rows then baseline rows)")
+        from causal_bench.propensity_guards import outcome_adaptive_screen
+        keep = outcome_adaptive_screen(X, np.asarray(outcome, float), covs)
+        if keep:                                    # keep the outcome-associated covs
+            X = X[:, [covs.index(c) for c in keep]]
+    if era is not None:                             # era as an explicit column
+        X = np.column_stack([X, np.asarray(era, float)])
     mu, sd = X.mean(0), X.std(0)
     sd[sd == 0] = 1.0
     Xs = (X - mu) / sd

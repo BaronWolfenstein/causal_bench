@@ -68,25 +68,11 @@ def regression_adjustment_ate(df: pd.DataFrame, adjustment_cols) -> float:
 
 
 def outcome_adaptive_screen(df: pd.DataFrame, covariates, *, t_thresh: float = 1.96):
-    """The guard: keep covariate `c` only if it is associated with Y in the
-    *covariate–outcome* model `Y ~ covariates` (|t| on its coefficient >
-    `t_thresh`). A pure instrument is dropped; a confounder / outcome-predictor is
-    kept. Returns the bias-amplification-safe adjustment set.
-
-    CRUCIAL — do NOT condition on the treatment A in this screen. A is a common
-    effect of the instrument and the unmeasured confounder (Z → A ← U), so
-    conditioning on A opens a **collider** path Z→A←U→Y that manufactures a
-    spurious Z–Y association and the screen would (wrongly) keep the instrument.
-    Screening on the treatment-free outcome model avoids that trap."""
+    """DataFrame convenience wrapper over `propensity_guards.outcome_adaptive_screen`
+    (the promoted, production guard). Keeps covariates associated with Y in the
+    *covariate–outcome* model `Y ~ covariates`, dropping pure instruments — screened
+    WITHOUT conditioning on the treatment A (that would open a collider Z→A←U→Y and
+    keep the instrument)."""
+    from causal_bench.propensity_guards import outcome_adaptive_screen as _screen
     cols = list(covariates)
-    n = len(df)
-    Xmat = np.column_stack([np.ones(n), *[df[c].to_numpy() for c in cols]])  # NO A
-    y = df["Y"].to_numpy()
-    beta, *_ = np.linalg.lstsq(Xmat, y, rcond=None)
-    resid = y - Xmat @ beta
-    dof = max(n - Xmat.shape[1], 1)
-    sigma2 = float(resid @ resid) / dof
-    cov = sigma2 * np.linalg.inv(Xmat.T @ Xmat)
-    se = np.sqrt(np.diag(cov))
-    tvals = beta / se
-    return [c for i, c in enumerate(cols) if abs(tvals[1 + i]) > t_thresh]  # cols start at idx 1
+    return _screen(df[cols].to_numpy(), df["Y"].to_numpy(), cols, t_thresh=t_thresh)

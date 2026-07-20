@@ -253,6 +253,36 @@ a wrong tangent there. Gated as above.
   positivity), with the positivity-ESS (Kish on the causal weights) computed on
   manifold-consistent weights.
 
+### External-control bias guards (ENCIRCLE — must hold when the propensity is built)
+
+Because `e(X)` is built on the embedding, two classical external-control biases can
+enter *through the geometry* and must be guarded at propensity-construction time
+(all CPU, downstream of / upstream of the A100 kernels — never inside them).
+Demonstrated on synthetic in exp40 (#174) and exp42 (#173); guards live in
+`causal_bench/propensity_guards.py` and wire into `sca_weighting.propensity_scores`
+(`screen_instruments=`, `era=`).
+
+1. **Instrument screening (#174).** A high-dim frozen-encoder embedding is
+   instrument-rich; conditioning `e(X)` on instrument directions *amplifies* residual
+   unmeasured-confounding bias (exp40: include-instrument bias 1.64 > no-adjustment
+   1.59). **Constraint:** build `e(X)` on the **outcome-predictive subspace** of the
+   embedding, via `outcome_adaptive_screen` — screened on the covariate–outcome
+   association, **not** conditioning on membership (that opens a collider Z→A←U→Y and
+   would keep the instrument).
+2. **Calendar / era (#173) — and it is NOT purely downstream.** Era must be an
+   **explicit** propensity covariate, never laundered through the state embedding
+   (exp42: a state proxy that imperfectly mirrors era leaves bias 0.92 vs 0.00 for
+   era-explicit). **But** because the manifold is built ON the embedding, if the
+   frozen encoder encodes calendar the k-NN graph / heat kernel / geodesics are partly
+   an *era* graph — so era contaminates `g` itself. **Constraint + check:** run
+   `era_contamination(embedding, era)` (cross-validated R² of `era ~ embedding`; high
+   ⟹ contaminated) and, if flagged, `residualize_era(embedding, era)` **before**
+   `build_knn_laplacian`, so the manifold is patient-state, not calendar. Then still
+   carry era as an explicit covariate.
+3. **Immortal time (#21) is upstream of the propensity** — a time-zero/estimand
+   constraint (landmark / clone-censor-weight), estimator-proof (exp23), not fixable
+   here. Noted so the propensity is never asked to repair it.
+
 ## Interplay / consistency (what makes it one system)
 
 - **One metric `g`, both sides — never one.** The generation twist steers into `R`;
