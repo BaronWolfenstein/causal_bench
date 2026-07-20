@@ -53,6 +53,20 @@ three.
    Sinkhorn/GW plan (which is exactly what the SGA OT layer is today: correct and
    cheap for small claim-graphs, but curse-bound on a patient manifold).
 
+   **UPDATE (2026-07-20, literature check).** RNOT (2602.03566) is *deterministic*
+   OT. For this noisy, positivity-constrained setting the **entropy-regularized /
+   Schrödinger-bridge** counterparts are the better vehicle — they smooth the map
+   (spread, not a knife-edge collapse into a thin `R`) and their modern solvers are
+   **simulation-free and stable**, unlike IPF and minimax neural OT. Concretely:
+   **Entropic Riemannian Neural OT** (arXiv:2605.04255) — the entropic sibling of
+   the paper above — and **Riemannian geodesic bridge matching** (Trace, IJCAI 2025),
+   set against the broader off-IPF SB frontier (DSBM / Iterative Markovian Fitting,
+   Shi et al. NeurIPS 2023; SF²M; Schrödinger-Bridge-Flow). The stochastic SB form
+   is also the *principled* version of the twist/SMC steering (§3) — SB is the
+   dynamic entropic-OT problem the reweighting approximates. **The curse-of-dim
+   caveat still binds** — entropy tames it, does not remove it — so geodesic
+   transport stays a **research axis, not a ticket**.
+
 3. **Metric-aware reward (the twist).** The twist reward becomes **geodesic
    distance to `R`** under `g`, not Euclidean distance to `R`. Everything else in
    the twist machinery carries over: `make_twist`/`run_twisted_smc` are agnostic to
@@ -326,7 +340,20 @@ keeps even the triggered cost linear in graph edges, so the gate is about eviden
   geodesic-transport component and for manifold-aware matching; the
   curse-of-dimensionality result is a concrete constraint (discrete manifold-OT
   won't scale → continuous/neural map). Also a candidate upgrade to SGA's discrete
-  GW.
+  GW. **Deterministic** OT — prefer the entropic/SB variants below for the
+  positivity-constrained generative use.
+- **Entropic / Schrödinger-bridge route (preferred vehicle, added 2026-07-20):**
+  **Entropic Riemannian Neural OT — arXiv:2605.04255** (entropic sibling of the
+  above) and **Trace: Structural Riemannian Bridge Matching — IJCAI 2025**
+  (geodesic bridge matching for Riemannian Schrödinger bridges). Modern SB solvers
+  are simulation-free and stable — **DSBM / Iterative Markovian Fitting** (Shi et
+  al., NeurIPS 2023, arXiv:2303.16852), **IPMF** (arXiv:2410.02601), **SF²M**
+  (arXiv:2307.03672), **Schrödinger-Bridge-Flow** (arXiv:2409.09347) — a decisive
+  move off De Bortoli/Thornton's original IPF machinery. Entropic smoothing suits
+  noisy embeddings + positivity and is the principled form of the twist/SMC
+  steering. Caveat unchanged: the 2602.03566 curse-of-dim bound still applies, so
+  this is a research axis. (Search-surfaced 2026-07-20; abstracts not yet read
+  end-to-end — verify before building.)
 - **Diffusion Models in Simulation-Based Inference (tutorial review) —
   arXiv:2512.20685:** frames the synthetic-control-arm as simulation-based inference
   and catalogs sampler / guidance / schedule design (relevant to our CFG landing +

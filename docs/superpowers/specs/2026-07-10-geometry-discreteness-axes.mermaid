@@ -17,7 +17,7 @@ flowchart TD
 
     subgraph AXA["Axis A — geometry / curvature (GATED)"]
       DA["DETECTOR: curvature signals\npersistent #88 E_eval metric_hacking flags;\nE_gen-only reconstruction fidelity;\ngeodesic-vs-Euclidean divergence; local intrinsic dim"]:::detector
-      RA["TRIGGER → Riemannian TDS\n1. Riemannian SDE (manifold score, Frechet-mean Tweedie)\n2. geodesic transport — Riemannian Neural OT (2602.03566)\n3. metric-aware reward = geodesic distance to R"]:::gated
+      RA["TRIGGER → Riemannian TDS\n1. Riemannian SDE (manifold score, Frechet-mean Tweedie)\n2. geodesic transport — Riemannian Neural OT (2602.03566);\nprefer entropic/SB: Entropic RNOT (2605.04255), bridge matching (Trace IJCAI'25)\n3. metric-aware reward = geodesic distance to R"]:::gated
       PA["+ manifold-aware PROPENSITY\ne(X) via heat-kernel / geodesic features;\npositivity region R = geodesic-neighborhood overlap"]:::gated
       DA -->|fires| RA
       DA -->|fires| PA
