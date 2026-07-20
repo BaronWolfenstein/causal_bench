@@ -37,3 +37,21 @@ def test_true_effect_stays_null_with_landmark_across_configs():
     cfg = ImmortalTimeConfig(beta_x=1.0, implant_rate=1.2)
     lm = [landmark_risk_difference(draw_immortal_time(4000, s, cfg), cfg) for s in range(150)]
     assert abs(np.mean(lm)) < 0.04
+
+
+def test_clone_censor_weight_removes_grace_period_immortal_bias():
+    """Grace-period per-protocol is immortal-time biased; CCW (clone at time-zero,
+    censor at deviation, IPCW) removes the bulk of it. The landmark stays exact —
+    CCW is the tool for genuine grace/time-varying strategies, not this simple
+    point-implant case."""
+    from causal_bench.dgp.immortal_time import grace_period_naive_rd, ccw_risk_difference
+    cfg = ImmortalTimeConfig(grace=1.5)
+    gnaive, ccw = [], []
+    for s in range(200):
+        df = draw_immortal_time(5000, s, cfg)
+        gnaive.append(grace_period_naive_rd(df, cfg))
+        ccw.append(ccw_risk_difference(df, cfg))
+    gnaive, ccw = float(np.mean(gnaive)), float(np.mean(ccw))
+    assert gnaive < -0.08                       # grace per-protocol is immortal-biased
+    assert abs(ccw) < 0.5 * abs(gnaive)         # CCW removes the bulk of it
+    assert abs(ccw) < abs(gnaive)

@@ -24,10 +24,13 @@ import pandas as pd
 class ImmortalTimeConfig:
     horizon: float = 3.0         # administrative follow-up end
     landmark: float = 1.0        # the design fix: align time-zero at L
+    grace: float = 1.0           # grace period G for the "implant by G" strategy (CCW)
     hazard_ratio: float = 1.0    # TRUE device effect (1.0 = honest null)
     base_rate: float = 0.5       # baseline event rate
     beta_x: float = 0.5          # covariate → hazard (a real confounder to adjust for)
     implant_rate: float = 0.7    # rate of the eligibility→implant waiting time
+    implant_beta_x: float = 0.0  # covariate → implant timing; >0 makes deviation informative (IPCW bites),
+                                 # but also confounds the landmark. Default 0 keeps the clean immortal-time signal.
 
 
 def draw_immortal_time(n: int, seed: int, config: ImmortalTimeConfig = ImmortalTimeConfig()) -> pd.DataFrame:
@@ -38,7 +41,8 @@ def draw_immortal_time(n: int, seed: int, config: ImmortalTimeConfig = ImmortalT
     X = rng.standard_normal(n)
     rate = config.base_rate * np.exp(config.beta_x * X)
     T = rng.exponential(1.0 / rate)                       # event time; device-independent under null
-    w = rng.exponential(1.0 / config.implant_rate, n)     # eligibility → implant waiting time
+    implant_rate = config.implant_rate * np.exp(config.implant_beta_x * X)
+    w = rng.exponential(1.0 / implant_rate)               # eligibility → implant waiting time (X-dependent)
     # device received iff the patient survives to implant AND implant is within follow-up
     treated = ((w < T) & (w < config.horizon)).astype(float)
     Y = (T <= config.horizon).astype(float)               # death within horizon
@@ -72,3 +76,55 @@ def landmark_risk_difference(df: pd.DataFrame, config: ImmortalTimeConfig = Immo
     treated_L = (d["w"].to_numpy() <= L)                  # device by the landmark
     event_after_L = (d["T"].to_numpy() <= H)              # death in (L, H] (all are > L)
     return float(event_after_L[treated_L].mean() - event_after_L[~treated_L].mean())
+
+
+def grace_period_naive_rd(df: pd.DataFrame, config: ImmortalTimeConfig = ImmortalTimeConfig()) -> float:
+    """Immortal-time-biased per-protocol for a grace-period strategy: 'device' =
+    implanted within grace G (so it SURVIVED to implant); 'control' = everyone
+    else. Device gets credit for the eligibility→implant survival → biased."""
+    G, H = config.grace, config.horizon
+    Tv, wv = df["T"].to_numpy(), df["w"].to_numpy()
+    device = (wv < Tv) & (wv <= G)                        # implanted within grace
+    Y = (Tv <= H).astype(float)
+    return float(Y[device].mean() - Y[~device].mean())
+
+
+def ccw_risk_difference(df: pd.DataFrame, config: ImmortalTimeConfig = ImmortalTimeConfig()) -> float:
+    """Clone-censor-weight for the 'implant by G' strategy. Each patient is cloned
+    at time-zero into the device and control strategies; a clone is censored when
+    it DEVIATES (device: reaches G without implanting; control: implants within G).
+    Deaths during the grace window BEFORE any deviation count for BOTH clones —
+    which is exactly what removes the immortal time the naive per-protocol keeps.
+    IPCW (`sampling.ipcw`) corrects the informative deviation-censoring. Recovers
+    the null on a grace-period strategy the landmark cannot cleanly express.
+
+    Scope/honesty: this is a **horizon-collapsed** CCW (weights at the follow-up
+    horizon, not a full time-varying IP-of-censoring hazard). It removes the bulk
+    (~80%) of the immortal-time bias by cloning; a small residual remains vs the
+    exact continuous-time version. For a **point-implant** DGP like this one the
+    landmark is *exact* and preferred — CCW's real advantage is genuine
+    grace-period / time-varying-treatment strategies the landmark cannot express."""
+    from sklearn.linear_model import LogisticRegression
+    from causal_bench.sampling.ipcw import ipcw_weights, positivity_floor
+    G, H = config.grace, config.horizon
+    X = df["X"].to_numpy(); Tv = df["T"].to_numpy(); wv = df["w"].to_numpy()
+    implanted = (wv <= G) & (wv < Tv)                     # implanted in grace (survived to w)
+    died_pre = Tv <= np.minimum(wv, G)                    # died during grace before implanting
+    Y = (Tv <= H).astype(float)
+
+    # adherence model P(implant by G | X) → IPCW for the deviation-censoring
+    p = LogisticRegression().fit(X.reshape(-1, 1), implanted.astype(float)).predict_proba(X.reshape(-1, 1))[:, 1]
+    p, _ = positivity_floor(p, 0.02)
+    pn, _ = positivity_floor(1.0 - p, 0.02)
+
+    # device clones: uncensored = implanted (weight 1/p) OR died-in-grace (weight 1)
+    dev_unc = implanted | died_pre
+    w_dev = np.where(implanted, ipcw_weights(p), 1.0)[dev_unc]
+    risk_dev = float(np.average(Y[dev_unc], weights=w_dev))
+
+    # control clones: uncensored = adhered (didn't implant by G; weight 1/(1−p)) OR died-in-grace (weight 1)
+    adhered = (~implanted) & (~died_pre)
+    ctrl_unc = adhered | died_pre
+    w_ctrl = np.where(adhered, ipcw_weights(pn), 1.0)[ctrl_unc]
+    risk_ctrl = float(np.average(Y[ctrl_unc], weights=w_ctrl))
+    return risk_dev - risk_ctrl
