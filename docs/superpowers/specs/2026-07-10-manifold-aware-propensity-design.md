@@ -63,7 +63,15 @@ three.
    set against the broader off-IPF SB frontier (DSBM / Iterative Markovian Fitting,
    Shi et al. NeurIPS 2023; SF²M; Schrödinger-Bridge-Flow). The stochastic SB form
    is also the *principled* version of the twist/SMC steering (§3) — SB is the
-   dynamic entropic-OT problem the reweighting approximates. **The curse-of-dim
+   dynamic entropic-OT problem the reweighting approximates. **This does NOT
+   supersede twist/SMC:** SB is a proposal/drift upgrade that lives *inside* the
+   SMC frame, not a replacement — a learned bridge is approximate, and twisted-SMC
+   is what makes an approximate proposal asymptotically exact (resampling). SMC
+   stays the correctness wrapper; the twist/SMC infrastructure (stratified/positivity
+   ESS, IPCW, the `smc_required` loop, the analytic twist) keeps being built
+   regardless of whether SB ever lands. SB reframes only the eventual
+   *fully-learned* drift — a stepping stone from the learned twist, not a
+   supersession of the sampler. **The curse-of-dim
    caveat still binds** — entropy tames it, does not remove it — so geodesic
    transport stays a **research axis, not a ticket**.
 
