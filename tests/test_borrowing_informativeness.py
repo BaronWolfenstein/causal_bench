@@ -111,3 +111,12 @@ def test_canonical_map_correct_sign_vs_theta_c():
     robust = canonical_tau_prior(0.95, 4)                       # well-decoded → weak pool
     fragile = canonical_tau_prior(0.35, 4)                      # near chance → strong pool
     assert robust > fragile
+
+
+def test_canonical_tau_discount_is_a_bounded_chance_adjusted_multiplier():
+    from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
+    assert canonical_tau_discount(0.25, 4) == 0.0              # chance → no signal → 0
+    assert canonical_tau_discount(1.0, 4) == 1.0               # perfect → full base scale
+    assert canonical_tau_discount(0.10, 4) == 0.0             # below chance clips to 0
+    assert 0.0 < canonical_tau_discount(0.6, 4) < 1.0         # in between
+    assert canonical_tau_discount(0.8, 4) > canonical_tau_discount(0.5, 4)   # monotone ↑

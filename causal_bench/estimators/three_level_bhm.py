@@ -108,7 +108,7 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
 def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
                          chains: int = 2, seed: int = 0, sampler: str = "numpyro",
                          true_effect: float = 0.0, mu_sd: float = 1.0,
-                         tau_sd: float = 0.5) -> dict:
+                         tau_sd: float = 0.5, return_theta: bool = False) -> dict:
     """Three-level model on **subgroup summaries** (the exp19-compatible form): a
     Bayesian random-effects meta-analysis over per-subgroup effect estimates.
 
@@ -138,6 +138,15 @@ def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
     post = idata.posterior["mu"]
     out = _decision(float(post.mean()), float(post.std()), true_effect)
     out.update(_diagnostics(idata, "mu"))
+    if return_theta:
+        # per-subgroup posteriors θ_g = μ + τ·z_g — needed for per-subgroup (partial-null)
+        # size: strong borrowing drags a truly-null subgroup toward non-null siblings.
+        th = idata.posterior["theta"]
+        out["theta_g_mean"] = th.mean(("chain", "draw")).values
+        out["theta_g_sd"] = th.std(("chain", "draw")).values
+        lo = out["theta_g_mean"] - 1.96 * out["theta_g_sd"]
+        hi = out["theta_g_mean"] + 1.96 * out["theta_g_sd"]
+        out["theta_g_rejects"] = (lo > 0) | (hi < 0)          # per-subgroup reject-null
     return out
 
 
