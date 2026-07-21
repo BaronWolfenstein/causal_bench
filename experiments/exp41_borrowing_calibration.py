@@ -142,6 +142,9 @@ def main():
     p = argparse.ArgumentParser(description="Exp 41: identifiability-set tau_sd calibration")
     p.add_argument("--full", action="store_true", help="the real run (θ₀ sweep, more reps/draws)")
     p.add_argument("--levels", nargs="+", default=["group", "member"])
+    p.add_argument("--thetas", nargs="+", type=float, default=None,
+                   help="working corruptions θ₀ to sweep (default: [0.5,0.7,0.9] on --full, "
+                        "[0.7] otherwise). Must match across shard workers.")
     p.add_argument("--Ks", nargs="+", type=int, default=None,
                    help="subgroup counts to sweep (default: KS on --full, [4] otherwise). "
                         "ALL workers must get the same value or the shards stop partitioning "
@@ -165,7 +168,7 @@ def main():
                    help="write raw rows as JSON here (worker mode, for the multi-GPU sharder)")
     a = p.parse_args()
 
-    thetas = [0.5, 0.7, 0.9] if a.full else [0.7]
+    thetas = a.thetas if a.thetas is not None else ([0.5, 0.7, 0.9] if a.full else [0.7])
     Ks = a.Ks if a.Ks is not None else (KS if a.full else [4])
     n_reps = a.n_reps if a.n_reps is not None else (100 if a.full else 8)
     draws = a.draws if a.draws is not None else (800 if a.full else 600)
