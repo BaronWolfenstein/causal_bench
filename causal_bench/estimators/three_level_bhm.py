@@ -202,16 +202,36 @@ def _meta_model_numpyro(theta_hat, se, mu_sd, tau_sd):
     numpyro.sample("obs", dist.Normal(theta, se), obs=theta_hat)
 
 
+def _meta_model_numpyro_lognormal(theta_hat, se, mu_sd, tau_mu_log, tau_sigma_log):
+    """Empirical (van Zwet) variant: τ ~ LogNormal. A SEPARATE model fn (not a branch
+    inside ``_meta_model_numpyro``) so JAX's compile cache keys the two τ families to two
+    entries — each compiles once; the scalar params still change without recompiling."""
+    import numpyro
+    import numpyro.distributions as dist
+    n = theta_hat.shape[0]
+    mu = numpyro.sample("mu", dist.Normal(0.0, mu_sd))
+    tau = numpyro.sample("tau", dist.LogNormal(tau_mu_log, tau_sigma_log))
+    z = numpyro.sample("z", dist.Normal(0.0, 1.0).expand([n]))   # non-centered
+    theta = mu + tau * z
+    numpyro.sample("obs", dist.Normal(theta, se), obs=theta_hat)
+
+
 def fit_three_level_meta_fast(theta_hat, se, *, draws: int = 500, tune: int = 500,
                               chains: int = 2, seed: int = 0, tau_sd: float = 0.5,
+                              tau_prior: tuple | None = None,
                               mu_sd: float = 1.0, true_effect: float = 0.0,
                               n_pad: int | None = None, chain_method: str = "vectorized",
                               return_theta: bool = False) -> dict:
     """Statistically equivalent to `fit_three_level_meta` but compiles once and
     reuses across reps (validated against it). `n_pad` fixes the subgroup dimension
     (default = len(theta_hat)); pass the level's max (e.g. spec['g']) so all reps
-    share one compiled sampler. mu_sd/tau_sd are passed as arrays so changing the
-    prior between reps does NOT recompile."""
+    share one compiled sampler. mu_sd/tau params are passed as arrays so changing the
+    prior between reps does NOT recompile.
+
+    ``tau_prior=(family, params)`` selects the τ prior — ``("halfnormal", (scale,))`` or
+    ``("lognormal", (mu_log, sigma_log))`` (the empirical policy). Each family has its own
+    compiled model (one compile apiece), so a --fast sweep runs all policies on the same
+    compile-once sampler. Omitting ``tau_prior`` falls back to ``HalfNormal(tau_sd)``."""
     import jax
     import jax.numpy as jnp
     import arviz as az
@@ -225,14 +245,26 @@ def fit_three_level_meta_fast(theta_hat, se, *, draws: int = 500, tune: int = 50
     thp = np.zeros(n_pad, float); thp[:n_g] = th
     sp = np.full(n_pad, 1e6, float); sp[:n_g] = s              # padded rows uninformative
 
+    # Resolve the τ prior to (model_fn, extra scalar args). halfnormal and lognormal are
+    # distinct model fns so JAX compiles each once (see _meta_model_numpyro_lognormal).
+    family, params = tau_prior if tau_prior is not None else ("halfnormal", (tau_sd,))
+    if family == "halfnormal":
+        model_fn = _meta_model_numpyro
+        tau_args = (jnp.asarray(float(params[0])),)
+    elif family == "lognormal":
+        model_fn = _meta_model_numpyro_lognormal
+        tau_args = (jnp.asarray(float(params[0])), jnp.asarray(float(params[1])))
+    else:
+        raise ValueError(f"unknown tau_prior family {family!r}")
+
     # Fresh MCMC each call (reusing the object breaks on re-run with vectorized
     # chains). jax's global compile cache keys on the model fn + shapes, so with a
     # fixed n_pad every rep hits the cache — only the first pays compilation.
-    mcmc = MCMC(NUTS(_meta_model_numpyro, target_accept_prob=0.9),
+    mcmc = MCMC(NUTS(model_fn, target_accept_prob=0.9),
                 num_warmup=tune, num_samples=draws, num_chains=chains,
                 chain_method=chain_method, progress_bar=False)
     mcmc.run(jax.random.PRNGKey(int(seed)), jnp.asarray(thp), jnp.asarray(sp),
-             jnp.asarray(float(mu_sd)), jnp.asarray(float(tau_sd)))
+             jnp.asarray(float(mu_sd)), *tau_args)
     mu_cd = np.asarray(mcmc.get_samples(group_by_chain=True)["mu"])   # (chains, draws)
     out = _decision(float(mu_cd.mean()), float(mu_cd.std()), true_effect)
     out.update({"r_hat": float(az.rhat(mu_cd)),                       # (chain, draw) array

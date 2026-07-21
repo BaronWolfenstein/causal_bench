@@ -120,6 +120,43 @@ def test_fit_meta_unknown_tau_prior_family_raises():
         fit_three_level_meta(np.zeros(4), np.ones(4), tau_prior=("cauchy", (0.5,)), **FAST)
 
 
+def test_fit_meta_fast_lognormal_tau_prior_runs_and_recovers():
+    # the compile-once fast path must also carry the empirical (LogNormal) τ prior,
+    # so all four policies share ONE sampler on the box (--fast) and the comparison
+    # isn't confounded by mixing samplers.
+    from causal_bench.estimators.three_level_bhm import fit_three_level_meta_fast
+    rng = np.random.default_rng(1)
+    mu_true = -0.10
+    theta = rng.normal(mu_true, 0.12, 8)
+    se = np.full(8, 0.10)
+    fit = fit_three_level_meta_fast(theta + rng.normal(0, se), se, true_effect=mu_true,
+                                    tau_prior=("lognormal", (-1.82, 0.90)),
+                                    chain_method="vectorized", **FAST)
+    assert abs(fit["effect"] - mu_true) < 0.15
+    assert np.isfinite(fit["tail_ess"]) and fit["tail_ess"] > 0
+
+
+def test_fit_meta_fast_halfnormal_tau_prior_equals_tau_sd():
+    # back-compat on the fast path: tau_prior=("halfnormal",(s,)) ≡ legacy tau_sd=s.
+    from causal_bench.estimators.three_level_bhm import fit_three_level_meta_fast
+    rng = np.random.default_rng(2)
+    theta = rng.normal(0.0, 0.2, 6)
+    se = np.full(6, 0.12)
+    theta_hat = theta + rng.normal(0, se)
+    a = fit_three_level_meta_fast(theta_hat, se, tau_sd=0.3, chain_method="vectorized", **FAST)
+    b = fit_three_level_meta_fast(theta_hat, se, tau_prior=("halfnormal", (0.3,)),
+                                  chain_method="vectorized", **FAST)
+    assert a["effect"] == pytest.approx(b["effect"], abs=1e-9)
+    assert a["se"] == pytest.approx(b["se"], abs=1e-9)
+
+
+def test_fit_meta_fast_unknown_tau_prior_family_raises():
+    from causal_bench.estimators.three_level_bhm import fit_three_level_meta_fast
+    with pytest.raises(ValueError):
+        fit_three_level_meta_fast(np.zeros(4), np.ones(4), tau_prior=("cauchy", (0.5,)),
+                                  chain_method="vectorized", **FAST)
+
+
 def test_exp19_bridge_extracts_summaries_and_both_kernels():
     # the real registry DGP → 4 subgroup summaries + exp19's ESS-weighted two-level.
     from experiments.exp36_three_level_fidelity import exp19_subgroup_summaries
