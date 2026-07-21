@@ -16,8 +16,8 @@ _spec.loader.exec_module(mgpu)
 
 def test_shard_partition_is_disjoint_cover():
     exp41 = pytest.importorskip("experiments.exp41_borrowing_calibration")
-    cells = list(exp41.iter_cells(["group", "member"], [0.5, 0.7, 0.9]))
-    assert len(cells) == 72                              # 2 lvl × 3 θ₀ × 3 scen × 4 policy
+    cells = list(exp41.iter_cells(["group", "member"], [0.5, 0.7, 0.9], exp41.KS))
+    assert len(cells) == 288                # 2 lvl × 3 θ₀ × 4 K × 3 scen × 4 policy
     n = 8
     seen: set = set()
     for i in range(n):

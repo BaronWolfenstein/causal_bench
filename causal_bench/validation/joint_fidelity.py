@@ -134,9 +134,15 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
     tau_true = true_tau_by_level(spec)["tau_group" if level == "group" else "tau_member"]
     rejects, covers, taus, widths, sub_rejects = [], [], [], [], []
     rejects_all, n_flagged, n_used = [], 0, 0
+    accs: list = []                                            # decode accuracy per replicate
     for r in range(n_reps):
         coh = sample_joint_cohort(spec, n_units, depth, sigma=sigma, seed=seed + r)
         dec = decode_cohort_labels(spec, coh, theta0=theta0, seed=seed + 1000 + r)
+        # decode accuracy at the level is the canonical policy's INPUT; record it for every
+        # replicate (it is a property of the cohort, not of the fit) so a K sweep can be
+        # read honestly — a larger K also enlarges the grammar alphabet and can depress
+        # decode accuracy, confounding "more subgroups" with "harder decode".
+        accs.append(dec["group_decode_acc" if level == "group" else "member_decode_acc"])
         sub = dec["group_decoded" if level == "group" else "member_decoded"]
         n_sub = spec["g"] if level == "group" else spec["b_size"]
         th, se, kept = _subgroup_estimates(coh["Y"], coh["A"], sub, n_sub)
@@ -173,6 +179,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         "coverage": float(np.mean(covers)) if covers else float("nan"),
         "mean_ci_width": float(np.mean(widths)) if widths else float("nan"),
         "mean_tau_sd": float(np.mean(taus)) if taus else float("nan"),
+        "mean_decode_acc": float(np.mean(accs)) if accs else float("nan"),
         "mu_true": mu_true, "tau_true": float(tau_true),
         "n_flagged": n_flagged, "n_used": n_used,
     }
