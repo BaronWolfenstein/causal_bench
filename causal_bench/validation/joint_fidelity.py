@@ -75,6 +75,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                    depth: int = 7, sigma: float = 0.5, flat_tau_sd: float = 0.5,
                    tau_base: float = 0.5, tau_sd_min: float = 0.05, draws: int = 500,
                    tune: int = 500, chains: int = 2, seed: int = 0,
+                   chain_method: str = "sequential", fast: bool = False,
                    tail_ess_threshold: float = 100.0, null_subgroup: int | None = None) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
     cell. ``reject_rate`` is the population-μ decision (Type-I under a null spec, power
@@ -88,7 +89,8 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
     the tail-ESS-gated ``reject_rate`` and the flagged-included ``reject_rate_uncond``
     (dropping flagged fits is selection-on-data). Subgroups = the DECODED labels at
     ``level``; the prior is set by ``policy``."""
-    from causal_bench.estimators.three_level_bhm import fit_three_level_meta, tail_ess_ok
+    from causal_bench.estimators.three_level_bhm import (
+        fit_three_level_meta, fit_three_level_meta_fast, tail_ess_ok)
 
     mu_true = population_effect(spec)
     tau_true = true_tau_by_level(spec)["tau_group" if level == "group" else "tau_member"]
@@ -104,9 +106,15 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
             continue
         tau_sd = _policy_tau_sd(policy, level, spec, dec, flat_tau_sd=flat_tau_sd,
                                 tau_base=tau_base, tau_sd_min=tau_sd_min)
-        fit = fit_three_level_meta(th, se, tau_sd=tau_sd, true_effect=mu_true,
-                                   draws=draws, tune=tune, chains=chains, seed=seed + r,
-                                   return_theta=null_subgroup is not None)
+        if fast and null_subgroup is None:                      # compile-once path (no return_theta)
+            fit = fit_three_level_meta_fast(th, se, tau_sd=tau_sd, true_effect=mu_true,
+                                            draws=draws, tune=tune, chains=chains,
+                                            seed=seed + r, chain_method=chain_method, n_pad=n_sub)
+        else:
+            fit = fit_three_level_meta(th, se, tau_sd=tau_sd, true_effect=mu_true,
+                                       draws=draws, tune=tune, chains=chains, seed=seed + r,
+                                       chain_method=chain_method,
+                                       return_theta=null_subgroup is not None)
         rejects_all.append(fit["rejects_null"])                 # flagged-included sensitivity
         if not tail_ess_ok(fit, threshold=tail_ess_threshold):
             n_flagged += 1

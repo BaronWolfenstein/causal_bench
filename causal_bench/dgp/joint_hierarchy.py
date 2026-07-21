@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from causal_bench.diagnostics.rhm_grammar import make_product_grammar, _generate, _bp_belief
+from causal_bench.diagnostics.rhm_grammar import (
+    make_product_grammar, _generate, _bp_belief, _bp_belief_batch)
 
 
 def make_joint_hierarchy(g: int, b_size: int, s: int, m: int, *, w_group: float = 1.0,
@@ -87,13 +88,16 @@ def decode_cohort_labels(spec: dict, cohort: dict, *, theta0: float, seed: int =
     group_decode_acc, member_decode_acc}``."""
     rng = np.random.default_rng(seed)
     rules, b_size, v, depth = spec["rules"], spec["b_size"], spec["v"], cohort["depth"]
-    n = len(cohort["leaves"])
-    dg, dm = np.empty(n, int), np.empty(n, int)
-    for i, leaves in enumerate(cohort["leaves"]):
+    leaves_list = cohort["leaves"]
+    n, n_leaf = len(leaves_list), len(leaves_list[0])
+    # corruption loop kept per-unit (cheap; preserves the RNG stream → bit-identical
+    # to the old loop); only the expensive BP is batched over units below.
+    Y = np.empty((n, n_leaf), int)
+    for i, leaves in enumerate(leaves_list):
         keep = rng.random(len(leaves)) < theta0
-        y = np.where(keep, leaves, rng.integers(0, v, size=len(leaves)))
-        root_hat = int(np.argmax(_bp_belief(y, depth, rules, v, float(theta0))))
-        dg[i], dm[i] = root_hat // b_size, root_hat % b_size
+        Y[i] = np.where(keep, leaves, rng.integers(0, v, size=len(leaves)))
+    root_hat = _bp_belief_batch(Y, depth, rules, v, float(theta0)).argmax(1)  # (n,), one batched BP
+    dg, dm = root_hat // b_size, root_hat % b_size
     return {"group_decoded": dg, "member_decoded": dm, "theta0": theta0,
             "group_decode_acc": float((dg == cohort["group"]).mean()),
             "member_decode_acc": float((dm == cohort["member"]).mean())}

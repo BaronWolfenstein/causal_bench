@@ -108,6 +108,33 @@ def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
     return belief / (belief.sum() + 1e-300)
 
 
+def _bp_belief_batch(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
+                     corruption: np.ndarray | None = None) -> np.ndarray:
+    """Batched exact rule-BP: identical recursion to `_bp_belief` but with a leading
+    unit axis. `leaves` is (n, s**depth); returns (n, v) beliefs. Bit-identical to
+    running `_bp_belief` per row — it just shares the tree walk across all units,
+    turning decode's 3000-unit Python loop into O(depth) vectorized array ops."""
+    leaves = np.asarray(leaves)
+    n = leaves.shape[0]
+    if depth == 0:
+        y = leaves[:, 0].astype(int)                      # (n,)
+        if corruption is None:
+            msg = np.full((n, v), (1.0 - theta) / v)
+        else:
+            msg = (1.0 - theta) * corruption[:, y].T.copy()   # (n, v)
+        msg[np.arange(n), y] += theta
+        return msg
+    s = rules.shape[2]
+    csz = leaves.shape[1] // s
+    child = np.stack([_bp_belief_batch(leaves[:, i * csz:(i + 1) * csz], depth - 1,
+                                       rules, v, theta, corruption)
+                      for i in range(s)])                 # (s, n, v)
+    # belief(n, a) ∝ Σ_r Π_i child[i, n, rules[a,r,i]]
+    gathered = np.stack([child[i][:, rules[:, :, i]] for i in range(s)])  # (s, n, v, m)
+    belief = gathered.prod(0).sum(2)                      # (n, v)
+    return belief / (belief.sum(1, keepdims=True) + 1e-300)
+
+
 def make_lowrank_corruption(v: int, r: int, *, beta: float = 1.0, seed: int = 0,
                             features: np.ndarray | None = None):
     """A low-rank, zero-diagonal, row-stochastic corruption matrix ``C`` (v×v): when
