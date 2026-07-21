@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from causal_bench.validation.joint_fidelity import (
-    population_effect, make_null_spec, _subgroup_estimates, _policy_tau_sd, joint_fidelity,
+    population_effect, make_null_spec, _subgroup_estimates, _policy_tau_prior,
+    empirical_tau_prior, joint_fidelity,
 )
 from causal_bench.dgp.joint_hierarchy import make_joint_hierarchy, decode_cohort_labels, sample_joint_cohort
 
@@ -36,20 +37,37 @@ def test_subgroup_estimates_recover_mean_difference_and_drop_sparse():
     assert list(kept) == [0]                                   # kept maps rows back to subgroup ids
 
 
-def test_policy_tau_sd_flat_oracle_canonical():
+def test_empirical_tau_prior_bridges_smd_to_raw_scale():
+    # van Zwet's log τ ~ N(-1.82, 0.90) is on the SMD scale; our subgroup effects are
+    # raw mean-differences with outcome SD σ, so τ_raw = τ_SMD·σ ⇒ the log-location
+    # shifts by log(σ), the log-spread is unchanged.
+    fam, (mu_log, sigma_log) = empirical_tau_prior(1.0)             # σ=1 ⇒ pure SMD
+    assert fam == "lognormal"
+    assert mu_log == pytest.approx(-1.82) and sigma_log == pytest.approx(0.90)
+    _, (mu_log_half, _) = empirical_tau_prior(0.5)                  # σ=0.5 ⇒ shift by log 0.5
+    assert mu_log_half == pytest.approx(-1.82 + np.log(0.5))
+    # median raw τ = exp(mu_log) = 0.162·0.5 ≈ 0.081
+    assert np.exp(mu_log_half) == pytest.approx(np.exp(-1.82) * 0.5)
+
+
+def test_policy_tau_prior_families():
     from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
     spec = make_joint_hierarchy(4, 3, 2, 2, w_group=1.5, w_member=0.3, seed=0)
     dec = {"group_decode_acc": 0.92, "member_decode_acc": 0.75}
-    kw = dict(flat_tau_sd=0.5, tau_base=0.5, tau_sd_min=0.05)
-    flat = _policy_tau_sd("flat", "group", spec, dec, **kw)
-    orc = _policy_tau_sd("oracle", "group", spec, dec, **kw)
-    can = _policy_tau_sd("canonical", "group", spec, dec, **kw)
-    assert flat == 0.5
+    kw = dict(flat_tau_sd=0.5, tau_base=0.5, tau_sd_min=0.05, sigma=0.5)
+    flat = _policy_tau_prior("flat", "group", spec, dec, **kw)
+    orc = _policy_tau_prior("oracle", "group", spec, dec, **kw)
+    can = _policy_tau_prior("canonical", "group", spec, dec, **kw)
+    emp = _policy_tau_prior("empirical", "group", spec, dec, **kw)
+    # flat/oracle/canonical are HalfNormal scales; empirical is the fixed VZ LogNormal
+    assert flat == ("halfnormal", (0.5,))
+    assert emp == ("lognormal", (-1.82 + np.log(0.5), 0.90))
+    assert orc[0] == "halfnormal" and can[0] == "halfnormal"
     from causal_bench.dgp.joint_hierarchy import true_tau_by_level
-    assert abs(orc - true_tau_by_level(spec)["tau_group"]) < 1e-9
+    assert abs(orc[1][0] - true_tau_by_level(spec)["tau_group"]) < 1e-9
     # canonical = tau_base · discount — a DISCOUNT on the base scale, never above it
-    assert abs(can - 0.5 * canonical_tau_discount(0.92, 4)) < 1e-9
-    assert 0.0 < can < 0.5
+    assert abs(can[1][0] - 0.5 * canonical_tau_discount(0.92, 4)) < 1e-9
+    assert 0.0 < can[1][0] < 0.5
 
 
 def test_joint_fidelity_runs_and_global_null_is_not_inflated():

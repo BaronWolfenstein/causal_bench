@@ -11,7 +11,7 @@ identifiability genuinely bites on the fine-level effect (the #144 learnability 
 
 Grid: **level** (effect-on-coarse `group` vs effect-on-fine `member`) × **θ₀** ×
 **scenario** (global null μ=τ=0; heterogeneous null μ=0, τ>0 — where borrowing threatens
-size; alternative μ≠0) × **policy** (`flat` / `oracle` / `canonical`).
+size; alternative μ≠0) × **policy** (`flat` / `oracle` / `canonical` / `empirical`).
 
 The story to look for:
 - **global null**: every policy keeps Type-I ≈ nominal (identifiability is orthogonal to
@@ -21,6 +21,11 @@ The story to look for:
   `canonical` shrinks harder — the adversarial cell where over-pooling a real τ can
   inflate Type-I / drop coverage;
 - **alt**: power of `canonical` vs `flat`/`oracle`.
+
+The honest exp41 question (see memory reference_vanzwet_single_trial_prior): does the
+identifiability-aware `canonical` discount beat the FIXED `empirical` van Zwet prior — the
+reference-class baseline — at all? Expected: marginally, and only where a level is decoded
+well enough that its accuracy carries information the pooled-Cochrane prior does not.
 
 Requires the 3.12 `[bayes]` stack (PyMC/NumPyro) — run in `.venv312` (or the box).
 
@@ -51,7 +56,7 @@ from causal_bench.validation.joint_fidelity import joint_fidelity, make_scenario
 
 OUT_DIR = Path("results/exp41_borrowing_calibration")
 SCENARIOS = {"global_null": (0.0, 0.0), "hetero_null": (0.0, 0.6), "alt": (0.5, 0.3)}
-POLICIES = ["flat", "oracle", "canonical"]
+POLICIES = ["flat", "oracle", "canonical", "empirical"]
 
 
 def iter_cells(levels, thetas):

@@ -106,21 +106,43 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
     return out
 
 
+def _build_tau(pm, tau_prior, tau_sd):
+    """Construct the between-subgroup SD prior τ. ``tau_prior`` is a tagged pair
+    ``(family, params)`` — ``("halfnormal", (scale,))`` or ``("lognormal", (mu_log,
+    sigma_log))`` (the van Zwet empirical policy). When ``tau_prior`` is None the legacy
+    ``HalfNormal(tau_sd)`` is used, so callers passing only ``tau_sd`` are unchanged."""
+    if tau_prior is None:
+        return pm.HalfNormal("tau", tau_sd)
+    family, params = tau_prior
+    if family == "halfnormal":
+        return pm.HalfNormal("tau", params[0])
+    if family == "lognormal":
+        mu_log, sigma_log = params
+        return pm.LogNormal("tau", mu=mu_log, sigma=sigma_log)
+    raise ValueError(f"unknown tau_prior family {family!r}")
+
+
 def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
                          chains: int = 2, seed: int = 0, sampler: str = "numpyro",
                          chain_method: str = "sequential",
                          true_effect: float = 0.0, mu_sd: float = 1.0,
-                         tau_sd: float = 0.5, return_theta: bool = False) -> dict:
+                         tau_sd: float = 0.5, tau_prior: tuple | None = None,
+                         return_theta: bool = False) -> dict:
     """Three-level model on **subgroup summaries** (the exp19-compatible form): a
     Bayesian random-effects meta-analysis over per-subgroup effect estimates.
 
-        μ ~ N(0, mu_sd²);  τ ~ HalfNormal(tau_sd);
+        μ ~ N(0, mu_sd²);  τ ~ <tau_prior>;
         θ_g ~ N(μ, τ²);    θ̂_g ~ N(θ_g, se_g²)   [se_g fixed, the within-subgroup SE]
 
     ``μ`` is the population effect. Unlike an ESS-weighted pooled variance (which
     ignores between-subgroup heterogeneity), this **propagates τ into the μ
     posterior**, so the SE is honest when subgroups disagree. Sampled via the
-    NumPyro/JAX backend; reports R-hat / bulk-ESS / tail-ESS."""
+    NumPyro/JAX backend; reports R-hat / bulk-ESS / tail-ESS.
+
+    The τ prior is ``tau_prior=(family, params)`` — ``("halfnormal", (scale,))`` or
+    ``("lognormal", (mu_log, sigma_log))``. Omitting it falls back to
+    ``HalfNormal(tau_sd)`` (legacy). The lognormal family is what the empirical
+    (van Zwet) borrowing policy uses (see ``joint_fidelity.empirical_tau_prior``)."""
     import pymc as pm
 
     theta_hat = np.asarray(theta_hat, float)
@@ -128,7 +150,7 @@ def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
     n_g = len(theta_hat)
     with pm.Model():
         mu = pm.Normal("mu", 0.0, mu_sd)
-        tau = pm.HalfNormal("tau", tau_sd)
+        tau = _build_tau(pm, tau_prior, tau_sd)
         z = pm.Normal("z", 0.0, 1.0, shape=n_g)            # non-centered: avoids the funnel
         theta = pm.Deterministic("theta", mu + tau * z)
         pm.Normal("obs", theta, se, observed=theta_hat)

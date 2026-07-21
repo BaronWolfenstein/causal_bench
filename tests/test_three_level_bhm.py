@@ -88,6 +88,38 @@ def test_three_level_meta_recovers_effect_from_summaries():
     assert fit["r_hat"] < 1.1
 
 
+def test_fit_meta_lognormal_tau_prior_runs_and_recovers():
+    # the empirical (van Zwet) policy needs a LogNormal τ prior, not a HalfNormal
+    # scale. Passing tau_prior=("lognormal", (mu_log, sigma_log)) must build that
+    # prior and still recover μ.
+    rng = np.random.default_rng(1)
+    mu_true, tau_true = -0.10, 0.12
+    theta = rng.normal(mu_true, tau_true, 8)
+    se = np.full(8, 0.10)
+    fit = fit_three_level_meta(theta + rng.normal(0, se), se, true_effect=mu_true,
+                               tau_prior=("lognormal", (-1.82, 0.90)), **FAST)
+    assert abs(fit["effect"] - mu_true) < 0.15
+    assert np.isfinite(fit["tail_ess"]) and fit["r_hat"] < 1.1
+
+
+def test_fit_meta_halfnormal_tau_prior_equals_tau_sd():
+    # back-compat: tau_prior=("halfnormal", (s,)) builds the SAME model as the
+    # legacy tau_sd=s, so with a shared seed the decision is identical.
+    rng = np.random.default_rng(2)
+    theta = rng.normal(0.0, 0.2, 6)
+    se = np.full(6, 0.12)
+    theta_hat = theta + rng.normal(0, se)
+    a = fit_three_level_meta(theta_hat, se, tau_sd=0.3, **FAST)
+    b = fit_three_level_meta(theta_hat, se, tau_prior=("halfnormal", (0.3,)), **FAST)
+    assert a["effect"] == pytest.approx(b["effect"], abs=1e-9)
+    assert a["se"] == pytest.approx(b["se"], abs=1e-9)
+
+
+def test_fit_meta_unknown_tau_prior_family_raises():
+    with pytest.raises(ValueError):
+        fit_three_level_meta(np.zeros(4), np.ones(4), tau_prior=("cauchy", (0.5,)), **FAST)
+
+
 def test_exp19_bridge_extracts_summaries_and_both_kernels():
     # the real registry DGP → 4 subgroup summaries + exp19's ESS-weighted two-level.
     from experiments.exp36_three_level_fidelity import exp19_subgroup_summaries
