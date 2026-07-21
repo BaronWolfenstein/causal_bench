@@ -45,7 +45,7 @@ class TMLEIPCWEstimator(BaseEstimator):
 
     def __init__(self, use_compliance: bool = False, n_folds: int = 5,
                  random_state: int = 42, fold_mode: str = "iid",
-                 g_learner=None, q_learner=None):
+                 g_learner=None, q_learner=None, clever_projection=None):
         """
         fold_mode:
             "iid" (default) — current behavior, ignores any provenance
@@ -61,6 +61,18 @@ class TMLEIPCWEstimator(BaseEstimator):
             wiring), g is fit as a single-candidate SuperLearner (reusing its
             OOF machinery) and Q via _fit_q. The censoring model G (Cox) is
             unchanged in both cases.
+        clever_projection:
+            Optional seam for a SUPPLIED clever covariate (#182). Called as
+            ``clever_projection(predict_g, W, A) -> (inv_g, inv_1mg)``, where
+            ``predict_g(W_matrix)`` re-evaluates the fitted propensity at modified
+            covariates. The returned arrays replace ``1/g`` and ``1/(1-g)`` in the
+            clever covariate. Default None reproduces the current behaviour exactly.
+            This exists because a projected clever covariate ``E[H(A,W_true)|W_obs,A]``
+            CANNOT be expressed as a data-column swap -- ``E[H(W)] != H(E[W])`` is the
+            whole point -- so it must be supplied rather than rebuilt from a column.
+            ATE only; the ATT branch ignores it. NOTE the cross-fitted (OOF) variance
+            path is not projected, so with a projection supplied the SE is approximate
+            -- prefer bootstrap intervals (cf. exp32's corrected_bootstrap_ci).
         """
         self.use_compliance = use_compliance
         self.n_folds = n_folds
@@ -68,6 +80,7 @@ class TMLEIPCWEstimator(BaseEstimator):
         self.fold_mode = fold_mode
         self.g_learner = g_learner
         self.q_learner = q_learner
+        self.clever_projection = clever_projection
 
     @property
     def name(self) -> str:
@@ -118,6 +131,14 @@ class TMLEIPCWEstimator(BaseEstimator):
         # OOF g: SuperLearner stores genuine out-of-fold predictions during fit.
         g_oof = sl_g.oof_predictions_
 
+        # #182 seam: a supplied clever covariate (e.g. the measurement-error
+        # projection E[H(A,W_true)|W_obs,A]) replaces 1/g and 1/(1-g).
+        inv_g = inv_1mg = None
+        if self.clever_projection is not None:
+            inv_g, inv_1mg = self.clever_projection(sl_g.predict_proba, W, A)
+            inv_g = np.asarray(inv_g, float)
+            inv_1mg = np.asarray(inv_1mg, float)
+
         # ── Step 3: Outcome model (IPCW-weighted, logistic by default) ──
         AW = np.column_stack([A, W])
         AW1 = np.column_stack([np.ones(n), W])
@@ -155,6 +176,7 @@ class TMLEIPCWEstimator(BaseEstimator):
             point, se, IC = self._target_and_se(
                 Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, est, n,
                 g_oof=g_oof, Q_1W_oof=Q_1W_oof, Q_0W_oof=Q_0W_oof,
+                inv_g=inv_g, inv_1mg=inv_1mg,
             )
             z = stats.norm.ppf(0.975)
             results.append(EstimatorResult(
@@ -191,11 +213,16 @@ class TMLEIPCWEstimator(BaseEstimator):
         return G
 
     def _target_and_se(self, Y, A, g, Q_AW, Q_1W, Q_0W, ipcw, estimand, n,
-                       g_oof=None, Q_1W_oof=None, Q_0W_oof=None):
+                       g_oof=None, Q_1W_oof=None, Q_0W_oof=None,
+                       inv_g=None, inv_1mg=None):
+        # inv_g / inv_1mg: supplied stand-ins for 1/g and 1/(1-g) (the #182 seam).
+        # None reproduces the plug-in exactly, so the default path is unchanged.
+        ig = (1.0 / g) if inv_g is None else inv_g
+        i1mg = (1.0 / (1.0 - g)) if inv_1mg is None else inv_1mg
         if estimand == "ATE":
-            H = ipcw * (A / g - (1 - A) / (1 - g))
-            H1 = 1.0 / g
-            H0 = -1.0 / (1 - g)
+            H = ipcw * np.where(A == 1, ig, -i1mg)
+            H1 = ig
+            H0 = -i1mg
         else:  # ATT
             H = ipcw * (A - (1 - A) * g / (1 - g))
             H1 = np.ones(n)
@@ -219,9 +246,12 @@ class TMLEIPCWEstimator(BaseEstimator):
 
         if estimand == "ATE":
             point = np.mean(Q1_star - Q0_star)
+            # IC uses the same (possibly projected) weights as the targeting step.
+            ig_ic = (1.0 / g_ic) if inv_g is None else ig
+            i1mg_ic = (1.0 / (1.0 - g_ic)) if inv_1mg is None else i1mg
             IC = ((Q1_ic - Q0_ic - point)
-                  + ipcw * (A / g_ic) * (Y - Q1_ic)
-                  - ipcw * ((1 - A) / (1 - g_ic)) * (Y - Q0_ic))
+                  + ipcw * A * ig_ic * (Y - Q1_ic)
+                  - ipcw * (1 - A) * i1mg_ic * (Y - Q0_ic))
         else:
             pi = np.mean(A)
             if pi < 1e-8:
