@@ -51,6 +51,20 @@ def plugin_clever_covariate(A, g_fn, w1_mean, *, eps: float = 1e-6):
     return np.where(A == 1, 1.0 / g, -1.0 / (1.0 - g))
 
 
+def projected_inverse_propensities(g_fn, w1_mean, w1_sd, *, n_quad: int = 32,
+                                   eps: float = 1e-6):
+    """``E[1/g(W_true) | W_obs]`` and ``E[1/(1-g(W_true)) | W_obs]`` — exactly the two
+    quantities ``TMLEIPCWEstimator(clever_projection=...)`` substitutes for ``1/g`` and
+    ``1/(1-g)``. Gauss-Hermite quadrature over the calibration posterior."""
+    m = np.asarray(w1_mean, float)
+    sd = np.asarray(w1_sd, float)
+    nodes, weights = np.polynomial.hermite_e.hermegauss(n_quad)
+    grid = m[:, None] + sd[:, None] * nodes[None, :]
+    g = _clip(g_fn(grid), eps)
+    w = weights[None, :] / _SQRT_2PI
+    return (w / g).sum(axis=1), (w / (1.0 - g)).sum(axis=1)
+
+
 def projected_clever_covariate(A, g_fn, w1_mean, w1_sd, *, n_quad: int = 32,
                                eps: float = 1e-6):
     """``E[H(A, W_true) | W_obs, A]`` by Gauss-Hermite quadrature over the calibration
@@ -61,14 +75,8 @@ def projected_clever_covariate(A, g_fn, w1_mean, w1_sd, *, n_quad: int = 32,
     propensities of the same shape (broadcasting a 1-D input of shape ``(n,)`` too).
     Because ``H`` depends on ``W`` only through ``g``, integrating ``g`` is sufficient."""
     A = np.asarray(A)
-    m = np.asarray(w1_mean, float)
-    sd = np.asarray(w1_sd, float)
-    nodes, weights = np.polynomial.hermite_e.hermegauss(n_quad)   # ∫f(x)e^{-x²/2}dx
-    grid = m[:, None] + sd[:, None] * nodes[None, :]              # (n, n_quad)
-    g = _clip(g_fn(grid), eps)
-    w = weights[None, :] / _SQRT_2PI                              # normalise to E_N(0,1)
-    e_inv_g = (w / g).sum(axis=1)
-    e_inv_1mg = (w / (1.0 - g)).sum(axis=1)
+    e_inv_g, e_inv_1mg = projected_inverse_propensities(
+        g_fn, w1_mean, w1_sd, n_quad=n_quad, eps=eps)
     return np.where(A == 1, e_inv_g, -e_inv_1mg)
 
 

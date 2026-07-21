@@ -43,6 +43,7 @@ import pandas as pd
 from causal_bench.dgp.survival import DGPConfig, generate_data
 from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
 from causal_bench.measurement_error import regression_calibrate
+from causal_bench.estimators.projected_clever import projected_inverse_propensities
 
 OUT_DIR = Path("results/exp32_clever_covariate_me")
 _Z_COLS = ["W2", "W3", "W4", "A"]     # error-free covariates RC conditions on
@@ -91,16 +92,40 @@ def arm_frame(df: pd.DataFrame, arm: str, w1_true: np.ndarray,
         out["W1"] = w1_true
     elif arm == "naive":
         out["W1"] = w1_obs
-    elif arm == "corrected":
+    elif arm in ("corrected", "projected"):
+        # Both use the RC-calibrated column, so g is IDENTICAL between them; they
+        # differ only in whether the clever covariate is evaluated AT the posterior
+        # mean (corrected) or INTEGRATED over the posterior (projected) -- which
+        # isolates the Jensen correction as the single moving part (#182).
         out["W1"] = regression_calibrate_w1(df, w1_obs, sigma_x)
     else:
         raise ValueError(f"unknown arm: {arm!r}")
     return out
 
 
+def make_projection(w1_sd: np.ndarray, n_quad: int = 32):
+    """clever_projection callback for the TMLE seam (#182): integrate the FITTED g over
+    the calibration posterior N(W1_rc, w1_sd^2) instead of evaluating it at the mean.
+    `predict_g` re-scores the propensity with column 0 (W1) replaced by each quadrature
+    node, so the same fitted g is reused -- no second nuisance is introduced."""
+    def projection(predict_g, W, A):
+        def g_fn(w1_grid):
+            w1_grid = np.atleast_2d(w1_grid)
+            out = np.empty(w1_grid.shape, float)
+            for j in range(w1_grid.shape[1]):
+                Wj = W.copy()
+                Wj[:, 0] = w1_grid[:, j]
+                out[:, j] = predict_g(Wj)
+            return out
+        return projected_inverse_propensities(g_fn, W[:, 0], w1_sd, n_quad=n_quad)
+    return projection
+
+
 def estimate_arm_tmle(df_arm: pd.DataFrame, horizon: float = 1.0,
-                      n_folds: int = 3) -> dict:
-    r = TMLEIPCWEstimator(n_folds=n_folds).estimate(df_arm, horizon=horizon)[0]
+                      n_folds: int = 3, clever_projection=None) -> dict:
+    r = TMLEIPCWEstimator(n_folds=n_folds,
+                          clever_projection=clever_projection).estimate(
+        df_arm, horizon=horizon)[0]
     return {"point": float(r.point_estimate), "se": float(r.standard_error),
             "ci_lo": float(r.ci_lower), "ci_hi": float(r.ci_upper)}
 
