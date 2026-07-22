@@ -9,9 +9,16 @@ regulatory standard for continuous longitudinal endpoints and is valid under **M
 uses every observed visit through the likelihood instead of imputing, which is why it
 displaced LOCF. But `LatentConfounderCensoringConfig` already encodes **MNAR** dropout,
 and it is the ENCIRCLE-calibrated mechanism — so MMRM is biased under exactly the
-mechanism we simulate. ENCIRCLE's primary is a time-to-event KM rate, so MMRM is not on
-the primary path; it is what a trial statistician would run on continuous secondaries
-(KCCQ, 6MWT, echo measures), which is why its failure mode is worth pinning down.
+mechanism we simulate. ENCIRCLE's primary is a time-to-event KM rate (Guerrero et al., Lancet 2025, SAP
+Section C), so MMRM is not on the primary path.
+
+SCOPE HONESTY: the SAP material recorded in this repo covers the PRIMARY estimand
+only. Nothing here documents ENCIRCLE using MMRM, and the PROs this benchmark models
+(NYHA I-IV, KCCQ tertiles) are handled as ORDINAL via the cumulative-logistic /
+win-ratio path, not as continuous repeated measures. This experiment is therefore a
+GENERIC method-failure demonstration -- MMRM is the standard analysis for continuous
+longitudinal endpoints, and this DGP's dropout mechanism violates its assumption --
+not a claim about ENCIRCLE's analysis.
 
 Mechanism. Dropout is the textbook MNAR: P(drop at visit t) depends on ``Y_it`` *itself* —
 the value never recorded, precisely because you dropped out. Since ``Y_it`` differs by arm

@@ -177,3 +177,54 @@ def mnar_dropout_report(*, gamma_mnar: float, gamma_obs: float = 0.3, n: int = 5
             "ipcw_observed_excess": ipn_ex, "ipcw_observed_excess_se": ipn_se,
             "complete_data": f(cd), "complete_data_bias": f(cd) - truth,
             "retained_final": f(retained), "n_reps": n_reps}
+
+
+def coverage_report(*, n: int = 40, gamma_mnar: float = 0.0, gamma_obs: float = 0.3,
+                    T: int = 3, n_reps: int = 300, seed: int = 0, alpha: float = 0.05):
+    """Coverage of the final-visit treatment effect: naive df vs Kenward-Roger.
+
+    With an unstructured Sigma the naive variance ``(X'V^-1X)^-1`` ignores that Sigma is
+    ESTIMATED, so it is biased down and intervals under-cover — badly at the small n where
+    MMRM is actually used. Kenward-Roger inflates the variance and supplies a
+    Satterthwaite-type df for it.
+
+    Reporting coverage with naive df would measure OUR shortcut rather than MMRM's
+    behaviour, which is why the coverage arm and submission-faithful inference are the
+    same task, not alternatives. At ``gamma_mnar=0`` (MAR) KR should reach nominal; under
+    MNAR NEITHER can, because the point estimate is biased — an interval cannot rescue an
+    estimand that is not identified.
+    """
+    from scipy import stats
+    from causal_bench.estimators.mmrm import fit_mmrm_kr
+
+    l = np.zeros(2 * T)
+    l[T + (T - 1)] = 1.0                     # treatment effect at the final visit
+    z = stats.norm.ppf(1 - alpha / 2)
+    cov_naive, cov_kr, widths_n, widths_k, dfs, infl = [], [], [], [], [], []
+    for r in range(n_reps):
+        d = simulate_longitudinal_dropout(n=n, T=T, gamma_obs=gamma_obs,
+                                          gamma_mnar=gamma_mnar, seed=seed + r)
+        truth = float(d["effect"][T - 1])
+        try:
+            f = fit_mmrm_kr(d["y"], d["subject"], d["visit"],
+                            mmrm_design(d["A_long"], d["visit"], T),
+                            contrast=l, n_visits=T)
+        except Exception:
+            continue
+        est = f["estimate"]
+        lo_n, hi_n = est - z * f["se_naive"], est + z * f["se_naive"]
+        tq = stats.t.ppf(1 - alpha / 2, f["df"])
+        lo_k, hi_k = est - tq * f["se_kr"], est + tq * f["se_kr"]
+        cov_naive.append(lo_n <= truth <= hi_n)
+        cov_kr.append(lo_k <= truth <= hi_k)
+        widths_n.append(hi_n - lo_n)
+        widths_k.append(hi_k - lo_k)
+        dfs.append(f["df"])
+        infl.append(f["var_kr"] / max(f["var_naive"], 1e-12))
+    m = len(cov_naive)
+    se = lambda v: float(np.sqrt(np.mean(v) * (1 - np.mean(v)) / m)) if m else float("nan")
+    return {"n": n, "gamma_mnar": gamma_mnar, "n_fits": m,
+            "coverage_naive": float(np.mean(cov_naive)), "coverage_naive_se": se(cov_naive),
+            "coverage_kr": float(np.mean(cov_kr)), "coverage_kr_se": se(cov_kr),
+            "width_naive": float(np.mean(widths_n)), "width_kr": float(np.mean(widths_k)),
+            "mean_df": float(np.mean(dfs)), "mean_var_inflation": float(np.mean(infl))}

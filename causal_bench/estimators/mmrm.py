@@ -158,3 +158,104 @@ def treatment_effect_at(fit: dict, t: int, T: int) -> tuple:
     """(estimate, se) of the treatment effect at visit ``t`` from a `mmrm_design` fit."""
     j = T + t
     return float(fit["beta"][j]), float(fit["se"][j])
+
+
+# ── Kenward-Roger small-sample adjustment ────────────────────────────────────
+# With an unstructured Sigma the naive variance (X'V^-1X)^-1 ignores that Sigma itself is
+# estimated, so it is biased DOWN and intervals under-cover in small samples. Kenward-Roger
+# both inflates the variance and supplies a Satterthwaite-type df for it.
+#
+# Everything below is written in the DIRECT-ENTRY parameterisation theta = vech(Sigma),
+# where Sigma is LINEAR in theta. Two consequences make this far cheaper than it looks:
+# dSigma/dtheta_k is a single-entry (symmetrised) matrix, and d2Sigma/dtheta_j dtheta_k = 0,
+# so KR's second-derivative term R_jk VANISHES. No Jacobian from the optimiser's
+# log-Cholesky parameterisation is needed either: the information depends only on the
+# fitted Sigma and the design, not on how the fit was parameterised.
+def _dsigma_basis(T: int):
+    """d Sigma / d theta_k for theta = vech(Sigma): symmetrised single-entry matrices."""
+    out = []
+    for a in range(T):
+        for b in range(a + 1):
+            E = np.zeros((T, T))
+            E[a, b] = 1.0
+            E[b, a] = 1.0                      # symmetric; equals 1 on the diagonal
+            out.append(E)
+    return out
+
+
+def kr_adjust(Sigma, Xs, obs, contrast):
+    """Kenward-Roger adjusted variance and denominator df for a scalar contrast.
+
+    Returns ``{var_naive, var_kr, df, se_naive, se_kr}``. ``contrast`` is the vector l
+    with estimand l'beta.
+    """
+    T = Sigma.shape[0]
+    dS = _dsigma_basis(T)
+    q, p = len(dS), Xs[0].shape[1]
+    l = np.asarray(contrast, float)
+
+    # per-subject accumulators
+    M = np.zeros((p, p))
+    B = [np.zeros((p, p)) for _ in range(q)]              # KR's P_j = X'V^-1 Vdot_j V^-1 X
+    C = [[np.zeros((p, p)) for _ in range(q)] for _ in range(q)]   # KR's Q_jk
+    S = np.zeros((q, q))                                  # tr(A Vdot_j A Vdot_k)
+    for X_i, o in zip(Xs, obs):
+        A = np.linalg.inv(Sigma[np.ix_(o, o)])
+        AX = A @ X_i
+        M += X_i.T @ AX
+        AD = [A @ dS[k][np.ix_(o, o)] for k in range(q)]  # A Vdot_k
+        for j in range(q):
+            B[j] += AX.T @ dS[j][np.ix_(o, o)] @ AX
+            for k in range(q):
+                C[j][k] += AX.T @ dS[j][np.ix_(o, o)] @ A @ dS[k][np.ix_(o, o)] @ AX
+                S[j, k] += float(np.trace(AD[j] @ AD[k]))
+    Phi = np.linalg.inv(M)
+
+    # REML expected information: I_jk = 1/2 tr(P Vdot_j P Vdot_k), P = V^-1 - V^-1 X Phi X'V^-1
+    I = np.empty((q, q))
+    for j in range(q):
+        for k in range(q):
+            I[j, k] = 0.5 * (S[j, k] - np.trace(Phi @ C[j][k]) - np.trace(Phi @ C[k][j])
+                             + np.trace(Phi @ B[j] @ Phi @ B[k]))
+    # Guard: with q = T(T+1)/2 covariance parameters and few subjects the information
+    # is near-singular, and the KR adjustment degenerates (observed at T=6/n=30: a
+    # 1.84x variance inflation and df = inf). Flag rather than silently return it.
+    q_over_n = q / max(len(Xs), 1)
+    cond = float(np.linalg.cond(I)) if np.all(np.isfinite(I)) else float("inf")
+    W = np.linalg.pinv(I)                                 # asymptotic cov of theta-hat
+
+    # KR adjusted variance (R_jk = 0 because Sigma is linear in theta)
+    mid = np.zeros((p, p))
+    for j in range(q):
+        for k in range(q):
+            mid += W[j, k] * (C[j][k] - B[j] @ Phi @ B[k])
+    Phi_A = Phi + 2.0 * Phi @ mid @ Phi
+
+    var_naive = float(l @ Phi @ l)
+    var_kr = float(l @ Phi_A @ l)
+    # Satterthwaite-type df on the ADJUSTED variance: g_k = d(l'Phi l)/d theta_k
+    g = np.array([float(l @ Phi @ B[k] @ Phi @ l) for k in range(q)])
+    denom = float(g @ W @ g)
+    df = float(2.0 * var_kr ** 2 / denom) if denom > 1e-18 else float("inf")
+    degenerate = (not np.isfinite(df)) or cond > 1e10 or q_over_n > 0.4
+    return {"var_naive": var_naive, "var_kr": max(var_kr, 1e-12), "df": max(df, 1.0),
+            "se_naive": float(np.sqrt(max(var_naive, 0.0))),
+            "se_kr": float(np.sqrt(max(var_kr, 1e-12))),
+            "kr_degenerate": bool(degenerate), "info_cond": cond,
+            "q_over_n": float(q_over_n)}
+
+
+def fit_mmrm_kr(y, subject, visit, X, *, contrast, n_visits=None):
+    """`fit_mmrm` plus the Kenward-Roger adjustment for one scalar contrast."""
+    fit = fit_mmrm(y, subject, visit, X, n_visits=n_visits)
+    T = fit["Sigma"].shape[0]
+    subject = np.asarray(subject); visit = np.asarray(visit, int); X = np.asarray(X, float)
+    Xs, obs = [], []
+    for s in np.unique(subject):
+        m = subject == s
+        order = np.argsort(visit[m])
+        Xs.append(X[m][order]); obs.append(visit[m][order])
+    kr = kr_adjust(fit["Sigma"], Xs, obs, contrast)
+    fit.update(kr)
+    fit["estimate"] = float(np.asarray(contrast, float) @ fit["beta"])
+    return fit
