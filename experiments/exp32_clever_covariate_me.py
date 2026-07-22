@@ -42,7 +42,7 @@ import pandas as pd
 
 from causal_bench.dgp.survival import DGPConfig, generate_data
 from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
-from causal_bench.measurement_error import regression_calibrate
+from causal_bench.measurement_error import regression_calibrate, regression_calibrate_hetero
 from causal_bench.estimators.projected_clever import projected_inverse_propensities
 
 OUT_DIR = Path("results/exp32_clever_covariate_me")
@@ -221,3 +221,53 @@ def run(seed: int = 32):
 
 if __name__ == "__main__":
     run()
+
+
+# ── #182 step 4: HETEROSKEDASTIC measurement error ───────────────────────────
+def hetero_projection_shift(spread: float, *, sigma_x: float = 0.8, n: int = 1500,
+                            seeds: int = 6, positivity: float = 1.5, base_seed: int = 100):
+    """Paired projected-minus-plug-in ATE shift under heteroskedastic error.
+
+    Step 3 found the projection's ATE effect at the noise floor, and explained why: TMLE
+    targeting is invariant to a CONSTANT rescaling of the clever covariate, exp32's scalar
+    `sigma_x` makes the calibration posterior variance identical across units, so the
+    Jensen correction is nearly uniform and is discarded. Heteroskedastic error — two
+    "sites" measuring with precision `sigma_x/spread` and `sigma_x*spread` — makes the
+    posterior genuinely unit-specific, so the correction survives.
+
+    `spread=1.0` reproduces the homoskedastic null. Returns
+    ``(mean_inflation_sd, mean_shift, se_shift)``; the shift is PAIRED (same replicate,
+    same fitted g) so shared Monte-Carlo error cancels and |mean|/se is interpretable.
+    """
+    diffs, infl_sd = [], []
+    for sd in range(seeds):
+        rng = np.random.default_rng(base_seed + sd)
+        df, w1_true, _ = simulate_me_survival(sigma_x, n=n, seed=sd, positivity=positivity)
+        sx = np.where(rng.random(len(df)) < 0.5, sigma_x / spread, sigma_x * spread)
+        w1_obs = w1_true + sx * rng.normal(size=len(df))
+        m, tau2 = regression_calibrate_hetero(w1_obs, df[_Z_COLS].to_numpy(float), sx)
+        frame = df.copy()
+        frame["W1"] = m                       # both arms share this g -- only H differs
+        info = {}
+
+        def projection(predict_g, W, A):
+            def g_fn(grid):
+                grid = np.atleast_2d(grid)
+                out = np.empty(grid.shape, float)
+                for j in range(grid.shape[1]):
+                    Wj = W.copy()
+                    Wj[:, 0] = grid[:, j]
+                    out[:, j] = predict_g(Wj)
+                return out
+            ig, i1 = projected_inverse_propensities(g_fn, W[:, 0], np.sqrt(tau2))
+            g = np.clip(predict_g(W), 1e-6, 1 - 1e-6)
+            info["sd"] = float(np.std(ig * g))     # the NON-UNIFORM component
+            return ig, i1
+
+        proj = estimate_arm_tmle(frame, clever_projection=projection)["point"]
+        plug = estimate_arm_tmle(frame)["point"]
+        diffs.append(proj - plug)
+        infl_sd.append(info["sd"])
+    d = np.asarray(diffs)
+    se = float(d.std(ddof=1) / np.sqrt(len(d))) if len(d) > 1 else float("nan")
+    return float(np.mean(infl_sd)), float(d.mean()), se
