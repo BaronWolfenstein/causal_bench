@@ -59,7 +59,8 @@ from pathlib import Path
 
 import numpy as np
 
-from causal_bench.validation.joint_fidelity import joint_fidelity, make_scenario_spec
+from causal_bench.validation.joint_fidelity import (
+    joint_fidelity, make_scenario_spec, binom_ci_from_rate)
 
 OUT_DIR = Path("results/exp41_borrowing_calibration")
 SCENARIOS = {"global_null": (0.0, 0.0), "hetero_null": (0.0, 0.6), "alt": (0.5, 0.3)}
@@ -122,16 +123,24 @@ def report(rows: list[dict]) -> str:
     """Markdown table. Coverage and CI width are the headline OCs (#144: reject≈0 at small
     K is a size-≈0 test, not "nominal"); `decode` is the canonical policy's input, shown so
     a K trend can be separated from a decode-difficulty trend."""
-    hdr = ("| level | θ₀ | K | scenario | policy | reject | coverage | width | mean τ_sd |"
-           " decode | τ_true | used |\n"
-           "|-------|----|---|----------|--------|--------|----------|-------|-----------|"
-           "--------|--------|------|")
+    hdr = ("| level | θ₀ | K | scenario | policy | reject | coverage [95% CI] | width ±SE |"
+           " mean τ_sd | decode | τ_true | used |\n"
+           "|-------|----|---|----------|--------|--------|-------------------|-----------|"
+           "-----------|--------|--------|------|")
     lines = [hdr]
     for r in rows:
+        # Rows produced before MC error was added (e.g. the v3 run, launched earlier)
+        # carry only the rate and n_used — a binomial CI needs nothing else, so
+        # recover it post-hoc rather than demanding a re-run. Width SE is not
+        # recoverable from an aggregate and renders as nan.
+        lo, hi = (r["coverage_lo"], r["coverage_hi"]) if "coverage_lo" in r else \
+            binom_ci_from_rate(r["coverage"], r.get("n_used", 0))
         lines.append(
             f"| {r['level']} | {r['theta0']:.2f} | {r.get('K', '')} | {r['scenario']} | "
-            f"{r['policy']} | {r['reject_rate']:.2f} | {r['coverage']:.2f} | "
-            f"{r.get('mean_ci_width', float('nan')):.3f} | {r['mean_tau_sd']:.3f} | "
+            f"{r['policy']} | {r['reject_rate']:.2f} | {r['coverage']:.2f} ["
+            f"{lo:.2f}-{hi:.2f}] | "
+            f"{r.get('mean_ci_width', float('nan')):.3f}±{r.get('mean_ci_width_se', float('nan')):.3f} | "
+            f"{r['mean_tau_sd']:.3f} | "
             f"{r.get('mean_decode_acc', float('nan')):.3f} | "
             f"{r['tau_true']:.2f} | {r['n_used']} |")
     return "\n".join(lines)

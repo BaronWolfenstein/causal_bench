@@ -32,6 +32,45 @@ from causal_bench.dgp.joint_hierarchy import (
 from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
 
 
+# ── Monte-Carlo error on the OCs (#144 fix item 4) ───────────────────────────
+# The v2 run read coverage 0.96-1.00 everywhere and concluded "degenerate". That is only
+# a legitimate conclusion with an error bar: at n_reps=100 the MC SE on a coverage near
+# 0.95 is ~0.022, so 0.96 and 1.00 sit about one SE apart. Plain binomial SE is the wrong
+# tool at the boundary -- it is exactly 0 when the observed proportion is 1, implying
+# infinite precision when you have merely not yet seen a failure. Wilson score intervals
+# stay finite there, which is the case the K-grid run turns on.
+def binom_se(p: float, n: int) -> float:
+    """Binomial MC standard error of a proportion. Note this is 0 at p in {0, 1} --
+    prefer `wilson_ci` for statements about boundary cells."""
+    if n <= 0 or not np.isfinite(p):
+        return float("nan")
+    return float(np.sqrt(max(p * (1.0 - p), 0.0) / n))
+
+
+def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple:
+    """Wilson score interval for k successes in n trials. Stays informative at k=0 and
+    k=n, where the normal-approximation interval degenerates to a point."""
+    if n <= 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * np.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
+    lo, hi = centre - half, centre + half
+    # The exact Wilson interval always contains p; at k=0 / k=n round-off can put an
+    # endpoint an ulp on the wrong side, so clamp to guarantee containment.
+    return (float(min(max(0.0, lo), p)), float(max(min(1.0, hi), p)))
+
+
+def binom_ci_from_rate(rate: float, n: int, z: float = 1.96) -> tuple:
+    """Wilson CI from an ALREADY-AGGREGATED rate — lets runs that predate this reporting
+    (e.g. exp41 v3, launched earlier) be interpreted from `(rate, n_used)` without a
+    re-run, since a binomial CI needs nothing else."""
+    if n <= 0 or not np.isfinite(rate):
+        return (float("nan"), float("nan"))
+    return wilson_ci(int(round(rate * n)), n, z=z)
+
+
 def population_effect(spec: dict) -> float:
     """The true population-average treatment effect μ implied by the spec's effect
     tables (subgroups uniform): ``w_group·mean(group_effect) + w_member·mean(member_
@@ -177,7 +216,13 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         "reject_rate_uncond": float(np.mean(rejects_all)) if rejects_all else float("nan"),
         "subgroup_reject_rate": float(np.mean(sub_rejects)) if sub_rejects else float("nan"),
         "coverage": float(np.mean(covers)) if covers else float("nan"),
+        "coverage_se": binom_se(float(np.mean(covers)), len(covers)) if covers else float("nan"),
+        "coverage_lo": wilson_ci(int(np.sum(covers)), len(covers))[0] if covers else float("nan"),
+        "coverage_hi": wilson_ci(int(np.sum(covers)), len(covers))[1] if covers else float("nan"),
+        "reject_rate_se": binom_se(float(np.mean(rejects)), len(rejects)) if rejects else float("nan"),
         "mean_ci_width": float(np.mean(widths)) if widths else float("nan"),
+        "mean_ci_width_se": (float(np.std(widths, ddof=1) / np.sqrt(len(widths)))
+                             if len(widths) > 1 else float("nan")),
         "mean_tau_sd": float(np.mean(taus)) if taus else float("nan"),
         "mean_decode_acc": float(np.mean(accs)) if accs else float("nan"),
         "mu_true": mu_true, "tau_true": float(tau_true),

@@ -19,6 +19,20 @@ def test_report_renders_a_markdown_row_per_cell():
     assert "0.77" in out                                       # decode accuracy
 
 
+def test_report_recovers_a_binomial_CI_for_rows_that_predate_mc_error():
+    # The v3 run was launched before MC error landed, so its rows carry only the rate
+    # and n_used. A binomial CI needs nothing else — report() must recover it rather
+    # than demand a re-run. This is the case the whole #144 item-4 fix turns on:
+    # coverage 1.00 out of 100 is NOT infinitely precise.
+    legacy = {"level": "group", "theta0": 0.7, "K": 32, "scenario": "hetero_null",
+              "policy": "empirical", "reject_rate": 0.0, "coverage": 1.0,
+              "mean_ci_width": 1.021, "mean_tau_sd": 0.081, "mean_decode_acc": 0.96,
+              "tau_true": 0.6, "n_used": 100}
+    out = report([legacy])
+    assert "1.00 [0.96-1.00]" in out          # Wilson lower bound, not a bare 1.00
+    assert "nan" in out                        # width SE genuinely unrecoverable
+
+
 def test_scenario_and_policy_grid_is_complete():
     assert set(SCENARIOS) == {"global_null", "hetero_null", "alt"}
     assert POLICIES == ["flat", "oracle", "canonical", "empirical"]
