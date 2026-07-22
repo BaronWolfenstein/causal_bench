@@ -170,7 +170,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                    tune: int = 500, chains: int = 2, seed: int = 0,
                    chain_method: str = "sequential", fast: bool = False,
                    tail_ess_threshold: float = 100.0, null_subgroup: int | None = None,
-                   use_true_labels: bool = False) -> dict:
+                   use_true_labels: bool = False, max_escalations: int = 2) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
     cell. ``reject_rate`` is the population-μ decision (Type-I under a null spec, power
     under an alt). When ``null_subgroup`` is set (a partial-null spec, e.g.
@@ -189,7 +189,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
     mu_true = population_effect(spec)
     tau_true = true_tau_by_level(spec)["tau_group" if level == "group" else "tau_member"]
     rejects, covers, taus, widths, sub_rejects = [], [], [], [], []
-    rejects_all, n_flagged, n_used = [], 0, 0
+    rejects_all, n_flagged, n_used, n_escalated = [], 0, 0, 0
     accs: list = []                                            # decode accuracy per replicate
     for r in range(n_reps):
         coh = sample_joint_cohort(spec, n_units, depth, sigma=sigma, seed=seed + r)
@@ -216,15 +216,28 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
             continue
         tau_prior = _policy_tau_prior(policy, level, spec, dec, flat_tau_sd=flat_tau_sd,
                                       tau_base=tau_base, tau_sd_min=tau_sd_min, sigma=sigma)
-        if fast and null_subgroup is None:                      # compile-once path (no return_theta)
-            fit = fit_three_level_meta_fast(th, se, tau_prior=tau_prior, true_effect=mu_true,
-                                            draws=draws, tune=tune, chains=chains,
-                                            seed=seed + r, chain_method=chain_method, n_pad=n_sub)
-        else:
-            fit = fit_three_level_meta(th, se, tau_prior=tau_prior, true_effect=mu_true,
-                                       draws=draws, tune=tune, chains=chains, seed=seed + r,
-                                       chain_method=chain_method,
-                                       return_theta=null_subgroup is not None)
+        def _fit(d, t, sd_seed):
+            if fast and null_subgroup is None:                  # compile-once path
+                return fit_three_level_meta_fast(
+                    th, se, tau_prior=tau_prior, true_effect=mu_true, draws=d, tune=t,
+                    chains=chains, seed=sd_seed, chain_method=chain_method, n_pad=n_sub)
+            return fit_three_level_meta(
+                th, se, tau_prior=tau_prior, true_effect=mu_true, draws=d, tune=t,
+                chains=chains, seed=sd_seed, chain_method=chain_method,
+                return_theta=null_subgroup is not None)
+
+        fit = _fit(draws, tune, seed + r)
+        # ESCALATE rather than drop (#144). A low tail-ESS is a COMPUTATIONAL failure,
+        # not a property of the replicate, so discarding it is selection-on-data: it
+        # biases the OCs, makes n_used differ systematically across policies (a diffuse
+        # prior samples worse, so `flat` lost far more fits than `empirical`), and
+        # thins the very sample the coverage CI is computed from. Re-running with more
+        # draws is what oc_simulation_pipeline.mermaid always specified.
+        att = 0
+        while att < max_escalations and not tail_ess_ok(fit, threshold=tail_ess_threshold):
+            att += 1
+            fit = _fit(draws * 2 ** att, tune * 2 ** att, seed + r + 7919 * att)
+        n_escalated += (att > 0)
         rejects_all.append(fit["rejects_null"])                 # flagged-included sensitivity
         if not tail_ess_ok(fit, threshold=tail_ess_threshold):
             n_flagged += 1
@@ -253,7 +266,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         "mean_tau_sd": float(np.mean(taus)) if taus else float("nan"),
         "mean_decode_acc": float(np.mean(accs)) if accs else float("nan"),
         "mu_true": mu_true, "tau_true": float(tau_true),
-        "n_flagged": n_flagged, "n_used": n_used,
+        "n_flagged": n_flagged, "n_used": n_used, "n_escalated": int(n_escalated),
     }
 
 

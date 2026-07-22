@@ -145,3 +145,21 @@ def test_canonical_shift_is_monotone_in_decode_accuracy():
                               {"group_decode_acc": a, "member_decode_acc": a}, **kw)[1][0]
             for a in (0.4, 0.7, 0.99)]
     assert locs == sorted(locs)          # better decode ⇒ less discount ⇒ higher location
+
+
+def test_escalation_recovers_fits_instead_of_dropping_them():
+    """Dropping low-tail-ESS fits is selection-on-data: it biases the OCs, makes n_used
+    differ systematically by policy (a diffuse prior samples worse), and thins the very
+    sample the coverage CI is built from. Escalating (re-running with more draws) keeps
+    the replicate. With a deliberately strict gate and tiny draws, escalation must
+    recover strictly more fits than dropping."""
+    pytest.importorskip("pymc")
+    spec = make_null_spec(4, 3, 2, 2, level="group", tau_scale=0.6, seed=0)
+    kw = dict(level="group", policy="flat", theta0=0.7, n_reps=4, n_units=2000,
+              draws=100, tune=100, seed=3, tail_ess_threshold=100.0)
+    dropped = joint_fidelity(spec, max_escalations=0, **kw)
+    escalated = joint_fidelity(spec, max_escalations=2, **kw)
+    assert dropped["n_escalated"] == 0
+    assert escalated["n_escalated"] > 0                     # the gate really did fire
+    assert escalated["n_used"] > dropped["n_used"]          # and fits were recovered
+    assert escalated["n_flagged"] < dropped["n_flagged"]
