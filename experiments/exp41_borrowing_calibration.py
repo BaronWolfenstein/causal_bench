@@ -143,7 +143,40 @@ def report(rows: list[dict]) -> str:
             f"{r['mean_tau_sd']:.3f} | "
             f"{r.get('mean_decode_acc', float('nan')):.3f} | "
             f"{r['tau_true']:.2f} | {r['n_used']} |")
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n" + _policy_summary(rows)
+
+
+# K=4 is a qualitatively different regime, not the low end of a trend: v3 measured
+# mean_decode_acc 0.615 there against 0.935-0.968 at K>=8. Pooling it blurs exactly the
+# contrast this experiment exists to price, so the summary reports it on its own row.
+K_FLOOR = 4
+
+
+def _policy_summary(rows: list[dict]) -> str:
+    """Per-policy roll-up, with K=4 held out. Leads on the INTERVAL SCORE (proper scoring
+    rule, lower better) and shows `penalty` — the miscoverage term alone — beside it: if
+    penalty ~ 0 the score has collapsed to the width and adds nothing over `mean_ci_width`,
+    which is the check on whether it rescues the v3 design (#144)."""
+    import numpy as np
+    out = ["", "### Per-policy roll-up (K=4 separated — decode floor, not a trend)", "",
+           "| K group | policy | interval score | penalty | width | coverage | decode |",
+           "|---------|--------|----------------|---------|-------|----------|--------|"]
+    def m(sel, key):
+        v = [r[key] for r in sel if isinstance(r.get(key), (int, float))
+             and np.isfinite(r.get(key, float("nan")))]
+        return float(np.mean(v)) if v else float("nan")
+    for tag, keep in (("K=4", lambda k: k == K_FLOOR), ("K>=8", lambda k: k > K_FLOOR)):
+        for p in sorted({r["policy"] for r in rows}):
+            sel = [r for r in rows if r["policy"] == p and keep(r.get("K", 0))]
+            if not sel:
+                continue
+            out.append(f"| {tag} | {p} | {m(sel,'mean_interval_score'):.3f} | "
+                       f"{m(sel,'mean_penalty'):.3f} | {m(sel,'mean_ci_width'):.3f} | "
+                       f"{m(sel,'coverage'):.3f} | {m(sel,'mean_decode_acc'):.3f} |")
+    out += ["", "`penalty` = (2/α)·E[exceedance], the miscoverage term of the interval",
+            "score. It carries 40× leverage at α=0.05, so a rare small miss can outweigh",
+            "a width gap — but if it reads ~0 the score is just the width renamed."]
+    return "\n".join(out)
 
 
 def main():
