@@ -11,12 +11,21 @@ known μ for scoring.
 ``tau_policy``:
 - ``flat``    — a fixed ``tau_sd`` (the naive baseline);
 - ``oracle``  — the true between-subgroup effect SD at the level (best case);
-- ``canonical`` — ``tau_base · canonical_tau_discount(decode_acc)``: the analyst's base
-  effect-scale prior, *discounted* by the level's decode accuracy at θ₀ (the
-  identifiability-informed prior under test — a discount, not an absolute setter);
 - ``empirical`` — the FIXED van Zwet CDSR LogNormal τ prior (SMD→raw scale-bridged), the
-  reference-class baseline the identifiability-aware policies must beat (``empirical_tau_
-  prior``); ignores decode accuracy by construction.
+  reference-class baseline the identifiability-aware policy must beat
+  (``empirical_tau_prior``); ignores decode accuracy by construction;
+- ``canonical`` — the SAME LogNormal, shifted in log-location by
+  ``log canonical_tau_discount(decode_acc)`` — i.e. "the van Zwet prior, discounted by
+  identifiability" (#144 item 3b). Holding the FAMILY fixed is deliberate: canonical was
+  previously a HalfNormal scale, so ``canonical vs empirical`` confounded the
+  identifiability discount with the prior family — the one thing the comparison is
+  meant to price.
+
+``use_true_labels=True`` is the DECONTAMINATED control (#144 item 1): pool over the true
+labels instead of the decoded ones. A truly-null *decoded* subgroup is polluted by units
+from non-null siblings before any borrowing occurs, which saturated the partial-null
+per-subgroup Type-I; removing that channel leaves inflation attributable to borrowing
+alone.
 
 This is the ENGINE (a library function); the exp41 experiment script sweeps regimes ×
 θ₀ × grammar configs × policies and compares reject/coverage curves. Requires the 3.12
@@ -132,9 +141,16 @@ def _policy_tau_prior(policy, level, spec, decoded, *, flat_tau_sd, tau_base, ta
     if policy == "canonical":
         acc = decoded["group_decode_acc" if level == "group" else "member_decode_acc"]
         k = spec["g"] if level == "group" else spec["b_size"]
-        # tau_sd = tau_base · learnability-discount (NOT an absolute map — see #144/exp41):
-        # a well-decoded level recovers the base scale; a poorly-decoded one pools harder.
-        return ("halfnormal", (max(tau_base * canonical_tau_discount(acc, k), tau_sd_min),))
+        # #144 item 3b: canonical is the SAME LogNormal as `empirical`, shifted in
+        # log-location by the learnability discount -- i.e. "the van Zwet prior,
+        # discounted by identifiability". Previously canonical was a HalfNormal scale,
+        # so `canonical vs empirical` confounded the identifiability discount with the
+        # PRIOR FAMILY; holding the family fixed isolates the discount, which is the
+        # only thing this experiment is trying to price. A well-decoded level recovers
+        # the empirical prior; a poorly-decoded one shifts down and pools harder.
+        _, (mu_log, sigma_log) = empirical_tau_prior(sigma)
+        disc = float(np.clip(canonical_tau_discount(acc, k), 1e-3, 1.0))
+        return ("lognormal", (mu_log + float(np.log(disc)), sigma_log))
     if policy == "empirical":
         return empirical_tau_prior(sigma)
     raise ValueError(f"unknown policy {policy!r}")
@@ -153,7 +169,8 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                    tau_base: float = 0.5, tau_sd_min: float = 0.05, draws: int = 500,
                    tune: int = 500, chains: int = 2, seed: int = 0,
                    chain_method: str = "sequential", fast: bool = False,
-                   tail_ess_threshold: float = 100.0, null_subgroup: int | None = None) -> dict:
+                   tail_ess_threshold: float = 100.0, null_subgroup: int | None = None,
+                   use_true_labels: bool = False) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
     cell. ``reject_rate`` is the population-μ decision (Type-I under a null spec, power
     under an alt). When ``null_subgroup`` is set (a partial-null spec, e.g.
@@ -181,8 +198,18 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         # replicate (it is a property of the cohort, not of the fit) so a K sweep can be
         # read honestly — a larger K also enlarges the grammar alphabet and can depress
         # decode accuracy, confounding "more subgroups" with "harder decode".
-        accs.append(dec["group_decode_acc" if level == "group" else "member_decode_acc"])
-        sub = dec["group_decoded" if level == "group" else "member_decoded"]
+        if use_true_labels:
+            # DECONTAMINATED control (#144 fix 1): pool over the TRUE labels. A
+            # truly-null DECODED subgroup is polluted by units from non-null siblings
+            # before any borrowing occurs, which saturated the partial-null
+            # per-subgroup Type-I. Removing that channel leaves inflation
+            # attributable to borrowing alone. Equivalent to perfect decode (θ₀=1).
+            sub = coh["group" if level == "group" else "member"]
+            accs.append(1.0)
+        else:
+            accs.append(dec["group_decode_acc" if level == "group"
+                            else "member_decode_acc"])
+            sub = dec["group_decoded" if level == "group" else "member_decoded"]
         n_sub = spec["g"] if level == "group" else spec["b_size"]
         th, se, kept = _subgroup_estimates(coh["Y"], coh["A"], sub, n_sub)
         if len(th) < 2:

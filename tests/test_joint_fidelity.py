@@ -59,15 +59,17 @@ def test_policy_tau_prior_families():
     orc = _policy_tau_prior("oracle", "group", spec, dec, **kw)
     can = _policy_tau_prior("canonical", "group", spec, dec, **kw)
     emp = _policy_tau_prior("empirical", "group", spec, dec, **kw)
-    # flat/oracle/canonical are HalfNormal scales; empirical is the fixed VZ LogNormal
+    # flat/oracle are HalfNormal scales; empirical AND canonical share the VZ LogNormal
+    # family (item 3b) so their comparison is not confounded by the prior family.
     assert flat == ("halfnormal", (0.5,))
     assert emp == ("lognormal", (-1.82 + np.log(0.5), 0.90))
-    assert orc[0] == "halfnormal" and can[0] == "halfnormal"
+    assert orc[0] == "halfnormal" and can[0] == "lognormal"
     from causal_bench.dgp.joint_hierarchy import true_tau_by_level
     assert abs(orc[1][0] - true_tau_by_level(spec)["tau_group"]) < 1e-9
-    # canonical = tau_base · discount — a DISCOUNT on the base scale, never above it
-    assert abs(can[1][0] - 0.5 * canonical_tau_discount(0.92, 4)) < 1e-9
-    assert 0.0 < can[1][0] < 0.5
+    # canonical median = empirical median · discount — never above the empirical prior
+    assert np.exp(can[1][0]) == pytest.approx(np.exp(emp[1][0])
+                                              * canonical_tau_discount(0.92, 4))
+    assert np.exp(can[1][0]) < np.exp(emp[1][0])
 
 
 def test_joint_fidelity_runs_and_global_null_is_not_inflated():
@@ -96,3 +98,50 @@ def test_make_partial_null_spec_one_null_rest_effect():
     e = spec["group_effect"]
     assert e[0] == 0.0                                          # subgroup 0 truly null
     assert np.allclose(e[1:], 0.8)                             # siblings same-sign effect
+
+
+# ── #144 fix item 1: decontaminated control ──────────────────────────────────
+def test_use_true_labels_gives_perfect_decode_accuracy():
+    """The partial-null per-subgroup Type-I was saturated by DECODE CONTAMINATION (a
+    truly-null decoded subgroup is polluted by units from non-null siblings before any
+    borrowing happens). `use_true_labels` removes that channel so the residual inflation
+    is attributable to borrowing alone — the control the #144 review asked for."""
+    pytest.importorskip("pymc")
+    spec = make_null_spec(4, 3, 2, 2, level="group", tau_scale=0.0, seed=0)
+    r = joint_fidelity(spec, level="group", policy="canonical", theta0=0.6,
+                       use_true_labels=True, n_reps=2, n_units=2000,
+                       draws=150, tune=150, seed=1, tail_ess_threshold=20.0)
+    assert r["mean_decode_acc"] == pytest.approx(1.0)      # no contamination channel
+    r_dec = joint_fidelity(spec, level="group", policy="canonical", theta0=0.6,
+                           n_reps=2, n_units=2000, draws=150, tune=150, seed=1,
+                           tail_ess_threshold=20.0)
+    assert r_dec["mean_decode_acc"] < 1.0                  # the contaminated arm differs
+
+
+# ── #144 fix item 3b: canonical as a log-location shift ──────────────────────
+def test_canonical_is_a_log_location_shift_of_the_empirical_prior():
+    """Isolates the identifiability discount. With canonical on HalfNormal and empirical
+    on LogNormal, `canonical vs empirical` confounded the discount with the prior FAMILY.
+    Canonical is now the SAME lognormal, shifted in log-location by the discount, so the
+    only difference between the two policies is the identifiability information."""
+    from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
+    spec = make_joint_hierarchy(4, 3, 2, 2, w_group=1.5, w_member=0.3, seed=0)
+    dec = {"group_decode_acc": 0.92, "member_decode_acc": 0.75}
+    kw = dict(flat_tau_sd=0.5, tau_base=0.5, tau_sd_min=0.05, sigma=0.5)
+    can = _policy_tau_prior("canonical", "group", spec, dec, **kw)
+    emp = _policy_tau_prior("empirical", "group", spec, dec, **kw)
+
+    assert can[0] == "lognormal" == emp[0]                 # same family now
+    assert can[1][1] == pytest.approx(emp[1][1])           # same log-spread
+    shift = can[1][0] - emp[1][0]                          # differ ONLY in log-location
+    assert shift == pytest.approx(np.log(canonical_tau_discount(0.92, 4)))
+    assert shift < 0                                       # a discount pools harder
+
+
+def test_canonical_shift_is_monotone_in_decode_accuracy():
+    spec = make_joint_hierarchy(4, 3, 2, 2, w_group=1.5, w_member=0.3, seed=0)
+    kw = dict(flat_tau_sd=0.5, tau_base=0.5, tau_sd_min=0.05, sigma=0.5)
+    locs = [_policy_tau_prior("canonical", "group", spec,
+                              {"group_decode_acc": a, "member_decode_acc": a}, **kw)[1][0]
+            for a in (0.4, 0.7, 0.99)]
+    assert locs == sorted(locs)          # better decode ⇒ less discount ⇒ higher location
