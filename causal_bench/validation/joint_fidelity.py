@@ -41,6 +41,11 @@ from causal_bench.dgp.joint_hierarchy import (
 from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
 
 
+# The estimator forms its interval as effect +/- 1.96*se (three_level_bhm._decision),
+# i.e. a nominal 95% interval. The interval score's penalty leverage is 2/alpha, so
+# this constant must track that z -- do not set one without the other.
+CI_ALPHA = 0.05
+
 # ── Monte-Carlo error on the OCs (#144 fix item 4) ───────────────────────────
 # The v2 run read coverage 0.96-1.00 everywhere and concluded "degenerate". That is only
 # a legitimate conclusion with an error bar: at n_reps=100 the MC SE on a coverage near
@@ -189,6 +194,7 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
     mu_true = population_effect(spec)
     tau_true = true_tau_by_level(spec)["tau_group" if level == "group" else "tau_member"]
     rejects, covers, taus, widths, sub_rejects = [], [], [], [], []
+    iscores, pens = [], []
     rejects_all, n_flagged, n_used, n_escalated = [], 0, 0, 0
     accs: list = []                                            # decode accuracy per replicate
     for r in range(n_reps):
@@ -246,6 +252,17 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         covers.append(fit["covers_truth"])
         taus.append(_prior_scale(tau_prior))
         widths.append(fit["ci_hi"] - fit["ci_lo"])
+        # Interval score (Gneiting & Raftery), the proper scoring rule for an interval
+        # forecast. Coverage saturates at 1 and width just reads the prior back, so
+        # neither ranks policies on its own; IS penalises width and miscoverage jointly.
+        #   IS = (u - l) + (2/alpha)(l - y) 1{y < l} + (2/alpha)(y - u) 1{y > u}
+        # Kept DECOMPOSED as well as summed: the penalty carries a 2/alpha = 40x leverage
+        # at alpha=0.05, so a rare small miss can outweigh a width difference. Reporting
+        # only the total would hide whether IS is adding anything over mean_ci_width.
+        _l, _u = fit["ci_lo"], fit["ci_hi"]
+        _pen = (max(_l - mu_true, 0.0) + max(mu_true - _u, 0.0)) * (2.0 / CI_ALPHA)
+        pens.append(float(_pen))
+        iscores.append(float((_u - _l) + _pen))
         if null_subgroup is not None:
             pos = np.where(kept == null_subgroup)[0]
             if len(pos):                                        # null subgroup survived drops
@@ -263,6 +280,13 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         "mean_ci_width": float(np.mean(widths)) if widths else float("nan"),
         "mean_ci_width_se": (float(np.std(widths, ddof=1) / np.sqrt(len(widths)))
                              if len(widths) > 1 else float("nan")),
+        # Proper scoring rule: lower is better. `mean_penalty` is the miscoverage part
+        # ALONE -- if it is ~0 the score has collapsed to the width and adds nothing,
+        # which is the check that decides whether IS rescues this design.
+        "mean_interval_score": float(np.mean(iscores)) if iscores else float("nan"),
+        "mean_interval_score_se": (float(np.std(iscores, ddof=1) / np.sqrt(len(iscores)))
+                                   if len(iscores) > 1 else float("nan")),
+        "mean_penalty": float(np.mean(pens)) if pens else float("nan"),
         "mean_tau_sd": float(np.mean(taus)) if taus else float("nan"),
         "mean_decode_acc": float(np.mean(accs)) if accs else float("nan"),
         "mu_true": mu_true, "tau_true": float(tau_true),
