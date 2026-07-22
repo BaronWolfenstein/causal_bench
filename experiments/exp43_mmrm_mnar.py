@@ -45,10 +45,18 @@ Run: python -m experiments.exp43_mmrm_mnar
 """
 from pathlib import Path
 
-from causal_bench.validation.mnar_dropout import mnar_dropout_report
+from causal_bench.validation.mnar_dropout import coverage_report, mnar_dropout_report
 
 OUT_DIR = Path("results/exp43_mmrm_mnar")
 GAMMAS = [0.0, 0.6, 1.2, 2.0]          # 0.0 is the MAR control
+
+# Coverage arm. Reporting coverage with the naive df would measure OUR shortcut rather
+# than MMRM's behaviour, so the interval is Kenward-Roger. The grid is (T, n) crossed
+# with the MAR/MNAR contrast because KR's correction is NOT uniform: it scales with the
+# number of covariance parameters q = T(T+1)/2 relative to n, so a single (T, n) cell
+# would present a regime-specific result as a general one.
+COVERAGE_CELLS = [(3, 30), (3, 60), (5, 30), (5, 60)]
+COVERAGE_GAMMAS = [0.0, 1.2]           # MAR (KR should reach nominal) vs MNAR (nothing can)
 
 
 def run(*, n=400, n_reps=12, seed=0):
@@ -79,16 +87,57 @@ def report(rows) -> str:
     return "\n".join(lines)
 
 
+def run_coverage(*, n_reps=300, seed=0):
+    return [coverage_report(n=n, T=T, gamma_mnar=g, n_reps=n_reps, seed=seed)
+            for (T, n) in COVERAGE_CELLS for g in COVERAGE_GAMMAS]
+
+
+def coverage_table(rows) -> str:
+    lines = [
+        "", "### Coverage arm — naive df vs Kenward-Roger (nominal 0.95)", "",
+        "| T | q | n | γ | coverage naive [95% CI] | coverage KR [95% CI] |"
+        " width n→KR | var infl | med df | ill-cond |",
+        "|---|---|---|---|-------------------------|----------------------|"
+        "------------|----------|---------|----------|",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['T']} | {r['q']} | {r['n']} | {r['gamma_mnar']:.1f} | "
+            f"{r['coverage_naive']:.3f} [{r['coverage_naive_ci'][0]:.2f},"
+            f"{r['coverage_naive_ci'][1]:.2f}] | "
+            f"{r['coverage_kr']:.3f} [{r['coverage_kr_ci'][0]:.2f},"
+            f"{r['coverage_kr_ci'][1]:.2f}] | "
+            f"{r['width_naive']:.2f}→{r['width_kr']:.2f} | "
+            f"{r['mean_var_inflation']:.2f} | {r['median_df']:.0f} | "
+            f"{r['n_kr_degenerate']}/{r['n_fits']} |")
+    lines += [
+        "",
+        "Intervals are **Wilson**, not normal-approximation. At 300 reps no cell is near",
+        "the boundary, so the two agree closely here — but smaller runs of this same arm",
+        "did return coverage 1.000, where a normal SE collapses to zero and reports a",
+        "spuriously decisive interval. Wilson stays valid there.",
+        "",
+        "`ill-cond` counts fits whose REML information was too ill-conditioned for KR to",
+        "be trusted (condition number > 1e8, or a non-finite df). It is a per-fit flag,",
+        "not a per-cell one — q/n alone does not trigger it.",
+    ]
+    return "\n".join(lines)
+
+
 def main():
     import argparse
     p = argparse.ArgumentParser(description="Exp 43: MMRM under MNAR dropout")
     p.add_argument("--n", type=int, default=400)
     p.add_argument("--n-reps", type=int, default=12)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--coverage-reps", type=int, default=300)
+    p.add_argument("--no-coverage", action="store_true")
     a = p.parse_args()
 
     rows = run(n=a.n, n_reps=a.n_reps, seed=a.seed)
     rep = report(rows)
+    if not a.no_coverage:
+        rep += "\n" + coverage_table(run_coverage(n_reps=a.coverage_reps, seed=a.seed))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "summary.md").write_text(rep + "\n")
     print(rep)

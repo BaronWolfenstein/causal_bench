@@ -237,7 +237,11 @@ def kr_adjust(Sigma, Xs, obs, contrast):
     g = np.array([float(l @ Phi @ B[k] @ Phi @ l) for k in range(q)])
     denom = float(g @ W @ g)
     df = float(2.0 * var_kr ** 2 / denom) if denom > 1e-18 else float("inf")
-    degenerate = (not np.isfinite(df)) or cond > 1e10 or q_over_n > 0.4
+    # Flag the ACTUAL bad fits, not whole cells. q/n is reported but does not trigger:
+    # at T=5/n=30 (q/n=0.5) the median condition number is ~1.5e2 and no df is
+    # infinite, yet that is exactly the regime where KR's correction is needed -- a
+    # q/n trigger would blanket-flag the only cells the adjustment earns its place in.
+    degenerate = (not np.isfinite(df)) or cond > 1e8
     return {"var_naive": var_naive, "var_kr": max(var_kr, 1e-12), "df": max(df, 1.0),
             "se_naive": float(np.sqrt(max(var_naive, 0.0))),
             "se_kr": float(np.sqrt(max(var_kr, 1e-12))),

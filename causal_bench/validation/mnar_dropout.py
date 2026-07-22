@@ -180,7 +180,8 @@ def mnar_dropout_report(*, gamma_mnar: float, gamma_obs: float = 0.3, n: int = 5
 
 
 def coverage_report(*, n: int = 40, gamma_mnar: float = 0.0, gamma_obs: float = 0.3,
-                    T: int = 3, n_reps: int = 300, seed: int = 0, alpha: float = 0.05):
+                    T: int = 3, n_reps: int = 300, seed: int = 0, alpha: float = 0.05,
+                    effect=None, means=None):
     """Coverage of the final-visit treatment effect: naive df vs Kenward-Roger.
 
     With an unstructured Sigma the naive variance ``(X'V^-1X)^-1`` ignores that Sigma is
@@ -196,13 +197,23 @@ def coverage_report(*, n: int = 40, gamma_mnar: float = 0.0, gamma_obs: float = 
     """
     from scipy import stats
     from causal_bench.estimators.mmrm import fit_mmrm_kr
+    from causal_bench.validation.joint_fidelity import wilson_ci
+
+    # KR only bites once q = T(T+1)/2 grows relative to n, so this arm must be runnable
+    # at T > 3. simulate_longitudinal_dropout's defaults are length-3 tuples; synthesise
+    # a matching profile for any T. (mnar_dropout_report is untouched, so exp43's main
+    # result keeps its original (0, 0.4, 0.9) profile exactly.)
+    eff = np.linspace(0.0, 0.9, T) if effect is None else np.asarray(effect, float)
+    mus = np.linspace(1.0, 1.5, T) if means is None else np.asarray(means, float)
 
     l = np.zeros(2 * T)
     l[T + (T - 1)] = 1.0                     # treatment effect at the final visit
     z = stats.norm.ppf(1 - alpha / 2)
     cov_naive, cov_kr, widths_n, widths_k, dfs, infl = [], [], [], [], [], []
+    n_degen = 0
     for r in range(n_reps):
-        d = simulate_longitudinal_dropout(n=n, T=T, gamma_obs=gamma_obs,
+        d = simulate_longitudinal_dropout(n=n, T=T, gamma_obs=gamma_obs, effect=eff,
+                                          means=mus,
                                           gamma_mnar=gamma_mnar, seed=seed + r)
         truth = float(d["effect"][T - 1])
         try:
@@ -221,10 +232,18 @@ def coverage_report(*, n: int = 40, gamma_mnar: float = 0.0, gamma_obs: float = 
         widths_k.append(hi_k - lo_k)
         dfs.append(f["df"])
         infl.append(f["var_kr"] / max(f["var_naive"], 1e-12))
+        n_degen += int(f.get("kr_degenerate", False))
     m = len(cov_naive)
-    se = lambda v: float(np.sqrt(np.mean(v) * (1 - np.mean(v)) / m)) if m else float("nan")
-    return {"n": n, "gamma_mnar": gamma_mnar, "n_fits": m,
-            "coverage_naive": float(np.mean(cov_naive)), "coverage_naive_se": se(cov_naive),
-            "coverage_kr": float(np.mean(cov_kr)), "coverage_kr_se": se(cov_kr),
+    # Wilson, not the normal SE: coverage lives near 1 exactly where the normal SE
+    # collapses to zero, which would report a spuriously decisive interval.
+    ci = lambda v: wilson_ci(int(sum(v)), m) if m else (float("nan"), float("nan"))
+    return {"n": n, "T": T, "q": T * (T + 1) // 2, "gamma_mnar": gamma_mnar, "n_fits": m,
+            "coverage_naive": float(np.mean(cov_naive)), "coverage_naive_ci": ci(cov_naive),
+            "coverage_kr": float(np.mean(cov_kr)), "coverage_kr_ci": ci(cov_kr),
             "width_naive": float(np.mean(widths_n)), "width_kr": float(np.mean(widths_k)),
-            "mean_df": float(np.mean(dfs)), "mean_var_inflation": float(np.mean(infl))}
+            # median over FINITE df only: one non-finite df poisons a mean, and the
+            # ill-conditioned fits are counted separately in n_kr_degenerate anyway.
+            "median_df": float(np.median([d for d in dfs if np.isfinite(d)]))
+                          if any(np.isfinite(d) for d in dfs) else float("nan"),
+            "mean_var_inflation": float(np.mean(infl)),
+            "n_kr_degenerate": n_degen}
