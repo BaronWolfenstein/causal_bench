@@ -65,28 +65,71 @@ def _z_signal(Z, nonlinear: bool):
     return Z.sum(axis=1) / np.sqrt(Z.shape[1])
 
 
-def make_dgp(kind: str, dim_z: int, nonlinear: bool):
-    """H0: X indep Y | Z (both driven by Z). H1: X -> Y on top of the shared Z."""
+# --- KNOB 1: nuisance learner -------------------------------------------------------
+# The 2000-rep grid mis-sized every cell, but that was the DEFAULT random forest. A
+# forest approximates smooth LINEAR functions poorly, which is the leading suspect for
+# why even the linear dim-Z=3 cell came out at 0.276. Swapping the learner separates
+# "the test is mis-specified" from "the default nuisance model is wrong for this Z".
+# All factories are module-level so multiprocessing can pickle them by reference.
+
+def _nuisance_rf():
+    from sklearn.ensemble import RandomForestRegressor
+    return RandomForestRegressor(n_estimators=60, max_depth=8, random_state=0, n_jobs=1)
+
+
+def _nuisance_linear():
+    from sklearn.linear_model import RidgeCV
+    return RidgeCV(alphas=np.logspace(-3, 3, 13))
+
+
+def _nuisance_gbm():
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    return HistGradientBoostingRegressor(max_depth=3, max_iter=200, random_state=0)
+
+
+LEARNERS = {"rf": _nuisance_rf, "linear": _nuisance_linear, "gbm": _nuisance_gbm}
+
+
+# --- KNOB 2: Z signal-to-noise ------------------------------------------------------
+# z_frac is the fraction of Var(X) (and Var(Y) under H0) explained by Z. The original
+# grid sat at ~0.8 -- a STRONG-confounding stress regime, not a typical one. Since the
+# leak that inflates size is whatever the nuisance learner fails to absorb, size
+# distortion should fall with z_frac; if it does not, the problem is not "too much Z
+# signal to absorb" and the mechanism story needs revising.
+DEFAULT_Z_FRAC = 0.8
+
+
+def make_dgp(kind: str, dim_z: int, nonlinear: bool, z_frac: float = DEFAULT_Z_FRAC):
+    """H0: X indep Y | Z (both driven by Z). H1: X -> Y on top of the shared Z.
+
+    ``s`` is standardised per-replicate, then scaled so Z explains ``z_frac`` of the
+    variance -- so the knob means the same thing across dim_z and nonlinearity, which
+    it would not if the raw signal variance were left to drift with those axes."""
+    a = float(np.sqrt(z_frac / (1.0 - z_frac)))       # Var = a^2 + 1 -> Z share = z_frac
+
     def dgp(n, rng):
         Z = rng.standard_normal((n, dim_z))
         s = _z_signal(Z, nonlinear)
-        X = s + 0.5 * rng.standard_normal(n)
-        Y = (s + 0.5 * rng.standard_normal(n) if kind == "null"
-             else 0.6 * X + s + 0.5 * rng.standard_normal(n))
+        s = (s - s.mean()) / (s.std() + 1e-12)
+        X = a * s + rng.standard_normal(n)
+        Y = (a * s + rng.standard_normal(n) if kind == "null"
+             else 0.6 * X + a * s + rng.standard_normal(n))
         return X, Y, Z
     return dgp
 
 
-def _one(r, *, kind, dim_z, nonlinear, n, n_perm, alpha, seed0):
+def _one(r, *, kind, dim_z, nonlinear, n, n_perm, alpha, seed0, z_frac, learner):
     """One replicate. Top-level so multiprocessing can pickle it."""
     rng = np.random.default_rng(seed0 + r)
-    dgp = make_dgp(kind, dim_z, nonlinear)
-    return zero_flow_ci_test(*dgp(n, rng), n_perm=n_perm, alpha=alpha, rng=rng).verdict
+    dgp = make_dgp(kind, dim_z, nonlinear, z_frac)
+    return zero_flow_ci_test(*dgp(n, rng), n_perm=n_perm, alpha=alpha, rng=rng,
+                             nuisance_factory=LEARNERS[learner]).verdict
 
 
-def run_cell(*, kind, dim_z, nonlinear, n, reps, n_perm, alpha, seed0, pool=None):
+def run_cell(*, kind, dim_z, nonlinear, n, reps, n_perm, alpha, seed0, pool=None,
+             z_frac=DEFAULT_Z_FRAC, learner="rf"):
     f = partial(_one, kind=kind, dim_z=dim_z, nonlinear=nonlinear, n=n,
-                n_perm=n_perm, alpha=alpha, seed0=seed0)
+                n_perm=n_perm, alpha=alpha, seed0=seed0, z_frac=z_frac, learner=learner)
     verdicts = pool.map(f, range(reps)) if pool else [f(r) for r in range(reps)]
     # "underpowered" (n < min_n) is a distinct verdict and must not be silently counted
     # as a non-rejection -- that would deflate the apparent size.
@@ -96,26 +139,33 @@ def run_cell(*, kind, dim_z, nonlinear, n, reps, n_perm, alpha, seed0, pool=None
     rate = k / m if m else float("nan")
     lo, hi = wilson_ci(k, m) if m else (float("nan"), float("nan"))
     return {"kind": kind, "n": n, "dim_z": dim_z, "nonlinear": nonlinear,
+            "z_frac": z_frac, "learner": learner,
             "reps": m, "n_underpowered": n_under, "rate": rate, "ci": [lo, hi],
             "mis_sized": bool(kind == "null" and m and not (lo <= alpha <= hi))}
 
 
-def run(*, reps, n_perm, alpha, cells, jobs, seed0=0):
+def run(*, reps, n_perm, alpha, cells, jobs, seed0=0,
+        z_fracs=(DEFAULT_Z_FRAC,), learners=("rf",)):
     rows, pool = [], (Pool(jobs) if jobs > 1 else None)
     try:
         i = 0
-        for nonlinear in (False, True):
-            for (n, dim_z) in cells:
-                for kind in ("null", "alt"):
-                    i += 1
-                    rows.append(run_cell(kind=kind, dim_z=dim_z, nonlinear=nonlinear,
-                                         n=n, reps=reps, n_perm=n_perm, alpha=alpha,
-                                         seed0=seed0 + i * 1_000_003, pool=pool))
-                    r = rows[-1]
-                    print(f"  {r['kind']:>4} n={n:<4} dimZ={dim_z:<2} "
-                          f"{'nonlin' if nonlinear else 'linear'} -> "
-                          f"{r['rate']:.3f} [{r['ci'][0]:.3f},{r['ci'][1]:.3f}]"
-                          f"{'  MIS-SIZED' if r['mis_sized'] else ''}", flush=True)
+        for learner in learners:
+            for z_frac in z_fracs:
+                for nonlinear in (False, True):
+                    for (n, dim_z) in cells:
+                        for kind in ("null", "alt"):
+                            i += 1
+                            rows.append(run_cell(
+                                kind=kind, dim_z=dim_z, nonlinear=nonlinear, n=n,
+                                reps=reps, n_perm=n_perm, alpha=alpha,
+                                seed0=seed0 + i * 1_000_003, pool=pool,
+                                z_frac=z_frac, learner=learner))
+                            r = rows[-1]
+                            print(f"  {r['kind']:>4} n={n:<4} dimZ={dim_z:<2} "
+                                  f"{'nonlin' if nonlinear else 'linear'} "
+                                  f"zf={z_frac:.2f} {learner:<6} -> "
+                                  f"{r['rate']:.3f} [{r['ci'][0]:.3f},{r['ci'][1]:.3f}]"
+                                  f"{'  MIS-SIZED' if r['mis_sized'] else ''}", flush=True)
     finally:
         if pool:
             pool.close(); pool.join()
@@ -124,18 +174,22 @@ def run(*, reps, n_perm, alpha, cells, jobs, seed0=0):
 
 def report(rows, *, alpha, n_perm) -> str:
     lines = [f"### Zero-flow CI test — size and power (alpha={alpha}, n_perm={n_perm})", "",
-             "| Z effect | n | dim Z | reps | H0 size [95% CI] | H1 power [95% CI] |"
-             " size verdict |",
-             "|----------|---|-------|------|------------------|-------------------|"
-             "--------------|"]
-    by = {(r["nonlinear"], r["n"], r["dim_z"], r["kind"]): r for r in rows}
-    for (nl, n, dz) in sorted({(r["nonlinear"], r["n"], r["dim_z"]) for r in rows}):
-        h0, h1 = by.get((nl, n, dz, "null")), by.get((nl, n, dz, "alt"))
+             "| learner | z_frac | Z effect | n | dim Z | reps | H0 size [95% CI] |"
+             " H1 power [95% CI] | size verdict |",
+             "|---------|--------|----------|---|-------|------|------------------|"
+             "-------------------|--------------|"]
+    by = {(r["learner"], r["z_frac"], r["nonlinear"], r["n"], r["dim_z"], r["kind"]): r
+          for r in rows}
+    for key in sorted({(r["learner"], r["z_frac"], r["nonlinear"], r["n"], r["dim_z"])
+                       for r in rows}):
+        lr, zf, nl, n, dz = key
+        h0, h1 = by.get(key + ("null",)), by.get(key + ("alt",))
         if not h0:
             continue
         pw = f"{h1['rate']:.3f} [{h1['ci'][0]:.2f},{h1['ci'][1]:.2f}]" if h1 else "—"
         lines.append(
-            f"| {'nonlinear' if nl else 'linear'} | {n} | {dz} | {h0['reps']} | "
+            f"| {lr} | {zf:.2f} | {'nonlinear' if nl else 'linear'} | {n} | {dz} | "
+            f"{h0['reps']} | "
             f"{h0['rate']:.3f} [{h0['ci'][0]:.3f},{h0['ci'][1]:.3f}] | {pw} | "
             f"{'**MIS-SIZED**' if h0['mis_sized'] else 'ok'} |")
     lines += [
@@ -150,6 +204,11 @@ def report(rows, *, alpha, n_perm) -> str:
         "",
         "Size is driven by residualization quality, not by n_perm. Read the dim-Z axis",
         "first: that is where the nuisance learner is expected to fail if it fails at all.",
+        "",
+        "`learner` and `z_frac` are the two knobs the 2000-rep RF grid left untested.",
+        "The RF result holds them at (rf, 0.80). If `linear` fixes the linear rows, the",
+        "distortion is a nuisance-model failure rather than a property of the test; if",
+        "size does not fall as z_frac drops, the leak story is wrong and needs revising.",
     ]
     return "\n".join(lines)
 
@@ -161,13 +220,20 @@ def main():
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--full", action="store_true", help="9-cell (n, dim Z) grid")
+    p.add_argument("--z-frac", type=float, nargs="+", default=[DEFAULT_Z_FRAC],
+                   help="fraction of Var(X) explained by Z (knob 2); 0.8 = the "
+                        "strong-confounding regime the first grid ran at")
+    p.add_argument("--learner", nargs="+", default=["rf"], choices=sorted(LEARNERS),
+                   help="nuisance learner for residualising on Z (knob 1)")
     p.add_argument("--out", type=str, default=str(OUT_DIR))
     a = p.parse_args()
 
     cells = CELLS_FULL if a.full else CELLS_QUICK
-    print(f"{len(cells)} (n,dimZ) cells x 2 dgp x 2 nonlinearity, "
+    print(f"{len(cells)} (n,dimZ) cells x 2 dgp x 2 nonlinearity x "
+          f"{len(a.z_frac)} z_frac x {len(a.learner)} learner, "
           f"reps={a.reps}, jobs={a.jobs}")
-    rows = run(reps=a.reps, n_perm=a.n_perm, alpha=a.alpha, cells=cells, jobs=a.jobs)
+    rows = run(reps=a.reps, n_perm=a.n_perm, alpha=a.alpha, cells=cells, jobs=a.jobs,
+               z_fracs=tuple(a.z_frac), learners=tuple(a.learner))
     rep = report(rows, alpha=a.alpha, n_perm=a.n_perm)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
