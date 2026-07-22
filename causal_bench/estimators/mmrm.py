@@ -104,13 +104,33 @@ def fit_mmrm(y, subject, visit, X, *, n_visits=None, maxiter: int = 500):
         Xs.append(X[m][order])
         obs.append(visit[m][order])
 
-    # start from an independence model scaled to the marginal variance
-    v0 = max(float(np.var(y, ddof=1)), 1e-6)
-    p0 = np.zeros(T * (T + 1) // 2)
-    p0[np.cumsum(np.arange(1, T + 1)) - 1] = 0.5 * np.log(v0)   # diagonal entries
+    # Initialise from the empirical covariance of COMPLETE cases (falling back to a
+    # scaled identity). Starting at a diagonal wastes most of the optimiser's work
+    # rediscovering the correlation structure that is sitting in the data.
+    full = [k for k, o in enumerate(obs) if len(o) == T]
+    if len(full) > T + 1:
+        Yc = np.stack([ys[k] for k in full])
+        S0 = np.cov(Yc, rowvar=False) + 1e-6 * np.eye(T)
+    else:
+        S0 = max(float(np.var(y, ddof=1)), 1e-6) * np.eye(T)
+    try:
+        L0 = np.linalg.cholesky(S0)
+    except np.linalg.LinAlgError:
+        L0 = np.sqrt(max(float(np.var(y, ddof=1)), 1e-6)) * np.eye(T)
+    p0 = L0[np.tril_indices(T)].copy()
+    d = np.cumsum(np.arange(1, T + 1)) - 1                      # diagonal positions
+    p0[d] = np.log(np.clip(np.diag(L0), 1e-8, None))            # log-Cholesky diagonal
 
-    res = minimize(_neg2_reml, p0, args=(ys, Xs, obs, T), method="Nelder-Mead",
-                   options={"maxiter": maxiter * len(p0), "fatol": 1e-6, "xatol": 1e-5})
+    # L-BFGS-B (quasi-Newton, finite-difference gradients) rather than Nelder-Mead:
+    # the objective is smooth in the log-Cholesky parameters, and simplex methods
+    # degrade badly as T grows (T(T+1)/2 parameters). Nelder-Mead is kept as a
+    # fallback for the rare non-convergence.
+    res = minimize(_neg2_reml, p0, args=(ys, Xs, obs, T), method="L-BFGS-B",
+                   options={"maxiter": maxiter, "maxfun": 200 * len(p0)})
+    if not res.success:
+        res = minimize(_neg2_reml, res.x, args=(ys, Xs, obs, T), method="Nelder-Mead",
+                       options={"maxiter": maxiter * len(p0), "fatol": 1e-6,
+                                "xatol": 1e-5})
     L = _chol_from_params(res.x, T)
     Sigma = L @ L.T
     XtVX, XtVy, _, _ = _gls_pass(Sigma, ys, Xs, obs)
