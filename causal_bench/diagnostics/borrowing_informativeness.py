@@ -96,46 +96,64 @@ def borrowing_report(levels: list[dict], *, sep_tol: float = 0.05) -> dict:
             "well_separated": well_separated, "unresolved_splits": unresolved}
 
 
+def _linear_tau_map(r: float, tau_sd_min: float, tau_sd_max: float) -> float:
+    """The shared linear map ``tau_sd = tau_sd_min + clip(r)·(tau_sd_max − tau_sd_min)``.
+    ``r`` is a higher-is-more-robust scalar in [0,1]. Both the deprecated ``t_star`` path
+    and the canonical decode-accuracy path are this same map on different inputs — the
+    input semantics are the whole disagreement, so the arithmetic lives in one place."""
+    return tau_sd_min + float(np.clip(r, 0.0, 1.0)) * (tau_sd_max - tau_sd_min)
+
+
 def suggest_tau_prior(t_star: float, *, tau_sd_min: float = 0.05,
                       tau_sd_max: float = 1.0) -> float:
-    """Map a level's identifiability ``t_star`` (VP-SDE schedule fraction in [0,1]) to a
-    suggested between-group SD prior scale ``tau_sd``. Monotone increasing: a
-    well-identified level (high ``t_star``) → **larger** ``tau_sd`` (weak pooling, let
-    subgroups differ); an information-starved level (low ``t_star``) → **smaller**
-    ``tau_sd`` (strong pooling, borrow heavily toward the parent)."""
-    r = float(np.clip(t_star, 0.0, 1.0))
-    return tau_sd_min + r * (tau_sd_max - tau_sd_min)
+    """DEPRECATED (#144 item 5) — use ``canonical_tau_prior(decode_acc, n_classes)``.
+
+    This maps representation identifiability ``t_star`` (a VP-SDE schedule fraction)
+    straight to the between-group SD prior ``tau_sd``. That mapping is **unlicensed**:
+    identifiability (can we *resolve* the subgroups) is not effect heterogeneity (how much
+    the subgroup *effects* differ), and equating them is exactly where double-dipping /
+    Type-I inflation enters (see #144). It also invites the sign-inversion bug — ``t_star``
+    is higher-is-robust but ``theta_c`` is lower-is-robust, and this signature cannot tell
+    them apart.
+
+    The canonical input is the operating-point **decode accuracy** (chance-adjusted,
+    grounded in misclassification attenuation), consumed by ``canonical_tau_prior``.
+    Retained, warning, for backward compatibility; behaviour is unchanged."""
+    import warnings
+    warnings.warn(
+        "suggest_tau_prior(t_star) is deprecated (#144 item 5): identifiability is not "
+        "effect heterogeneity, and t_star vs theta_c sign is ambiguous here. Use "
+        "canonical_tau_prior(decode_acc, n_classes).",
+        DeprecationWarning, stacklevel=2)
+    return _linear_tau_map(t_star, tau_sd_min, tau_sd_max)
 
 
 def recommend_tau_priors(levels: list[dict], *, tau_sd_min: float = 0.05,
                          tau_sd_max: float = 1.0, sep_tol: float = 0.05) -> dict:
-    """Wire the per-level identifiability report to the hierarchical fit's borrowing
-    knob. For each level, suggest a ``tau_sd`` (the HalfNormal scale on the
-    between-subgroup SD τ) for ``estimators.three_level_bhm.fit_three_level_meta`` /
-    ``fit_three_level_bhm``: high ``t_star`` (robust) → larger ``tau_sd`` (weak pooling);
-    low ``t_star`` (info-starved) → smaller ``tau_sd`` (strong pooling).
+    """DEPRECATED (#144 item 5) — use ``recommend_tau_priors_from_decode``.
 
-    This **informs** the borrowing decision — it does NOT set the shrinkage (that stays
-    the hierarchical fit's job) and is not an automatic override. It also surfaces
-    ``unresolved_splits``: adjacent levels whose ``t_star`` are ≈equal are not separated
-    in the representation and should not be fit as distinct levels — pool them.
+    The ``t_star → tau_sd`` half of this is unlicensed for the same reason as
+    ``suggest_tau_prior`` (identifiability ≠ effect heterogeneity). The **structural**
+    half — ``unresolved_splits``, adjacent levels whose ``t_star`` are ≈equal and so
+    should be pooled rather than fit as distinct levels — is defensible and remains
+    available via ``borrowing_report``; it is the ``tau_sd`` *magnitudes* here that are
+    not. Prefer the decode-accuracy path, which is correctly grounded and signed.
 
-    Usage::
-
-        levels = level_identifiability(X, level_labels)
-        rec = recommend_tau_priors(levels)
-        # analyst reviews rec, then (in the pymc .venv312 stack):
-        fit_three_level_meta(theta_hat, se, tau_sd=rec["per_level"]["L3"]["tau_sd"])
-
-    Returns ``{per_level: {name: {t_star, n_classes, tau_sd, recommendation}},
-    unresolved_splits, well_separated}``."""
+    Retained, warning, for backward compatibility; behaviour is unchanged."""
+    import warnings
+    warnings.warn(
+        "recommend_tau_priors(levels) is deprecated (#144 item 5): its t_star->tau_sd "
+        "magnitudes are unlicensed. Use recommend_tau_priors_from_decode; for the "
+        "structural pool/split signal use borrowing_report(...)['unresolved_splits'].",
+        DeprecationWarning, stacklevel=2)
     rep = borrowing_report(levels, sep_tol=sep_tol)
     rec_by_name = {L["name"]: L["recommendation"] for L in rep["levels"]}
     per_level = {
         L["name"]: {
             "t_star": L["t_star"], "n_classes": L["n_classes"],
-            "tau_sd": suggest_tau_prior(L["t_star"], tau_sd_min=tau_sd_min,
-                                        tau_sd_max=tau_sd_max),
+            # internal use of the shared map: warning already emitted once above, so
+            # go through the private map rather than re-trip the deprecated wrapper.
+            "tau_sd": _linear_tau_map(L["t_star"], tau_sd_min, tau_sd_max),
             "recommendation": rec_by_name[L["name"]],
         }
         for L in levels
@@ -165,8 +183,8 @@ def canonical_tau_prior(decode_acc: float, n_classes: int, *, tau_sd_min: float 
     scalar. Decode accuracy is the correct, higher-is-robust operating-point input; a
     ``theta_c`` plug-in would set priors backwards."""
     chance = 1.0 / n_classes
-    r = float(np.clip((decode_acc - chance) / (1.0 - chance), 0.0, 1.0))
-    return tau_sd_min + r * (tau_sd_max - tau_sd_min)
+    r = (decode_acc - chance) / (1.0 - chance)
+    return _linear_tau_map(r, tau_sd_min, tau_sd_max)
 
 
 def recommend_tau_priors_from_decode(decode_result: dict, g: int, b_size: int, *,
