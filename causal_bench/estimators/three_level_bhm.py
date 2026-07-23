@@ -270,6 +270,14 @@ def fit_three_level_meta_fast(theta_hat, se, *, draws: int = 500, tune: int = 50
     out.update({"r_hat": float(az.rhat(mu_cd)),                       # (chain, draw) array
                 "bulk_ess": float(az.ess(mu_cd, method="bulk")),
                 "tail_ess": float(az.ess(mu_cd, method="tail", prob=(0.05, 0.95)))})
+    if return_theta:
+        # theta is deterministic (mu + tau*z), not a sampled site, so reconstruct the
+        # per-subgroup posterior means from the mu/tau/z draws. Real subgroups are the
+        # first n_g of the n_pad padded rows. This is what the subgroup-risk metric needs.
+        sm = mcmc.get_samples()                                       # flat draws
+        mu_s = np.asarray(sm["mu"]); tau_s = np.asarray(sm["tau"]); z_s = np.asarray(sm["z"])
+        theta = mu_s[:, None] + tau_s[:, None] * z_s                  # (draws, n_pad)
+        out["theta_g_mean"] = theta.mean(0)[:n_g]
     return out
 
 

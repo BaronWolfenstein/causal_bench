@@ -64,7 +64,14 @@ from causal_bench.validation.joint_fidelity import (
 
 OUT_DIR = Path("results/exp41_borrowing_calibration")
 SCENARIOS = {"global_null": (0.0, 0.0), "hetero_null": (0.0, 0.6), "alt": (0.5, 0.3)}
-POLICIES = ["flat", "oracle", "canonical", "empirical"]
+POLICIES = ["flat", "oracle", "canonical", "empirical", "canonical_ps"]
+# canonical_ps = per-subgroup reliability: empirical tau prior + se inflated by each
+# decoded subgroup's purity, so the fit shrinks contaminated subgroups more. The test of
+# whether PER-SUBGROUP reliability (not canonical's level-wide scalar discount) makes an
+# identifiability-aware policy actually beat empirical. Run in the DECODE-CONTAMINATED,
+# se~tau, resample regime (--v5, moderate --n-units ~200, lower --thetas ~0.55) where
+# purity varies. The bigger-discount test for plain `canonical` is the same regime at low
+# theta0 (harder decode -> larger level-wide discount).
 # K = number of subgroups the meta-analysis pools over. The v2 run showed BOTH headline
 # OCs are degenerate at K≈3–4 (coverage 0.96–1.00 across all 72 cells, reject ≈ 0 in the
 # nulls), so K must be swept for the experiment to discriminate at all — see #144.
@@ -93,7 +100,8 @@ def iter_cells(levels, thetas, Ks):
 
 def run_grid(*, levels, thetas, Ks, n_reps, n_units, depth, draws, tune, chains, seed,
              tail_ess_threshold=100.0, g=4, b_size=3, s=2, m=2,
-             chain_method="sequential", shard=None, fast=False) -> list[dict]:
+             chain_method="sequential", shard=None, fast=False,
+             resample_effects=False) -> list[dict]:
     """Sweep level × θ₀ × K × scenario × policy, one fidelity run per cell. `shard`
     = (worker_id, n_workers): run only cells with `cell_index % n_workers ==
     worker_id` (the multi-GPU partition). `chain_method` threads to the NumPyro
@@ -113,7 +121,8 @@ def run_grid(*, levels, thetas, Ks, n_reps, n_units, depth, draws, tune, chains,
                            n_reps=n_reps, n_units=n_units, depth=depth,
                            draws=draws, tune=tune, chains=chains, seed=seed,
                            chain_method=chain_method, fast=fast,
-                           tail_ess_threshold=tail_ess_threshold)
+                           tail_ess_threshold=tail_ess_threshold,
+                           resample_effects=resample_effects)
         rows.append({"cell": idx, "level": level, "theta0": theta0, "K": K,
                      "scenario": scen, "policy": policy, **r})
     return rows
@@ -159,8 +168,8 @@ def _policy_summary(rows: list[dict]) -> str:
     which is the check on whether it rescues the v3 design (#144)."""
     import numpy as np
     out = ["", "### Per-policy roll-up (K=4 separated — decode floor, not a trend)", "",
-           "| K group | policy | interval score | penalty | width | coverage | decode |",
-           "|---------|--------|----------------|---------|-------|----------|--------|"]
+           "| K group | policy | interval score | penalty | width | coverage | subgroup_risk | decode |",
+           "|---------|--------|----------------|---------|-------|----------|---------------|--------|"]
     def m(sel, key):
         v = [r[key] for r in sel if isinstance(r.get(key), (int, float))
              and np.isfinite(r.get(key, float("nan")))]
@@ -172,7 +181,8 @@ def _policy_summary(rows: list[dict]) -> str:
                 continue
             out.append(f"| {tag} | {p} | {m(sel,'mean_interval_score'):.3f} | "
                        f"{m(sel,'mean_penalty'):.3f} | {m(sel,'mean_ci_width'):.3f} | "
-                       f"{m(sel,'coverage'):.3f} | {m(sel,'mean_decode_acc'):.3f} |")
+                       f"{m(sel,'coverage'):.3f} | {m(sel,'subgroup_risk'):.4f} | "
+                       f"{m(sel,'mean_decode_acc'):.3f} |")
     out += ["", "`penalty` = (2/α)·E[exceedance], the miscoverage term of the interval",
             "score. It carries 40× leverage at α=0.05, so a rare small miss can outweigh",
             "a width gap — but if it reads ~0 the score is just the width renamed."]
@@ -193,6 +203,11 @@ def main():
                         "one grid.")
     p.add_argument("--n-reps", type=int, default=None)
     p.add_argument("--n-units", type=int, default=3000)
+    p.add_argument("--v5", action="store_true",
+                   help="v5 fix: resample subgroup effects per replicate (theta_g ~ N(mu,tau), "
+                        "mean NOT pinned) so coverage of mu is a real frequentist quantity and "
+                        "un-saturates from 1.0. Pair with a se~tau regime (smaller --n-units, "
+                        "~120-400) so shrinkage bites and policies separate on coverage/subgroup_risk.")
     p.add_argument("--depth", type=int, default=7)
     p.add_argument("--draws", type=int, default=None)
     p.add_argument("--tune", type=int, default=None)
@@ -226,7 +241,7 @@ def main():
     rows = run_grid(levels=a.levels, thetas=thetas, Ks=Ks, n_reps=n_reps, n_units=a.n_units,
                     depth=a.depth, draws=draws, tune=tune, chains=a.chains, seed=a.seed,
                     tail_ess_threshold=tail_ess, chain_method=a.chain_method, shard=shard,
-                    fast=a.fast)
+                    fast=a.fast, resample_effects=a.v5)
 
     if a.out:                                   # worker mode: dump raw rows for the sharder
         import json
