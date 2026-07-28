@@ -6,6 +6,12 @@
 %% citations removed; the #88 guard is complete across ALL fidelity gates; the
 %% generative core is marked built. Gated design axes are a DASHED design-only
 %% pointer (see 2026-07-10-geometry-discreteness-axes.mermaid), not integrated.
+%% 2026-07-28 refresh: encoder is now the SMB Qwen3/Llama3-8b FAMILY (was 1.7B-Structure),
+%% two backbones enabling cross-backbone agreement/ensemble; Σ_ε via last-layer Laplace
+%% (Qwen3/Llama3 dropout=0 → MC-dropout infeasible); manifold propensity = mirror-descent /
+%% natural-gradient with the SCORE-NET metric (Landing), not Fisher; Σ_ε sensitivity band
+%% (no embedding ICC); survival-nuisance candidates #188/#189 on the estimation layer;
+%% Flow-Expander gated candidate added to the twisted-SMC diagram.
 flowchart TD
     %% DESIGN FACT: ENCIRCLE is single-arm vs a 45% performance goal. TVT registry
     %% + synthetic augmentation is the ENTIRE comparator. No real patient-level OMT
@@ -22,10 +28,10 @@ flowchart TD
     end
     SFALL["Fallback: flat / non-hierarchical comparator\n(no depth-tuned architecture licensed)"]
 
-    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB JEPA)"]
+    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB EHR world-model family)"]
         direction LR
-        JEPA["JEPA EHR World Model (frozen)\nSMB-v1-1.7B-Structure"]
-        SIGEPS["Σ_ε (encoder-side): MC-dropout K passes\nper-patient embedding covariance → versioned artifact"]
+        JEPA["EHR World Model (frozen, deterministic)\nSMB-v1 family: {Qwen3,Llama3}-8b × {multi-obj,curriculum} + Qwen3-1.7b\ntwo backbones → cross-backbone agreement/ensemble & invariance check (#83/#149)"]
+        SIGEPS["Σ_ε (encoder-side): LAST-LAYER LAPLACE\n(MC-dropout infeasible — Qwen3/Llama3 default dropout=0)\nor cross-backbone ensemble → per-patient covariance artifact (#59)"]
     end
 
     subgraph SIGREG["Embedding-Geometry Pre-processing"]
@@ -157,13 +163,18 @@ flowchart TD
     SNOTE["COLLIDER CAVEAT on S: adjustment set S ≠ Markov blanket.\nA CI oracle (zero_flow_ci) DETECTS colliders (v-structure: X⟂Y, X⟂̸Y|C)\nand is FOOLED by them (collider/descendant in Z opens the path → spurious\ndependence). MB includes collider-induced spouses by construction. So S is\nchosen by FCI backdoor-validity (colliders + descendants EXCLUDED) restricted\nto PRE-TREATMENT covariates (ICH E9(R1)); MB feeds discovery, never selection.\nM-bias (adjust-and-still-open) carried as sensitivity: exp22."]
     FCI -.-> SNOTE
 
+    %% Survival-nuisance candidates (concrete RMST estimands)
+    SURVNUIS["SURVIVAL-NUISANCE candidates (concrete RMST):\nflexible-parametric hazard learner (#188) — RP frequentist / M-spline Bayesian\n(RP breaks MCMC via non-monotone cumhaz; M-spline stan_surv 2002.09633 for Bayesian).\nPooled-Q subgroup RMST (#189) borrows across small subgroups (single-arm-safe).\nCurrent censoring G_c = Cox/PH → flexible-parametric relaxes non-PH."]
+    TMLE -.-> SURVNUIS
+    HAL -.-> SURVNUIS
+
     %% Measurement-error hand-offs (encoder repo → causal_bench)
     JEPA -.-> SIGEPS
-    SIGEPS -.->|"Σ_ε artifact"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε"]
+    SIGEPS -.->|"Σ_ε artifact (calibrated)"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε.\nNo clinical ICC for embeddings → report Σ_ε-scale SENSITIVITY BAND (#59)"]
     HAL -.->|"noisy anatomical covariates"| COVME["Covariate measurement-error sensitivity (causal_bench)\nΣ_x; regression calibration / SIMEX → residual-confounding readout"]
 
     %% GATED design axes — design-only pointer, NOT built, NOT on the primary path
-    AXES["GATED DESIGN AXES (design-only — nothing built)\ngeometry (Riemannian TDS + manifold propensity) &\ndiscreteness (jump-diffusion; ICEs = jump markers).\nAdopt only when a detector fires (curvature / STRUCT-S), same state\nspace both sides. See 2026-07-10-geometry-discreteness-axes.mermaid."]
+    AXES["GATED DESIGN AXES (design-only — nothing built)\ngeometry (Riemannian TDS + manifold propensity) &\ndiscreteness (jump-diffusion; ICEs = jump markers).\nManifold propensity = natural-gradient ≡ MIRROR-DESCENT with the SCORE-NET\nmetric (Landing 2509.23357) or pullback J'J (#184) — NOT Fisher (no likelihood).\nAdopt only when a detector fires (curvature / STRUCT-S), same state\nspace both sides. See 2026-07-10-geometry-discreteness-axes.mermaid."]
     LOC -.->|"future axes (gated)"| AXES
     TWIST -.->|"metric-aware reward if Riemannian (gated)"| AXES
 
@@ -195,5 +206,5 @@ flowchart TD
     class LOCGATE,SCOPE gate
     class SIGEPS encoderrepo
     class MESENS,COVME causalrepo
-    class ESSNOTE,AUGNOTE,SNOTE annotation
+    class ESSNOTE,AUGNOTE,SNOTE,SURVNUIS annotation
     class AXES gated

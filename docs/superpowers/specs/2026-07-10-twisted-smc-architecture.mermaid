@@ -2,6 +2,9 @@
 %% terminal. Reflects causal_bench/sampling/{twist,smc,weights,resample,sharded}.py
 %% (PRs #97 twist bridge + distributed LSE, #98 tempering/annealing). Green = built
 %% CPU-validated; purple = GPU / on-box (A100-gated); yellow = tuning knob.
+%% 2026-07-28: reward geodesic now names the SCORE-NET metric (Landing 2509.23357);
+%% gated Flow-Expander candidate added (mirror-descent entropy-max, dynamic lambda +
+%% PID-Lagrangian anti-oscillation, #88 verifier) as an alternative to reranking.
 flowchart TD
     classDef built fill:#d4edda,stroke:#28a745,color:#222
     classDef gpu fill:#e2d4f0,stroke:#6f42c1,color:#222
@@ -12,7 +15,7 @@ flowchart TD
     subgraph TW["Twist construction — make_twist()"]
       SF["score_fn(x_t, t) — the ANALYTIC-vs-LEARNED gate\ngaussian_score (analytic)  OR  score_net (learned)\nidentical contract, no branch"]:::built
       TD["Tweedie x0_hat = (x + (1-a)*score) / sqrt(a)"]:::built
-      RW["reward_fn(x0_hat) — heads into rare region R\n(Euclidean now; geodesic if Riemannian — see axes doc)"]:::built
+      RW["reward_fn(x0_hat) — heads into rare region R\n(Euclidean now; geodesic via SCORE-NET metric if Riemannian — Landing 2509.23357, axes doc)"]:::built
       KN["temperature lam  +  bounded twist lam*b*tanh(reward/b)\n+ annealed beta_t (linear_anneal: weak@high-noise -> sharp@low-noise)"]:::knob
       SF --> TD --> RW --> KN
     end
@@ -49,3 +52,8 @@ flowchart TD
     OUT["reranked particles land in R -> pass B'' landing\n-> diffuse_directly achievable / synthetic SCA patients"]:::built
     RS --> OUT
     NC --> OUT
+
+    %% GATED CANDIDATE — generation-time expansion (alternative to this reranker)
+    classDef gated fill:#fff3cd,stroke:#d39e00,color:#222,stroke-dasharray: 4 2
+    FE["GATED CANDIDATE — Flow Expander (#126, De Santi 2602.15984)\nmirror-descent, verifier-constrained entropy-max INTO rare-valid R.\ndynamic lambda (hard tau floor) + PID-Lagrangian + two-timescale (anti-oscillation).\nverifier = #88 decoupled-eval guard. EXPANDS the generator vs reranking particles.\ngated on the torch score-net landing on real embeddings (#108)."]:::gated
+    OUT -.->|"alternative: expand generator, not rerank (gated)"| FE

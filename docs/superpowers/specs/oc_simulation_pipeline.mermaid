@@ -61,8 +61,8 @@ flowchart TD
     CONJDEC --> CONF
 
     %% ---- Measurement-error sensitivity — TWO distinct objects (spec §9, consumer slices) ----
-    SIGEPS_IN["Σ_ε (supplied: encoder-side MC-dropout\nor synthetic) — consumed here"]
-    MESENS["Embedding measurement-error sensitivity (Σ_ε)\nSIMEX / error-in-variables\nestimand + CI with/without Σ_ε\n→ attenuation / understated uncertainty\n(consumes Σ_ε; does NOT change primary estimand)"]
+    SIGEPS_IN["Σ_ε (supplied: encoder-side last-layer Laplace\n[MC-dropout infeasible: Qwen3/Llama3 dropout=0] or synthetic) — consumed here"]
+    MESENS["Embedding measurement-error sensitivity (Σ_ε)\nSIMEX / error-in-variables\nestimand + CI with/without Σ_ε\n→ attenuation / understated uncertainty\nno embedding ICC → report Σ_ε-scale sensitivity band (#59)\n(consumes Σ_ε; does NOT change primary estimand)"]
     SIGX_IN["Σ_x (supplied: inter-reader reliability\nICC / limits-of-agreement, or synthetic) — consumed here"]
     COVME["Covariate measurement-error sensitivity (Σ_x)\nregression calibration / SIMEX\noracle / naive / corrected on shared replicates\n→ RESIDUAL CONFOUNDING readout\n(distinct from Σ_ε; biases the estimand borrowed on)"]
     SIGEPS_IN -.-> MESENS
