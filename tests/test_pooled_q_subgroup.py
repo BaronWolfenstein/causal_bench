@@ -225,3 +225,32 @@ def test_rmst_coverage_is_near_nominal():
             tot += 1
             hit += int(r.ci_lower <= truth[s] <= r.ci_upper)
     assert hit / tot >= 0.88, f"coverage {hit/tot:.2f} below 0.88 over {tot} intervals"
+
+
+def test_rmst_rp_spline_nuisance_recovers_truth():
+    """The RP-spline (flexsurvspline) nuisance backend (#188) is debiased by our own
+    per-subgroup TMLE to the same targeted RMST. Skipped when rpy2/flexsurv is absent
+    (the estimator then silently falls back to the logistic-hazard nuisance)."""
+    from causal_bench.estimators.rp_spline_nuisance import _flexsurv_available
+    if not _flexsurv_available():
+        pytest.skip("rpy2 / flexsurv R package not available")
+    df, truth, h = _make_rmst_df(n=4000, seed=11, horizon=2.0, non_ph=True)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(
+        nuisance="rp_spline", n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert abs(r.point_estimate - truth[s]) < 2.5 * r.standard_error + 0.02
+
+
+def test_rmst_rp_spline_falls_back_when_unavailable(monkeypatch):
+    """When predict_rp_survival returns None (R stack missing / fit failed), the estimator
+    falls back to the logistic-hazard nuisance rather than crashing."""
+    import causal_bench.estimators.rp_spline_nuisance as rp
+    monkeypatch.setattr(rp, "predict_rp_survival", lambda *a, **k: None)
+    df, truth, h = _make_rmst_df(n=2500, seed=2, horizon=2.0)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(
+        nuisance="rp_spline", n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    assert len(res) == 2
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert np.isfinite(r.point_estimate) and r.standard_error > 0
