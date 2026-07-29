@@ -37,6 +37,23 @@ from causal_bench.estimators.tmle_ipcw import _fit_q, _q_predict, TMLEIPCWEstima
 from causal_bench.metrics import EstimatorResult
 
 
+def _fit_predict_Q(proto, X_fit, y_fit, sw_fit, X_pred):
+    """Fit Q=P(Y=1|X) on (X_fit, y_fit) and predict on X_pred, clipped to (0,1).
+
+    Guards the degenerate single-class case: a small covariate-defined subgroup can be
+    entirely events (or entirely non-events), and LogisticRegression RAISES on <2 classes
+    ("needs samples of at least 2 classes"). There the outcome regression is the constant
+    that class — P(Y=1|W)=1 when everyone had the event — so we skip the fit and return it
+    rather than crash. Keeps `pooled=False` robust on all-events tails."""
+    y_fit = np.asarray(y_fit, float)
+    classes = np.unique(y_fit)
+    if classes.size < 2:
+        const = float(classes[0]) if classes.size == 1 else 0.5
+        return np.full(X_pred.shape[0], np.clip(const, 1e-5, 1 - 1e-5))
+    m = _fit_q(proto, X_fit, y_fit, sw_fit)
+    return np.clip(_q_predict(m, X_pred), 1e-5, 1 - 1e-5)
+
+
 class PooledQSubgroupEstimator(BaseEstimator):
 
     def __init__(self, pooled: bool = True, subgroup_col: str = "subgroup_label",
@@ -85,8 +102,7 @@ class PooledQSubgroupEstimator(BaseEstimator):
         if self.pooled:
             S_dum = pd.get_dummies(pd.Series(np.asarray(S)), drop_first=True).values.astype(float)
             WS = np.column_stack([W, S_dum]) if S_dum.shape[1] else W
-            q_all = _fit_q(q_proto, WS, Y, sw)
-            Q_pooled = np.clip(_q_predict(q_all, WS), 1e-5, 1 - 1e-5)
+            Q_pooled = _fit_predict_Q(q_proto, WS, Y, sw, WS)
 
         results = []
         z = stats.norm.ppf(0.975)
@@ -102,8 +118,7 @@ class PooledQSubgroupEstimator(BaseEstimator):
                 m = (S == s)
                 if m.sum() < 2:                 # cannot fit within a singleton subgroup
                     continue
-                q_s = _fit_q(q_proto, W[m], Y[m], sw[m])
-                Q = np.clip(_q_predict(q_s, W), 1e-5, 1 - 1e-5)
+                Q = _fit_predict_Q(q_proto, W[m], Y[m], sw[m], W)
 
             # One-sample IPCW-TMLE targeting of E[Y|S=s].
             H = (in_s / pi_s) * ipcw                       # clever covariate (0 outside s)

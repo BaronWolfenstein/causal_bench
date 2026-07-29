@@ -98,3 +98,20 @@ def test_missing_subgroup_column_raises():
     df, _, horizon = _make_survival_df(seed=5)
     with pytest.raises(ValueError):
         PooledQSubgroupEstimator(subgroup_col="nope").estimate(df, horizon=horizon)
+
+
+def test_single_outcome_class_subgroup_does_not_crash():
+    """A small covariate-defined subgroup can be entirely events; the within-subgroup
+    (pooled=False) outcome fit must not crash (LogisticRegression raises on <2 classes) —
+    the outcome regression is the constant class and psi_s recovers it (=1 here)."""
+    df, _, horizon = _make_survival_df(n=1500, thr=1.1, seed=3)
+    m = df["subgroup_label"] == 1
+    df.loc[m, "T_obs"] = 0.5                       # force subgroup 1 to be ALL events
+    df.loc[m, "Delta"] = 1.0
+    for pooled in (True, False):
+        res = {r.estimand: r for r in
+               PooledQSubgroupEstimator(pooled=pooled).estimate(df, horizon=horizon)}
+        assert "rate|S=1" in res
+        r = res["rate|S=1"]
+        assert np.isfinite(r.point_estimate) and np.isfinite(r.standard_error)
+        assert r.point_estimate > 0.98            # all-events subgroup -> rate ~ 1
