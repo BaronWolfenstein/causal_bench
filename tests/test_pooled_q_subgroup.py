@@ -1,4 +1,7 @@
 """Tests for the pooled-Q subgroup estimator (#77 event-rate functional)."""
+import os
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -254,3 +257,63 @@ def test_rmst_rp_spline_falls_back_when_unavailable(monkeypatch):
     for s in (0, 1):
         r = res[f"rmst|S={s}"]
         assert np.isfinite(r.point_estimate) and r.standard_error > 0
+
+
+# ---------------------------------------- Donsker-class q_learner: LTB / HAR (#69)
+
+# xgboost (LTB) and lifelines (KM/Cox, used above) load conflicting OpenMP runtimes and
+# segfault when run in the same process on macOS (issue #113; Linux CI is unaffected). The
+# LTB tests are skipped on darwin unless RUN_XGBOOST_TESTS is set; HAR (pure numpy kernel)
+# is safe everywhere.
+_skip_xgb = pytest.mark.skipif(
+    sys.platform == "darwin" and not os.environ.get("RUN_XGBOOST_TESTS"),
+    reason="xgboost/lifelines OpenMP in-process segfault on macOS (#113); runs on Linux CI",
+)
+
+
+def test_har_as_q_learner_event_rate():
+    """HARClassifier (a Donsker-class working model, arXiv:2410.02680) plugs in as the
+    pooled-Q outcome learner for the event-rate estimand (_fit_q fits it unweighted, so
+    the IPCW correction enters via the targeting step)."""
+    from causal_bench.har import HARClassifier
+    df, truth, h = _make_rmst_df(n=500, seed=2, horizon=1.5)
+    res = {r.estimand: r for r in
+           PooledQSubgroupEstimator(q_learner=HARClassifier()).estimate(df, horizon=h)}
+    assert len(res) == 2
+    for s in (0, 1):
+        r = res[f"rate|S={s}"]
+        assert np.isfinite(r.point_estimate) and r.standard_error > 0
+        assert 0.0 <= r.point_estimate <= 1.0
+
+
+@_skip_xgb
+def test_ltb_as_q_learner_event_rate():
+    """LTBClassifier (#69, arXiv:2205.10697) plugs in as the pooled-Q outcome learner for
+    the event rate. Lean config for speed."""
+    from causal_bench.ltb import LTBClassifier
+    df, truth, h = _make_rmst_df(n=500, seed=2, horizon=1.5)
+    ql = LTBClassifier(max_blocks=4, block_size=5, cv=3, val_fraction=0.25, random_state=0)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(q_learner=ql).estimate(df, horizon=h)}
+    assert len(res) == 2
+    for s in (0, 1):
+        r = res[f"rate|S={s}"]
+        assert np.isfinite(r.point_estimate) and r.standard_error > 0
+        assert 0.0 <= r.point_estimate <= 1.0
+
+
+@_skip_xgb
+def test_ltb_as_q_learner_rmst_hazard():
+    """LTB drives the RMST person-time hazard (Donsker-class working model as the survival
+    nuisance), debiased by the per-subgroup targeting to ~truth. HAR is intentionally not
+    used for RMST — its O(n^2) kernel is impractical on the person-time expansion (see the
+    q_learner attribute doc)."""
+    from causal_bench.ltb import LTBClassifier
+    df, truth, h = _make_rmst_df(n=1200, seed=2, horizon=2.0)
+    ql = LTBClassifier(max_blocks=4, block_size=5, cv=3, val_fraction=0.25, random_state=0)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(
+        q_learner=ql, n_grid=12).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    assert len(res) == 2
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert np.isfinite(r.point_estimate) and r.standard_error > 0
+        assert abs(r.point_estimate - truth[s]) < 2.5 * r.standard_error + 0.05
