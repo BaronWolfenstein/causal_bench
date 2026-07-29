@@ -56,7 +56,10 @@ A pluggable survival backend replacing the pooled logistic-hazard:
 - **Gated:** falls back to the Python pooled-hazard when rpy2/flexsurv is unavailable (the same
   graceful pattern as the `concrete_*` estimators). No hard R dependency; CI stays green.
 
-## exp44 — the finding
+## exp34 — the finding
+
+(Claims the reserved exp34 slot — #77's original "Candidate exp34" number — since this
+experiment serves both #77 and #189. Not a new exp44.)
 
 Non-PH small-subgroup survival DGP: early-harm/late-benefit **crossing hazards** (per #188's
 motivation), covariate-defined subgroups of unequal size. Swept by subgroup size `n_s`, on
@@ -77,7 +80,7 @@ and RP beats logistic-hazard under the non-PH shape.
 - `causal_bench/estimators/rp_spline_nuisance.py` *(new)* — rpy2/flexsurv predict-`S` bridge +
   graceful unavailability (`_flexsurv_available()`), returning an `S[i, k]` matrix.
 - `r_scripts/flexsurv_bridge.R` *(new)* — `flexsurvspline` fit + predict on a grid.
-- `experiments/exp44_pooled_q_rmst.py` *(new)* + a `causal_bench/validation/` DGP/report
+- `experiments/exp34_pooled_q_rmst.py` *(new)* + a `causal_bench/validation/` DGP/report
   helper mirroring `hazard_selection.py`.
 - `tests/test_pooled_q_subgroup.py` — extend.
 
