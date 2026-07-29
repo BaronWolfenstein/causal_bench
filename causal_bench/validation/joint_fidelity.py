@@ -271,11 +271,14 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         tau_prior = _policy_tau_prior(policy, level, spec, dec, flat_tau_sd=flat_tau_sd,
                                       tau_base=tau_base, tau_sd_min=tau_sd_min, sigma=sigma)
         def _fit(d, t, sd_seed):
-            if fast and null_subgroup is None:                  # compile-once path
+            if fast:                                            # compile-once path
+                # return_theta now also yields theta_g_rejects, so the partial-null
+                # (null_subgroup) path keeps the JAX compile-once speedup instead of
+                # falling back to the slow per-fit-recompile path.
                 return fit_three_level_meta_fast(
                     th, se_fit, tau_prior=tau_prior, true_effect=mu_true, draws=d, tune=t,
                     chains=chains, seed=sd_seed, chain_method=chain_method, n_pad=n_sub,
-                    return_theta=True)                          # for the subgroup-risk metric
+                    return_theta=True)                          # subgroup-risk + partial-null size
             return fit_three_level_meta(
                 th, se_fit, tau_prior=tau_prior, true_effect=mu_true, draws=d, tune=t,
                 chains=chains, seed=sd_seed, chain_method=chain_method,

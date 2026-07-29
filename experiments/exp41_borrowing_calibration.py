@@ -60,10 +60,32 @@ from pathlib import Path
 import numpy as np
 
 from causal_bench.validation.joint_fidelity import (
-    joint_fidelity, make_scenario_spec, binom_ci_from_rate)
+    joint_fidelity, make_scenario_spec, make_partial_null_spec, binom_ci_from_rate)
 
 OUT_DIR = Path("results/exp41_borrowing_calibration")
-SCENARIOS = {"global_null": (0.0, 0.0), "hetero_null": (0.0, 0.6), "alt": (0.5, 0.3)}
+# Scenarios, each a (kind, *args) the grid dispatches on:
+#   ("meta", mu, tau)  -> make_scenario_spec; population-mu decision (reject_rate)
+#   ("partial", sib)   -> make_partial_null_spec(null_idx=0); per-subgroup Type-I of the
+#                         truly-null subgroup (subgroup_reject_rate), null_subgroup=0.
+# The null is COMPOSITE: it holds for every (mu=0, tau>=0). We therefore SWEEP tau under the
+# null and report the SUPREMUM reject rate over it (Qian/EitW, FDA Jan-2026 Bayesian draft:
+# "calibrate at a point, validate over the null" — 2 points can't bound the size, since
+# borrowing reshapes the error surface). The partial-null family exercises the borrowing-
+# INFLATION mechanism (a null subgroup dragged toward non-null siblings) the engine's own
+# docstring flagged as untested; sib is the departure magnitude, swept. See #195.
+SCENARIOS = {
+    "null_t0.00": ("meta", 0.0, 0.0),          # = the old global_null
+    "null_t0.15": ("meta", 0.0, 0.15),
+    "null_t0.30": ("meta", 0.0, 0.30),
+    "null_t0.45": ("meta", 0.0, 0.45),
+    "null_t0.60": ("meta", 0.0, 0.60),         # = the old hetero_null
+    "null_t0.80": ("meta", 0.0, 0.80),
+    "alt":        ("meta", 0.5, 0.3),
+    "partial_e0.30": ("partial", 0.30),
+    "partial_e0.60": ("partial", 0.60),
+}
+NULL_META_SCENARIOS = [k for k, v in SCENARIOS.items() if v[0] == "meta" and v[1] == 0.0]
+PARTIAL_SCENARIOS = [k for k, v in SCENARIOS.items() if v[0] == "partial"]
 POLICIES = ["flat", "oracle", "canonical", "empirical", "canonical_ps"]
 # canonical_ps = per-subgroup reliability: empirical tau prior + se inflated by each
 # decoded subgroup's purity, so the fit shrinks contaminated subgroups more. The test of
@@ -114,14 +136,22 @@ def run_grid(*, levels, thetas, Ks, n_reps, n_units, depth, draws, tune, chains,
     for idx, (level, theta0, K, scen, policy) in enumerate(iter_cells(levels, thetas, Ks)):
         if shard is not None and idx % shard[1] != shard[0]:
             continue
-        mu, tau = SCENARIOS[scen]
+        kind = SCENARIOS[scen]
         g_eff, b_eff = dims_for_K(level, K, g=g, b_size=b_size)
-        spec = make_scenario_spec(g_eff, b_eff, s, m, level=level, mu=mu, tau=tau, seed=seed)
+        if kind[0] == "partial":
+            spec = make_partial_null_spec(g_eff, b_eff, s, m, level=level,
+                                          sibling_effect=kind[1], null_idx=0, seed=seed)
+            null_subgroup = 0                                  # measure that subgroup's Type-I
+        else:                                                  # ("meta", mu, tau)
+            _, mu, tau = kind
+            spec = make_scenario_spec(g_eff, b_eff, s, m, level=level, mu=mu, tau=tau, seed=seed)
+            null_subgroup = None
         r = joint_fidelity(spec, level=level, policy=policy, theta0=theta0,
                            n_reps=n_reps, n_units=n_units, depth=depth,
                            draws=draws, tune=tune, chains=chains, seed=seed,
                            chain_method=chain_method, fast=fast,
                            tail_ess_threshold=tail_ess_threshold,
+                           null_subgroup=null_subgroup,
                            resample_effects=resample_effects)
         rows.append({"cell": idx, "level": level, "theta0": theta0, "K": K,
                      "scenario": scen, "policy": policy, **r})
@@ -152,7 +182,45 @@ def report(rows: list[dict]) -> str:
             f"{r['mean_tau_sd']:.3f} | "
             f"{r.get('mean_decode_acc', float('nan')):.3f} | "
             f"{r['tau_true']:.2f} | {r['n_used']} |")
-    return "\n".join(lines) + "\n" + _policy_summary(rows)
+    return "\n".join(lines) + "\n" + _policy_summary(rows) + "\n" + _sup_type_i_summary(rows)
+
+
+def _sup_type_i_summary(rows: list[dict], alpha: float = 0.05) -> str:
+    """Composite-null Type-I: the SUPREMUM reject rate over the null family, per
+    (level, θ₀, K, policy) — not the reject rate at a single τ. A point at τ=0 (or any one
+    τ) cannot bound the size, because borrowing reshapes the error surface and the sup can
+    sit at a swept boundary (Qian/EitW; FDA Jan-2026 Bayesian draft). `sup_partial` is the
+    supremum per-subgroup Type-I over the partial-null (borrowing-inflation) family. Cells
+    with sup > α are flagged — that is the size violation calibration-at-a-point would miss."""
+    import numpy as np
+    by = {}
+    for r in rows:
+        key = (r["level"], r["theta0"], r.get("K"), r["policy"])
+        by.setdefault(key, []).append(r)
+    out = ["", "### Supremum Type-I over the composite null (validate over the null, not a point)",
+           "",
+           "| level | θ₀ | K | policy | sup reject (null τ-sweep) | sup uncond | sup partial-null | flag |",
+           "|-------|----|---|--------|---------------------------|-----------|------------------|------|"]
+
+    def _sup(sel, scen_names, key):
+        vals = [r[key] for r in sel if r["scenario"] in scen_names
+                and isinstance(r.get(key), (int, float)) and np.isfinite(r.get(key, float("nan")))]
+        return max(vals) if vals else float("nan")
+
+    for (level, theta0, K, policy), sel in sorted(by.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or 0, kv[0][3])):
+        sup_r = _sup(sel, NULL_META_SCENARIOS, "reject_rate")
+        sup_u = _sup(sel, NULL_META_SCENARIOS, "reject_rate_uncond")
+        sup_p = _sup(sel, PARTIAL_SCENARIOS, "subgroup_reject_rate")
+        worst = max([v for v in (sup_r, sup_u, sup_p) if np.isfinite(v)], default=float("nan"))
+        flag = "⚠ size>α" if np.isfinite(worst) and worst > alpha + 1e-9 else ""
+        out.append(f"| {level} | {theta0:.2f} | {K} | {policy} | {sup_r:.3f} | {sup_u:.3f} | "
+                   f"{sup_p:.3f} | {flag} |")
+    out += ["", f"Supremum is over μ=0 null cells only (τ ∈ {{0…0.8}}) and the partial-null "
+            f"family; α={alpha}. Read this BEFORE the per-scenario table: a policy nominal "
+            "at one τ can still violate size at another (the article's sign-reversing error "
+            "surface). `sup uncond` includes tail-ESS-flagged fits (dropping them is "
+            "selection-on-data)."]
+    return "\n".join(out)
 
 
 # K=4 is a qualitatively different regime, not the low end of a trend: v3 measured
