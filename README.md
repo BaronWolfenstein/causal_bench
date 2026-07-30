@@ -151,6 +151,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp39_zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery |
 | `exp39_ci_calibration.py` | Type-I / power calibration of the zero-flow CI test |
 | `exp41_borrowing_calibration.py` | Borrowing calibration (#144): identifiability-set `tau_sd` OCs on the joint DGP with BP-decoded labels. Policies flat / oracle / canonical / **empirical** (fixed van Zwet CDSR τ prior) over level × θ₀ × **K** × scenario; multi-GPU sharded via `scripts/exp41_multigpu.py`. **Requires the 3.12 `[bayes]` stack** |
+| `exp34_pooled_q_rmst.py` | Pooled-Q subgroup estimator (#77 event rate + #189 RMST + #188 RP-spline nuisance): (A) under within-subgroup informative censoring the IPCW-adjusted RMST corrects the covariate-dependent censoring KM ignores; (B) borrowing lowers RMSE for the event rate but is a wash for RMST (efficient targeting makes the RMST point robust to the initial nuisance); (C) logistic vs RP-spline (flexsurvspline) nuisance under crossing hazards. Self-validating against MC truth |
 | `exp43_mmrm_mnar.py` | MMRM (REML, unstructured) under MNAR dropout: unbiased in the MAR control, bias growing monotonically with the MNAR channel; IPCW-observed fails identically (nothing recovers MNAR from observables) while IPCW-oracle recovers, identifying the unobserved-dropout channel. Bias reported paired against a complete-data benchmark |
 | `exp42_hazard_selection.py` | Built-in selection bias of the hazard ratio: randomized A + unobserved Gamma frailty ⇒ the Cox HR attenuates toward the null and drifts early→late, while KM risk-difference and RMST stay unbiased on the same replicates. Closed-form marginal truths make it self-validating |
 
@@ -178,6 +179,7 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | `causal_bench/estimators/mmrm.py` | MMRM by REML with an **unstructured** within-subject covariance (log-Cholesky parameterisation, GLS-profiled beta, L-BFGS-B). Implemented directly — `statsmodels.MixedLM` fits random effects (compound symmetry at best), and a random-intercept model is not an MMRM |
 | `causal_bench/validation/mnar_dropout.py` | MNAR-dropout falsification harness (exp43): longitudinal DGP whose dropout depends on the *unrecorded* outcome, with MAR control, IPCW-oracle and IPCW-observed arms |
 | `causal_bench/validation/hazard_selection.py` | Hazard-ratio built-in-selection-bias harness (exp42): Gamma-frailty survival with closed-form marginal survival / HR / RMST truths; Cox vs KM risk-difference vs RMST on shared replicates. Evidence for preferring cumulative-risk estimands |
+| `causal_bench/validation/pooled_q_rmst.py` | Pooled-Q subgroup OC harness (exp34): single-arm survival DGP with MC truths for both estimands; IPCW-vs-KM under within-subgroup informative censoring, pooled-vs-subgroup-only borrowing, and logistic-vs-RP-spline nuisance under crossing hazards |
 | `causal_bench/validation/rct_blinding.py` | RCT-blinding validation of the OC-sim / synthetic comparator (#139): does the counterfactual control branch recover a held-out RCT's effect / survival curves? Flags naive or unmeasured-confounded comparators. Generator-agnostic, numpy |
 
 **Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 40 distinct numbers → 41 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
@@ -186,7 +188,7 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 |--------|--------|
 | exp22 | **Built** — M-bias sensitivity (`exp22_mbias_sensitivity.py`, #104) |
 | exp23 | Immortal-time-bias honest-null — design-level, unbuilt (#21; renumbered from exp22) |
-| exp34 | Pooled-Q subgroup event rates for single-arm ENCIRCLE — candidate, unbuilt (#77) |
+| exp34 | **Built** — pooled-Q subgroup event rate (#77) + RMST (#189) + RP-spline nuisance (#188) (`exp34_pooled_q_rmst.py`) |
 | exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
 | exp36 | **Built** — two-vs-three-level OC fidelity (`exp36_three_level_fidelity.py`, #40); reclaimed from the released z_anatomy slot (#73 dropped its exp number) |
 | exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |

@@ -115,3 +115,142 @@ def test_single_outcome_class_subgroup_does_not_crash():
         r = res["rate|S=1"]
         assert np.isfinite(r.point_estimate) and np.isfinite(r.standard_error)
         assert r.point_estimate > 0.98            # all-events subgroup -> rate ~ 1
+
+
+# --------------------------------------------------------------- RMST (#189)
+
+def _make_rmst_df(n=3000, thr=1.0, seed=0, horizon=2.0, informative_censoring=False,
+                  non_ph=False, truth_n=300_000):
+    """Single-arm survival data with a small covariate-defined subgroup and a computable
+    RMST truth = E[min(T, tau) | S=s] from a large clean reference draw. PH (exponential)
+    by default; `non_ph` gives subgroup-dependent Weibull shapes (crossing hazards);
+    `informative_censoring` drops subjects on a within-subgroup-varying covariate (W2)."""
+    rng = np.random.default_rng(seed)
+
+    def draw(m, rs):
+        W = rs.normal(size=(m, 4))
+        S = (W[:, 0] > thr).astype(int)
+        lam = np.exp(-0.2 + 0.4 * W[:, 0] - 0.9 * W[:, 1] + 0.5 * W[:, 2] + 0.5 * S)
+        if non_ph:
+            shape = np.where(S == 1, 1.7, 0.8)              # crossing hazards
+            T = (-np.log(rs.random(m))) ** (1.0 / shape) / lam
+        else:
+            T = rs.exponential(1.0 / lam)
+        return W, S, T
+
+    W, S, T = draw(n, rng)
+    T_obs = np.minimum(T, horizon)
+    Delta = (T <= horizon).astype(float)
+    if informative_censoring:
+        C = rng.exponential(1.0 / np.exp(-1.6 + 0.6 * W[:, 1]))   # ~20% dropout, varies within subgroup
+        drop = C < T_obs
+        T_obs = np.where(drop, C, T_obs)
+        Delta = np.where(drop, 0.0, Delta)
+
+    df = pd.DataFrame({"W1": W[:, 0], "W2": W[:, 1], "W3": W[:, 2], "W4": W[:, 3],
+                       "T_obs": T_obs, "Delta": Delta, "subgroup_label": S, "A": 1.0})
+    Wt, St, Tt = draw(truth_n, np.random.default_rng(seed + 7))
+    mm = np.minimum(Tt, horizon)
+    truth = {s: float(mm[St == s].mean()) for s in (0, 1)}
+    return df, truth, horizon
+
+
+def _km_rmst(T_obs, Delta, horizon):
+    """Naive per-subgroup Kaplan-Meier RMST (no covariate adjustment, no IPCW)."""
+    from lifelines import KaplanMeierFitter
+    from lifelines.utils import restricted_mean_survival_time
+    kmf = KaplanMeierFitter().fit(T_obs, (Delta == 1))
+    return float(restricted_mean_survival_time(kmf, t=horizon))
+
+
+def test_rmst_returns_one_result_per_subgroup_with_valid_cis():
+    df, _, h = _make_rmst_df(seed=1)
+    res = PooledQSubgroupEstimator(n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")
+    assert len(res) == 2
+    for r in res:
+        assert r.estimand.startswith("rmst|S=")
+        assert np.isfinite(r.point_estimate) and r.standard_error > 0
+        assert 0.0 <= r.point_estimate <= h
+        assert r.ci_lower <= r.point_estimate <= r.ci_upper
+        assert r.ic is not None and r.ic.shape[0] == len(df)
+
+
+def test_rmst_recovers_true_subgroup_rmst():
+    """Both subgroups' RMST land within ~2.5 SE of the MC truth E[min(T,tau)|S=s]."""
+    df, truth, h = _make_rmst_df(n=5000, seed=3, horizon=2.0)
+    res = {r.estimand: r for r in
+           PooledQSubgroupEstimator(n_grid=25).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert abs(r.point_estimate - truth[s]) < 2.5 * r.standard_error + 0.02
+
+
+def test_rmst_recovers_under_non_ph_crossing_hazards():
+    """The discrete-time hazard's interval baselines absorb a non-PH (crossing) shape."""
+    df, truth, h = _make_rmst_df(n=6000, seed=11, horizon=2.0, non_ph=True)
+    res = {r.estimand: r for r in
+           PooledQSubgroupEstimator(n_grid=25).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert abs(r.point_estimate - truth[s]) < 2.5 * r.standard_error + 0.02
+
+
+def test_rmst_ipcw_beats_naive_km_under_informative_censoring():
+    """The #189 payoff: under informative censoring on a within-subgroup-varying covariate,
+    pooled-Q's IPCW-adjusted RMST is far less biased than a naive per-subgroup KM RMST,
+    which ignores the covariate-dependent censoring. RMSE-to-truth over seeds."""
+    e_ipcw, e_km = [], []
+    for sd in range(30):
+        df, truth, h = _make_rmst_df(n=4000, seed=sd, horizon=2.0, informative_censoring=True)
+        r = {x.estimand: x for x in
+             PooledQSubgroupEstimator(n_grid=25).estimate(df, horizon=h, estimand="subgroup_rmst")}
+        m = (df["subgroup_label"] == 0).values
+        e_ipcw.append(r["rmst|S=0"].point_estimate - truth[0])
+        e_km.append(_km_rmst(df["T_obs"].values[m], df["Delta"].values[m], h) - truth[0])
+    rmse_ipcw = np.sqrt(np.mean(np.square(e_ipcw)))
+    rmse_km = np.sqrt(np.mean(np.square(e_km)))
+    assert rmse_ipcw < rmse_km, f"IPCW {rmse_ipcw:.4f} !< KM {rmse_km:.4f}"
+    assert abs(np.mean(e_ipcw)) < abs(np.mean(e_km))          # and less biased
+
+
+def test_rmst_coverage_is_near_nominal():
+    """IC-based 95% CIs cover the truth ~95% of the time (clean PH), over seeds."""
+    hit = tot = 0
+    for sd in range(30):
+        df, truth, h = _make_rmst_df(n=3000, seed=100 + sd, horizon=2.0)
+        res = {r.estimand: r for r in
+               PooledQSubgroupEstimator(n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")}
+        for s in (0, 1):
+            r = res[f"rmst|S={s}"]
+            tot += 1
+            hit += int(r.ci_lower <= truth[s] <= r.ci_upper)
+    assert hit / tot >= 0.88, f"coverage {hit/tot:.2f} below 0.88 over {tot} intervals"
+
+
+def test_rmst_rp_spline_nuisance_recovers_truth():
+    """The RP-spline (flexsurvspline) nuisance backend (#188) is debiased by our own
+    per-subgroup TMLE to the same targeted RMST. Skipped when rpy2/flexsurv is absent
+    (the estimator then silently falls back to the logistic-hazard nuisance)."""
+    from causal_bench.estimators.rp_spline_nuisance import _flexsurv_available
+    if not _flexsurv_available():
+        pytest.skip("rpy2 / flexsurv R package not available")
+    df, truth, h = _make_rmst_df(n=4000, seed=11, horizon=2.0, non_ph=True)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(
+        nuisance="rp_spline", n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert abs(r.point_estimate - truth[s]) < 2.5 * r.standard_error + 0.02
+
+
+def test_rmst_rp_spline_falls_back_when_unavailable(monkeypatch):
+    """When predict_rp_survival returns None (R stack missing / fit failed), the estimator
+    falls back to the logistic-hazard nuisance rather than crashing."""
+    import causal_bench.estimators.rp_spline_nuisance as rp
+    monkeypatch.setattr(rp, "predict_rp_survival", lambda *a, **k: None)
+    df, truth, h = _make_rmst_df(n=2500, seed=2, horizon=2.0)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(
+        nuisance="rp_spline", n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    assert len(res) == 2
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert np.isfinite(r.point_estimate) and r.standard_error > 0
