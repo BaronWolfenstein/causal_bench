@@ -97,21 +97,42 @@ Plain MAP does **not** fit ENCIRCLE directly, for two reasons, each with a fix:
    so **δ in Part A ≙ the era gap between registry vintages and the trial enrollment window**
    (ties to #173 calendar-time confounding).
 2. **Case-mix mismatch.** A marginal registry rate is confounded (TVT patients ≠ trial
-   patients). **Fix:** borrow a **propensity-score-adjusted** rate — a **PS-integrated
-   power/MAP prior** (Wang/Chen/Ibrahim/Yue): the PS layer fixes case-mix, the power/MAP layer
-   does the dynamic down-weighting under conflict. This composes MAP with the SCA's *existing*
-   TMLE/IPCW propensity machinery rather than replacing it.
+   patients). **Fix:** a **PS-integrated (propensity-score-integrated) power/MAP prior**
+   (Wang/Chen/Ibrahim/Yue): PS decides *who* is comparable (borrow only from propensity-
+   comparable external subjects), the power/MAP decides *how much* to trust their outcomes.
+   **In ENCIRCLE the PS layer IS the frozen SMB encoder's embedding-space propensity — already
+   built.** So "PS-integrated robust-MAP" = "embedding-propensity-integrated robust-MAP": the
+   frozen-encoder matching supplies the PS integration; robust-MAP is layered on for the
+   *residual* outcome conflict the EHR-only frozen embedding structurally cannot match on —
+   the **echo/imaging modality gap** (M3's imaging prognostic signal is absent from an EHR-only
+   embedding) and **era drift** (a frozen encoder can't track standard-of-care change, #173).
 
-**Three borrowing paradigms to keep straight** (only the third is what exp44 validates):
+**This is a COMPLEMENT, not a reframe** of the SCA. Three layers stack:
 - ENCIRCLE *primary* = a **fixed 45% performance goal** (a frozen, non-adaptive prior).
-- ENCIRCLE *SCA* = a **propensity/TMLE external control** from TVT (what the trial uses today).
-- **Bayesian dynamic borrowing** (MAP/robust-MAP/power) = what exp44 validates — relevant to
-  ENCIRCLE **only if the SCA is reframed as dynamic borrowing**, the world the conflict article
-  is about.
+- ENCIRCLE *SCA* = the **frozen-encoder embedding-space propensity / TMLE external control**
+  (what the trial uses today) — the representation-exchangeability layer.
+- **Dynamic borrowing** (robust-MAP/power, what exp44 validates) = a **residual-outcome-conflict
+  layer LAYERED ON** the embedding-propensity SCA, aimed exactly at what a frozen EHR-only
+  encoder can't capture (modality gap + era drift). Not a wholesale reframe.
 
-**Application-layer build (future, own spec):** registry partitioning → PS-integrated
-robust-MAP → the conflict diagnostic + protocol response of #180. exp44 does none of this; it
-validates the borrowing-under-conflict mechanism the application layer would rely on.
+**Part B is NOT a committed build — it is gated on a diagnostic.** Given the frozen-encoder
+embedding-propensity already does representation exchangeability, dynamic borrowing is only
+warranted if there is **residual OUTCOME conflict after embedding matching**. Note the SMB
+encoder is **off-the-shelf** — pretrained on a general EHR corpus, frozen, applied zero-shot to
+TVT patients (NOT trained on TVT/mitral data) — so its representation was never tuned to this
+population's outcome-relevant structure; combined with the echo modality gap + era drift, that
+makes residual conflict *more* likely and the diagnostic *more* likely to trigger. So the actual
+first ENCIRCLE step is a **residual-conflict diagnostic in the embedding-matched space** (do
+embedding-matched external/trial patients disagree on outcomes systematically? — the #180
+conflict diagnostic applied to the SCA). Decision:
+- diagnostic ⇒ *no* residual conflict → the embedding-propensity SCA suffices; a sensitivity
+  analysis is enough; **skip Part B.**
+- diagnostic ⇒ *material* residual conflict (echo modality gap / era drift) → *then* build the
+  residual robust-MAP layer (registry pseudo-studies → PS[=embedding]-integrated robust-MAP →
+  #180 protocol response), aimed at that specific residual.
+
+exp44 (Part A) validates the borrowing-under-conflict mechanism regardless; it is a general
+benchmark result independent of whether ENCIRCLE's diagnostic ever triggers Part B.
 
 ---
 
