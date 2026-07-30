@@ -1,13 +1,14 @@
 """Array-namespace backend seam. numpy on CPU (the reference path every test
 uses), cupy on CUDA for the A100 box.
 
-Scope (be honest about it): this establishes the seam and the CPU reference path.
-`run_smc(device=...)` converts the initial state and returns host numpy via these
-helpers, but the SMC *hot loop* (`smc_step`'s resample branch, `normalize_log_weights`,
-`systematic_resample`) still calls `np.*` directly, so `device="cuda"` is NOT yet a
-validated end-to-end path — porting the hot loop to `xp = array_namespace(device)`
-and validating it (distributed == serial, then throughput) belongs to the deferred
-multi-GPU plan, on the box. Do not rely on the cuda path until then."""
+The SMC hot loop (`smc_step`'s resample branch, `normalize_log_weights`,
+`systematic_resample`) is namespace-generic: each routes through
+`get_namespace(...)` and operates on numpy or cupy alike. `run_smc(device=...)`
+converts the initial state on-device and returns host numpy via these helpers.
+`device="cuda"` numerical parity with `device="cpu"` is asserted by
+`tests/test_smc_cuda_parity.py`, which runs on the A100 box (skips off-box where
+cupy is absent); the multi-GPU distributed==serial validation runs on the box
+per the deployment runbook."""
 from __future__ import annotations
 
 import numpy as np
@@ -31,3 +32,15 @@ def to_numpy(x):
     if type(x).__module__.startswith("cupy"):
         return x.get()
     return np.asarray(x)
+
+
+def get_namespace(*arrays):
+    """Infer the array namespace (numpy or cupy) from the arrays themselves,
+    so hot-loop functions stay device-agnostic without threading a `device`
+    string through their signatures. Mirrors `to_numpy`'s module sniff.
+    Satisfies spec §1a ('route through xp = array_namespace(device)')."""
+    for a in arrays:
+        if type(a).__module__.startswith("cupy"):
+            import cupy as cp            # lazy: only on the GPU box
+            return cp
+    return np

@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov"]
+dev = ["pytest>=7", "pytest-cov", "tomli; python_version < '3.11'"]
 gpu = ["cupy-cuda12x>=12", "torch>=2.2"]
 r = ["rpy2>=3.5"]
 storage = ["pyarrow>=12"]

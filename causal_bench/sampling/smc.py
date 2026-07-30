@@ -32,13 +32,15 @@ class SMCResult:
 
 def smc_step(state: SMCState, log_incr: np.ndarray, rng, ess_frac: float = 0.5):
     """One reweight → (adaptive) resample. Returns (new_state, resampled?)."""
+    from .backend import get_namespace
+    xp = get_namespace(state.particles)
     log_w = state.log_weights + log_incr
     if should_resample(log_w, ess_frac):
         w, _ = normalize_log_weights(log_w)
         idx = systematic_resample(w, rng)
         new = SMCState(
             particles=state.particles[idx],
-            log_weights=np.zeros(len(idx)),          # reset to uniform post-resample
+            log_weights=xp.zeros(len(idx)),          # reset to uniform post-resample
             ancestry=idx,
         )
         return new, True

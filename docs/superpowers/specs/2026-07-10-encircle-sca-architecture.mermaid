@@ -12,6 +12,11 @@
 %% natural-gradient with the SCORE-NET metric (Landing), not Fisher; Σ_ε sensitivity band
 %% (no embedding ICC); survival-nuisance candidates #188/#189 on the estimation layer;
 %% Flow-Expander gated candidate added to the twisted-SMC diagram.
+%% 2026-07-30 refresh: merged main; kept the Qwen3/Llama3 family encoder and folded the
+%% MitralVision imaging-encoder candidate + EHR-only modality-gap note back in; added the
+%% RCGATE node — the exp44 residual-conflict GATE → gated PS-integrated robust-MAP borrowing
+%% (general version BUILT, PR #198), tied to the echo modality gap / era drift a frozen
+%% off-the-shelf EHR encoder can't capture. Complement to the SCA, not a reframe.
 flowchart TD
     %% DESIGN FACT: ENCIRCLE is single-arm vs a 45% performance goal. TVT registry
     %% + synthetic augmentation is the ENTIRE comparator. No real patient-level OMT
@@ -28,10 +33,20 @@ flowchart TD
     end
     SFALL["Fallback: flat / non-hierarchical comparator\n(no depth-tuned architecture licensed)"]
 
-    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB EHR world-model family)"]
+    %% NOTE (2026-07): current encoder is structured-EHR ONLY, but M3 is a MITRAL device
+    %% whose disease signature is echocardiographic. Imaging encoders are candidate
+    %% (gated on diffuse_directly resume). Auto-Contour (JACC Adv 2026, S2772963X26002887)
+    %% is ICE = INTRA-PROCEDURAL segmentation, NOT a patient-level screening encoder →
+    %% out of scope for this layer (procedural-guidance tooling, not a representation).
+    %% This EHR-only modality gap (plus era drift on a FROZEN, off-the-shelf encoder) is
+    %% exactly what the exp44 RESIDUAL-CONFLICT GATE targets: after embedding-propensity
+    %% matching, echo/imaging-driven residual OUTCOME conflict the EHR encoder can't capture
+    %% → gated robust-MAP borrowing. See the RCGATE note on the estimation layer.
+    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB EHR world-model family, EHR-only today)"]
         direction LR
         JEPA["EHR World Model (frozen, deterministic)\nSMB-v1 family: {Qwen3,Llama3}-8b × {multi-obj,curriculum} + Qwen3-1.7b\ntwo backbones → cross-backbone agreement/ensemble & invariance check (#83/#149)"]
         SIGEPS["Σ_ε (encoder-side): LAST-LAYER LAPLACE\n(MC-dropout infeasible — Qwen3/Llama3 default dropout=0)\nor cross-backbone ensemble → per-patient covariance artifact (#59)"]
+        MV_ENC["CANDIDATE (gated) — imaging encoder\nMitralVision: spatiotemporal ViT, TTE A4C B-mode → MR-severity embedding\n(JASE 2026, S0894-7317(26)00360-3)\ndisease-tuned: could pass Test A localization for rare mitral\nphenotypes the EHR encoder misses. Modality ≠ SMB EHR encoder."]
     end
 
     subgraph SIGREG["Embedding-Geometry Pre-processing"]
@@ -168,6 +183,11 @@ flowchart TD
     TMLE -.-> SURVNUIS
     HAL -.-> SURVNUIS
 
+    %% Residual-conflict gate + gated dynamic borrowing (exp44, BUILT this session)
+    RCGATE["RESIDUAL-CONFLICT GATE → gated borrowing (exp44 — general version BUILT):\nafter embedding-propensity matching, test Y_control ⫫ Source | Z(embedding) via zero_flow_ci.\nSUPPORTS → matched SCA suffices, NO borrow; REFUTES → residual OUTCOME conflict (echo\nmodality gap / era drift a frozen off-the-shelf EHR encoder can't capture) → PS-integrated\nrobust-MAP borrow (down-weights under conflict, validated); UNDERPOWERED → flat (#194).\nCOMPLEMENT to the SCA, not a reframe: the embedding propensity IS the PS-integration layer.\nresidual_conflict_gate / residual_borrowing_layer / two_epoch_borrowing (PR #198).\nENCIRCLE-specific instantiation (real TVT partitions + frozen-embedding PS) deferred."]
+    TMLE -.-> RCGATE
+    POS -.->|"embedding-matched residual-conflict test (zero_flow_ci)"| RCGATE
+
     %% Measurement-error hand-offs (encoder repo → causal_bench)
     JEPA -.-> SIGEPS
     SIGEPS -.->|"Σ_ε artifact (calibrated)"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε.\nNo clinical ICC for embeddings → report Σ_ε-scale SENSITIVITY BAND (#59)"]
@@ -197,6 +217,7 @@ flowchart TD
     class TVT,ENCIRCLE data
     class SSCAN,SCTRL,SGATE,SFALL structgate
     class JEPA encoder
+    class MV_ENC gated
     class EP,GCHECK,SPROJ,LSPACE,ZCA,SEP1,SEP2 sigreg
     class Z_TVT,Z_TMVR,POS,LOC latent
     class DIFF_Z,DIFF_TAIL,DIFF_LAT,CFG,TWIST,ESS_SMC,SYNTH generative
@@ -206,5 +227,5 @@ flowchart TD
     class LOCGATE,SCOPE gate
     class SIGEPS encoderrepo
     class MESENS,COVME causalrepo
-    class ESSNOTE,AUGNOTE,SNOTE,SURVNUIS annotation
+    class ESSNOTE,AUGNOTE,SNOTE,SURVNUIS,RCGATE annotation
     class AXES gated

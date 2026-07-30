@@ -15,7 +15,7 @@
 - `z` is the hidden latent state: mechanisms and ground-truth reward may read it, but the naive/IPW estimators may NOT (only `observed`, `u`, `a`, and any declared proxy).
 - Determinism: seeded via `np.random.default_rng(seed)`; same seed → same mask.
 - Honest endpoint: report the residual MNAR bias that no proxy removes — do not claim full correction.
-- `exp27` is the free experiment number (exp21/24/25 taken, exp22 reserved for immortal-time, exp26 is #46).
+- `exp27` is the free experiment number (exp21/22/24/25 taken — exp22 is M-bias sensitivity; exp23 reserved for immortal-time bias, #21; exp26 is #46).
 
 ## File Structure
 

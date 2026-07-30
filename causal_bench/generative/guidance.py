@@ -11,11 +11,15 @@ from .vpsde import Schedule, ddpm_reverse
 
 
 def cfg_score(x_t, t, cond_score, uncond_score, guidance_scale):
-    return uncond_score + guidance_scale * (cond_score - uncond_score)
+    # guidance_scale may be a scalar OR a schedule callable(step)->float, so the
+    # CFG strength can be annealed with the noise level (e.g. sampling.linear_anneal):
+    # weak while noisy (t large, x0 estimate unreliable), sharp as denoising finishes.
+    gs = guidance_scale(t) if callable(guidance_scale) else guidance_scale
+    return uncond_score + gs * (cond_score - uncond_score)
 
 
 def generate_guided(n, cond_score_fn, uncond_score_fn, sch: Schedule, rng,
-                    guidance_scale: float = 3.0, dim: int = 1) -> np.ndarray:
+                    guidance_scale=3.0, dim: int = 1) -> np.ndarray:
     x_T = rng.standard_normal((n, dim))
 
     def guided_score_fn(x, t):
