@@ -9,9 +9,10 @@ The pipeline is the BP-decoded-labels one: the estimator pools over subgroup lab
 DECODED from the representation at working corruption θ₀ (not the true labels), so
 identifiability genuinely bites on the fine-level effect (the #144 learnability license).
 
-Grid: **level** (effect-on-coarse `group` vs effect-on-fine `member`) × **θ₀** ×
-**scenario** (global null μ=τ=0; heterogeneous null μ=0, τ>0 — where borrowing threatens
-size; alternative μ≠0) × **policy** (`flat` / `oracle` / `canonical` / `empirical`).
+Grid: **level** (effect-on-coarse `group` vs effect-on-fine `member`) × **θ₀** × **K**
+(subgroups pooled over — see KS) × **scenario** (global null μ=τ=0; heterogeneous null
+μ=0, τ>0 — where borrowing threatens size; alternative μ≠0) × **policy** (`flat` /
+`oracle` / `canonical` / `empirical`).
 
 The story to look for:
 - **global null**: every policy keeps Type-I ≈ nominal (identifiability is orthogonal to
@@ -30,12 +31,18 @@ well enough that its accuracy carries information the pooled-Cochrane prior does
 Requires the 3.12 `[bayes]` stack (PyMC/NumPyro) — run in `.venv312` (or the box).
 
 **Scope caveats (independent review, #144).**
-- At the default g=4/b=3 there are only 3–4 subgroups, so τ is barely identified and the
-  credible-interval-as-test is deeply conservative: ``reject ≈ 0`` in the nulls is a
-  **size-≈0** result, NOT a certification of 0.05-level Type-I. The sweep can catch
-  *catastrophic* over-pooling (a real hetero-null τ pooled to ~0 → μ SE collapses →
-  inflation), not fine size control. Read **interval width + coverage** as the primary
-  operating characteristics, and put K on the grid before trusting "nominal".
+- At K≈3–4 subgroups τ is barely identified and the credible-interval-as-test is deeply
+  conservative. The v2 run (72 cells, 4 policies) confirmed this empirically and showed
+  it extends to coverage: **coverage 0.96–1.00 in ALL 72 cells**, reject ≈ 0 in the
+  nulls — i.e. BOTH headline OCs were degenerate and `canonical` vs `empirical` was
+  therefore undecidable (their width gap merely tracked whether canonical's τ_sd sat
+  above or below the fixed 0.081). **K is now on the grid (KS)** precisely so a regime
+  with non-degenerate coverage exists; read the K trend before reading any policy
+  contrast. Read **interval width + coverage** as the primary OCs.
+- K also enlarges the grammar alphabet (g·b_size). Empirically decode accuracy *rises*
+  with K (0.62 at K=4 → ~0.95 for K≥8) rather than falling, so canonical's τ_sd
+  converges to ≈tau_base and canonical ≈ flat at large K; `mean_decode_acc` is reported
+  per cell so this is visible rather than assumed.
 - This engine decides only on the **population μ**; the per-subgroup partial-null size
   (the borrowing-inflation mechanism) is not yet exercised.
 - **This experiment licenses NOTHING about the frozen-encoder embedding pipeline.** It is
@@ -52,56 +59,202 @@ from pathlib import Path
 
 import numpy as np
 
-from causal_bench.validation.joint_fidelity import joint_fidelity, make_scenario_spec
+from causal_bench.validation.joint_fidelity import (
+    joint_fidelity, make_scenario_spec, make_partial_null_spec, binom_ci_from_rate)
 
 OUT_DIR = Path("results/exp41_borrowing_calibration")
-SCENARIOS = {"global_null": (0.0, 0.0), "hetero_null": (0.0, 0.6), "alt": (0.5, 0.3)}
-POLICIES = ["flat", "oracle", "canonical", "empirical"]
+# Scenarios, each a (kind, *args) the grid dispatches on:
+#   ("meta", mu, tau)  -> make_scenario_spec; population-mu decision (reject_rate)
+#   ("partial", sib)   -> make_partial_null_spec(null_idx=0); per-subgroup Type-I of the
+#                         truly-null subgroup (subgroup_reject_rate), null_subgroup=0.
+# The null is COMPOSITE: it holds for every (mu=0, tau>=0). We therefore SWEEP tau under the
+# null and report the SUPREMUM reject rate over it (Qian/EitW, FDA Jan-2026 Bayesian draft:
+# "calibrate at a point, validate over the null" — 2 points can't bound the size, since
+# borrowing reshapes the error surface). The partial-null family exercises the borrowing-
+# INFLATION mechanism (a null subgroup dragged toward non-null siblings) the engine's own
+# docstring flagged as untested; sib is the departure magnitude, swept. See #195.
+SCENARIOS = {
+    "null_t0.00": ("meta", 0.0, 0.0),          # = the old global_null
+    "null_t0.15": ("meta", 0.0, 0.15),
+    "null_t0.30": ("meta", 0.0, 0.30),
+    "null_t0.45": ("meta", 0.0, 0.45),
+    "null_t0.60": ("meta", 0.0, 0.60),         # = the old hetero_null
+    "null_t0.80": ("meta", 0.0, 0.80),
+    "alt":        ("meta", 0.5, 0.3),
+    "partial_e0.30": ("partial", 0.30),
+    "partial_e0.60": ("partial", 0.60),
+}
+NULL_META_SCENARIOS = [k for k, v in SCENARIOS.items() if v[0] == "meta" and v[1] == 0.0]
+PARTIAL_SCENARIOS = [k for k, v in SCENARIOS.items() if v[0] == "partial"]
+POLICIES = ["flat", "oracle", "canonical", "empirical", "canonical_ps"]
+# canonical_ps = per-subgroup reliability: empirical tau prior + se inflated by each
+# decoded subgroup's purity, so the fit shrinks contaminated subgroups more. The test of
+# whether PER-SUBGROUP reliability (not canonical's level-wide scalar discount) makes an
+# identifiability-aware policy actually beat empirical. Run in the DECODE-CONTAMINATED,
+# se~tau, resample regime (--v5, moderate --n-units ~200, lower --thetas ~0.55) where
+# purity varies. The bigger-discount test for plain `canonical` is the same regime at low
+# theta0 (harder decode -> larger level-wide discount).
+# K = number of subgroups the meta-analysis pools over. The v2 run showed BOTH headline
+# OCs are degenerate at K≈3–4 (coverage 0.96–1.00 across all 72 cells, reject ≈ 0 in the
+# nulls), so K must be swept for the experiment to discriminate at all — see #144.
+KS = [4, 8, 16, 32]
 
 
-def iter_cells(levels, thetas):
-    """Deterministic enumeration of the (level, θ₀, scenario, policy) grid — the
-    stable cell order the multi-GPU sharder partitions over."""
+def dims_for_K(level, K, *, g, b_size):
+    """Map a grid ``K`` onto the DGP's ``(g, b_size)``. K is the number of subgroups the
+    meta-analysis pools over, so it sets the cardinality of the level UNDER TEST; the other
+    level keeps its default. Group level pools over ``g`` groups, member level over
+    ``b_size`` members (see ``joint_fidelity``'s ``n_sub``)."""
+    return (K, b_size) if level == "group" else (g, K)
+
+
+def iter_cells(levels, thetas, Ks):
+    """Deterministic enumeration of the (level, θ₀, K, scenario, policy) grid — the
+    stable cell order the multi-GPU sharder partitions over. Every worker must be given
+    the SAME Ks, or the shards stop being a partition of one grid."""
     for level in levels:
         for theta0 in thetas:
-            for scen in SCENARIOS:
-                for policy in POLICIES:
-                    yield level, theta0, scen, policy
+            for K in Ks:
+                for scen in SCENARIOS:
+                    for policy in POLICIES:
+                        yield level, theta0, K, scen, policy
 
 
-def run_grid(*, levels, thetas, n_reps, n_units, depth, draws, tune, chains, seed,
+def run_grid(*, levels, thetas, Ks, n_reps, n_units, depth, draws, tune, chains, seed,
              tail_ess_threshold=100.0, g=4, b_size=3, s=2, m=2,
-             chain_method="sequential", shard=None, fast=False) -> list[dict]:
-    """Sweep level × θ₀ × scenario × policy, one fidelity run per cell. `shard`
+             chain_method="sequential", shard=None, fast=False,
+             resample_effects=False) -> list[dict]:
+    """Sweep level × θ₀ × K × scenario × policy, one fidelity run per cell. `shard`
     = (worker_id, n_workers): run only cells with `cell_index % n_workers ==
     worker_id` (the multi-GPU partition). `chain_method` threads to the NumPyro
-    sampler ('vectorized' runs chains in one vmap on the device)."""
+    sampler ('vectorized' runs chains in one vmap on the device).
+
+    `K` sets the tested level's subgroup count via `dims_for_K`; `g`/`b_size` supply the
+    UNtested level's default. Note K also enlarges the grammar alphabet (g·b_size), which
+    can depress decode accuracy — read `mean_decode_acc` alongside any K trend."""
     rows = []
-    for idx, (level, theta0, scen, policy) in enumerate(iter_cells(levels, thetas)):
+    for idx, (level, theta0, K, scen, policy) in enumerate(iter_cells(levels, thetas, Ks)):
         if shard is not None and idx % shard[1] != shard[0]:
             continue
-        mu, tau = SCENARIOS[scen]
-        spec = make_scenario_spec(g, b_size, s, m, level=level, mu=mu, tau=tau, seed=seed)
+        kind = SCENARIOS[scen]
+        g_eff, b_eff = dims_for_K(level, K, g=g, b_size=b_size)
+        if kind[0] == "partial":
+            spec = make_partial_null_spec(g_eff, b_eff, s, m, level=level,
+                                          sibling_effect=kind[1], null_idx=0, seed=seed)
+            null_subgroup = 0                                  # measure that subgroup's Type-I
+        else:                                                  # ("meta", mu, tau)
+            _, mu, tau = kind
+            spec = make_scenario_spec(g_eff, b_eff, s, m, level=level, mu=mu, tau=tau, seed=seed)
+            null_subgroup = None
         r = joint_fidelity(spec, level=level, policy=policy, theta0=theta0,
                            n_reps=n_reps, n_units=n_units, depth=depth,
                            draws=draws, tune=tune, chains=chains, seed=seed,
                            chain_method=chain_method, fast=fast,
-                           tail_ess_threshold=tail_ess_threshold)
-        rows.append({"cell": idx, "level": level, "theta0": theta0, "scenario": scen,
-                     "policy": policy, **r})
+                           tail_ess_threshold=tail_ess_threshold,
+                           null_subgroup=null_subgroup,
+                           resample_effects=resample_effects)
+        rows.append({"cell": idx, "level": level, "theta0": theta0, "K": K,
+                     "scenario": scen, "policy": policy, **r})
     return rows
 
 
 def report(rows: list[dict]) -> str:
-    hdr = ("| level | θ₀ | scenario | policy | reject | coverage | mean τ_sd | τ_true | used |\n"
-           "|-------|----|----------|--------|--------|----------|-----------|--------|------|")
+    """Markdown table. Coverage and CI width are the headline OCs (#144: reject≈0 at small
+    K is a size-≈0 test, not "nominal"); `decode` is the canonical policy's input, shown so
+    a K trend can be separated from a decode-difficulty trend."""
+    hdr = ("| level | θ₀ | K | scenario | policy | reject | coverage [95% CI] | width ±SE |"
+           " mean τ_sd | decode | τ_true | used |\n"
+           "|-------|----|---|----------|--------|--------|-------------------|-----------|"
+           "-----------|--------|--------|------|")
     lines = [hdr]
     for r in rows:
+        # Rows produced before MC error was added (e.g. the v3 run, launched earlier)
+        # carry only the rate and n_used — a binomial CI needs nothing else, so
+        # recover it post-hoc rather than demanding a re-run. Width SE is not
+        # recoverable from an aggregate and renders as nan.
+        lo, hi = (r["coverage_lo"], r["coverage_hi"]) if "coverage_lo" in r else \
+            binom_ci_from_rate(r["coverage"], r.get("n_used", 0))
         lines.append(
-            f"| {r['level']} | {r['theta0']:.2f} | {r['scenario']} | {r['policy']} | "
-            f"{r['reject_rate']:.2f} | {r['coverage']:.2f} | {r['mean_tau_sd']:.3f} | "
+            f"| {r['level']} | {r['theta0']:.2f} | {r.get('K', '')} | {r['scenario']} | "
+            f"{r['policy']} | {r['reject_rate']:.2f} | {r['coverage']:.2f} ["
+            f"{lo:.2f}-{hi:.2f}] | "
+            f"{r.get('mean_ci_width', float('nan')):.3f}±{r.get('mean_ci_width_se', float('nan')):.3f} | "
+            f"{r['mean_tau_sd']:.3f} | "
+            f"{r.get('mean_decode_acc', float('nan')):.3f} | "
             f"{r['tau_true']:.2f} | {r['n_used']} |")
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n" + _policy_summary(rows) + "\n" + _sup_type_i_summary(rows)
+
+
+def _sup_type_i_summary(rows: list[dict], alpha: float = 0.05) -> str:
+    """Composite-null Type-I: the SUPREMUM reject rate over the null family, per
+    (level, θ₀, K, policy) — not the reject rate at a single τ. A point at τ=0 (or any one
+    τ) cannot bound the size, because borrowing reshapes the error surface and the sup can
+    sit at a swept boundary (Qian/EitW; FDA Jan-2026 Bayesian draft). `sup_partial` is the
+    supremum per-subgroup Type-I over the partial-null (borrowing-inflation) family. Cells
+    with sup > α are flagged — that is the size violation calibration-at-a-point would miss."""
+    import numpy as np
+    by = {}
+    for r in rows:
+        key = (r["level"], r["theta0"], r.get("K"), r["policy"])
+        by.setdefault(key, []).append(r)
+    out = ["", "### Supremum Type-I over the composite null (validate over the null, not a point)",
+           "",
+           "| level | θ₀ | K | policy | sup reject (null τ-sweep) | sup uncond | sup partial-null | flag |",
+           "|-------|----|---|--------|---------------------------|-----------|------------------|------|"]
+
+    def _sup(sel, scen_names, key):
+        vals = [r[key] for r in sel if r["scenario"] in scen_names
+                and isinstance(r.get(key), (int, float)) and np.isfinite(r.get(key, float("nan")))]
+        return max(vals) if vals else float("nan")
+
+    for (level, theta0, K, policy), sel in sorted(by.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or 0, kv[0][3])):
+        sup_r = _sup(sel, NULL_META_SCENARIOS, "reject_rate")
+        sup_u = _sup(sel, NULL_META_SCENARIOS, "reject_rate_uncond")
+        sup_p = _sup(sel, PARTIAL_SCENARIOS, "subgroup_reject_rate")
+        worst = max([v for v in (sup_r, sup_u, sup_p) if np.isfinite(v)], default=float("nan"))
+        flag = "⚠ size>α" if np.isfinite(worst) and worst > alpha + 1e-9 else ""
+        out.append(f"| {level} | {theta0:.2f} | {K} | {policy} | {sup_r:.3f} | {sup_u:.3f} | "
+                   f"{sup_p:.3f} | {flag} |")
+    out += ["", f"Supremum is over μ=0 null cells only (τ ∈ {{0…0.8}}) and the partial-null "
+            f"family; α={alpha}. Read this BEFORE the per-scenario table: a policy nominal "
+            "at one τ can still violate size at another (the article's sign-reversing error "
+            "surface). `sup uncond` includes tail-ESS-flagged fits (dropping them is "
+            "selection-on-data)."]
+    return "\n".join(out)
+
+
+# K=4 is a qualitatively different regime, not the low end of a trend: v3 measured
+# mean_decode_acc 0.615 there against 0.935-0.968 at K>=8. Pooling it blurs exactly the
+# contrast this experiment exists to price, so the summary reports it on its own row.
+K_FLOOR = 4
+
+
+def _policy_summary(rows: list[dict]) -> str:
+    """Per-policy roll-up, with K=4 held out. Leads on the INTERVAL SCORE (proper scoring
+    rule, lower better) and shows `penalty` — the miscoverage term alone — beside it: if
+    penalty ~ 0 the score has collapsed to the width and adds nothing over `mean_ci_width`,
+    which is the check on whether it rescues the v3 design (#144)."""
+    import numpy as np
+    out = ["", "### Per-policy roll-up (K=4 separated — decode floor, not a trend)", "",
+           "| K group | policy | interval score | penalty | width | coverage | subgroup_risk | decode |",
+           "|---------|--------|----------------|---------|-------|----------|---------------|--------|"]
+    def m(sel, key):
+        v = [r[key] for r in sel if isinstance(r.get(key), (int, float))
+             and np.isfinite(r.get(key, float("nan")))]
+        return float(np.mean(v)) if v else float("nan")
+    for tag, keep in (("K=4", lambda k: k == K_FLOOR), ("K>=8", lambda k: k > K_FLOOR)):
+        for p in sorted({r["policy"] for r in rows}):
+            sel = [r for r in rows if r["policy"] == p and keep(r.get("K", 0))]
+            if not sel:
+                continue
+            out.append(f"| {tag} | {p} | {m(sel,'mean_interval_score'):.3f} | "
+                       f"{m(sel,'mean_penalty'):.3f} | {m(sel,'mean_ci_width'):.3f} | "
+                       f"{m(sel,'coverage'):.3f} | {m(sel,'subgroup_risk'):.4f} | "
+                       f"{m(sel,'mean_decode_acc'):.3f} |")
+    out += ["", "`penalty` = (2/α)·E[exceedance], the miscoverage term of the interval",
+            "score. It carries 40× leverage at α=0.05, so a rare small miss can outweigh",
+            "a width gap — but if it reads ~0 the score is just the width renamed."]
+    return "\n".join(out)
 
 
 def main():
@@ -109,8 +262,20 @@ def main():
     p = argparse.ArgumentParser(description="Exp 41: identifiability-set tau_sd calibration")
     p.add_argument("--full", action="store_true", help="the real run (θ₀ sweep, more reps/draws)")
     p.add_argument("--levels", nargs="+", default=["group", "member"])
+    p.add_argument("--thetas", nargs="+", type=float, default=None,
+                   help="working corruptions θ₀ to sweep (default: [0.5,0.7,0.9] on --full, "
+                        "[0.7] otherwise). Must match across shard workers.")
+    p.add_argument("--Ks", nargs="+", type=int, default=None,
+                   help="subgroup counts to sweep (default: KS on --full, [4] otherwise). "
+                        "ALL workers must get the same value or the shards stop partitioning "
+                        "one grid.")
     p.add_argument("--n-reps", type=int, default=None)
     p.add_argument("--n-units", type=int, default=3000)
+    p.add_argument("--v5", action="store_true",
+                   help="v5 fix: resample subgroup effects per replicate (theta_g ~ N(mu,tau), "
+                        "mean NOT pinned) so coverage of mu is a real frequentist quantity and "
+                        "un-saturates from 1.0. Pair with a se~tau regime (smaller --n-units, "
+                        "~120-400) so shrinkage bites and policies separate on coverage/subgroup_risk.")
     p.add_argument("--depth", type=int, default=7)
     p.add_argument("--draws", type=int, default=None)
     p.add_argument("--tune", type=int, default=None)
@@ -128,7 +293,8 @@ def main():
                    help="write raw rows as JSON here (worker mode, for the multi-GPU sharder)")
     a = p.parse_args()
 
-    thetas = [0.5, 0.7, 0.9] if a.full else [0.7]
+    thetas = a.thetas if a.thetas is not None else ([0.5, 0.7, 0.9] if a.full else [0.7])
+    Ks = a.Ks if a.Ks is not None else (KS if a.full else [4])
     n_reps = a.n_reps if a.n_reps is not None else (100 if a.full else 8)
     draws = a.draws if a.draws is not None else (800 if a.full else 600)
     tune = a.tune if a.tune is not None else (800 if a.full else 600)
@@ -136,14 +302,14 @@ def main():
     tail_ess = a.tail_ess if a.tail_ess is not None else (100.0 if a.full else 40.0)
     shard = tuple(int(x) for x in a.shard.split("/")) if a.shard else None
 
-    n_cells = len(a.levels) * len(thetas) * len(SCENARIOS) * len(POLICIES)
+    n_cells = len(a.levels) * len(thetas) * len(Ks) * len(SCENARIOS) * len(POLICIES)
     print(f"Exp 41 borrowing calibration | {'FULL' if a.full else 'illustrative'} | "
-          f"{n_cells} cells × {n_reps} reps (draws={draws}, tail-ESS≥{tail_ess:g})"
+          f"{n_cells} cells × {n_reps} reps (draws={draws}, tail-ESS≥{tail_ess:g}, K={Ks})"
           + (f" | shard {shard[0]}/{shard[1]}" if shard else ""))
-    rows = run_grid(levels=a.levels, thetas=thetas, n_reps=n_reps, n_units=a.n_units,
+    rows = run_grid(levels=a.levels, thetas=thetas, Ks=Ks, n_reps=n_reps, n_units=a.n_units,
                     depth=a.depth, draws=draws, tune=tune, chains=a.chains, seed=a.seed,
                     tail_ess_threshold=tail_ess, chain_method=a.chain_method, shard=shard,
-                    fast=a.fast)
+                    fast=a.fast, resample_effects=a.v5)
 
     if a.out:                                   # worker mode: dump raw rows for the sharder
         import json
@@ -157,10 +323,12 @@ def main():
     (OUT_DIR / ("summary_full.md" if a.full else "summary.md")).write_text(rep + "\n")
     print("\n" + rep)
     print(f"\nSaved → {OUT_DIR}")
-    print("\nRead-out: global-null reject ≈ nominal for all policies (identifiability ⊥ "
-          "outcome). Compare `canonical` vs `oracle` under hetero_null across θ₀/level — "
-          "watch the poorly-decoded (low-θ₀ / member) cells for over-pooling → Type-I "
-          "inflation or coverage drop. `alt` shows the power the prior buys.")
+    print("\nRead-out: the v2 run found BOTH headline OCs degenerate at K≈3-4 (coverage "
+          "0.96-1.00 everywhere, reject≈0 in the nulls), so read the K trend FIRST: "
+          "coverage should fall toward nominal as K grows, and only in that regime is a "
+          "canonical-vs-empirical width/coverage difference interpretable. Read "
+          "`decode` alongside — larger K enlarges the alphabet and can depress decode "
+          "accuracy, confounding K with decode difficulty.")
 
 
 if __name__ == "__main__":

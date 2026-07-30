@@ -150,6 +150,9 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp38_frozen_model_shift.py` | Positivity/propensity under train-vs-deploy covariate shift |
 | `exp39_zero_flow_ci.py` | Zero-flow conditional-independence test + Markov-blanket recovery |
 | `exp39_ci_calibration.py` | Type-I / power calibration of the zero-flow CI test |
+| `exp41_borrowing_calibration.py` | Borrowing calibration (#144): identifiability-set `tau_sd` OCs on the joint DGP with BP-decoded labels. Policies flat / oracle / canonical / **empirical** (fixed van Zwet CDSR τ prior) over level × θ₀ × **K** × scenario; multi-GPU sharded via `scripts/exp41_multigpu.py`. **Requires the 3.12 `[bayes]` stack** |
+| `exp43_mmrm_mnar.py` | MMRM (REML, unstructured) under MNAR dropout: unbiased in the MAR control, bias growing monotonically with the MNAR channel; IPCW-observed fails identically (nothing recovers MNAR from observables) while IPCW-oracle recovers, identifying the unobserved-dropout channel. Bias reported paired against a complete-data benchmark |
+| `exp42_hazard_selection.py` | Built-in selection bias of the hazard ratio: randomized A + unobserved Gamma frailty ⇒ the Cox HR attenuates toward the null and drifts early→late, while KM risk-difference and RMST stay unbiased on the same replicates. Closed-form marginal truths make it self-validating |
 
 ## Other components
 
@@ -170,9 +173,14 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | `causal_bench/diagnostics/theta_time_map.py` | θ ↔ VP-SDE-time mapping (#137): token channel (closed-form `θ = alpha_bar(t)`) vs frozen-encoder embedding channel; class-overlap order parameters (nearest-class-mean + linear-probe posterior) |
 | `causal_bench/diagnostics/borrowing_informativeness.py` | Per-level identifiability report → manual hierarchical-borrowing `tau_sd` suggestions (#137): embedding `t_star` map + correctly-signed canonical decode-accuracy map (#144). Informs, does **not** set shrinkage (that stays the hierarchical fit's job) |
 | `causal_bench/dgp/joint_hierarchy.py` | Joint hierarchical DGP (#144 prereq): product-grammar identifiability (exact rule-BP thresholds) + per-level effect heterogeneity + coupling knob + BP-decoded subgroup labels at working corruption θ₀. numpy |
+| `causal_bench/estimators/projected_clever.py` | Projected clever covariate (#182): `E[H(A,W_true) | W_obs, A]` by Gauss-Hermite quadrature over the regression-calibration posterior — the EIF-projection successor to exp32's first-order plug-in. Same operation A-TMLE formalises (project the EIF onto a sub-tangent-space), applied to the observed-data subspace |
+| `causal_bench/validation/joint_fidelity.py` | Borrowing-calibration fidelity engine (exp41/#144): BP-decoded-labels pipeline → per-subgroup summaries → three-level BHM under a τ-prior policy; reports coverage / CI-width / decode-accuracy OCs |
+| `causal_bench/estimators/mmrm.py` | MMRM by REML with an **unstructured** within-subject covariance (log-Cholesky parameterisation, GLS-profiled beta, L-BFGS-B). Implemented directly — `statsmodels.MixedLM` fits random effects (compound symmetry at best), and a random-intercept model is not an MMRM |
+| `causal_bench/validation/mnar_dropout.py` | MNAR-dropout falsification harness (exp43): longitudinal DGP whose dropout depends on the *unrecorded* outcome, with MAR control, IPCW-oracle and IPCW-observed arms |
+| `causal_bench/validation/hazard_selection.py` | Hazard-ratio built-in-selection-bias harness (exp42): Gamma-frailty survival with closed-form marginal survival / HR / RMST truths; Cox vs KM risk-difference vs RMST on shared replicates. Evidence for preferring cumulative-risk estimands |
 | `causal_bench/validation/rct_blinding.py` | RCT-blinding validation of the OC-sim / synthetic comparator (#139): does the counterfactual control branch recover a held-out RCT's effect / survival curves? Flags naive or unmeasured-confounded comparators. Generator-agnostic, numpy |
 
-**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 37 distinct numbers → 38 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
+**Numbering note.** The count is built experiment *scripts* — exp39 ships two (`exp39_zero_flow_ci.py`, `exp39_ci_calibration.py`), so 40 distinct numbers → 41 files. Experiment numbers are **non-contiguous**; several are claimed by open candidate issues but not yet built:
 
 | Number | Status |
 |--------|--------|
@@ -182,7 +190,9 @@ Beyond the estimator/experiment suite, the package includes supporting subsystem
 | exp35 | App-cohort second comparator (IPCW-light) — candidate, unbuilt (#71) |
 | exp36 | **Built** — two-vs-three-level OC fidelity (`exp36_three_level_fidelity.py`, #40); reclaimed from the released z_anatomy slot (#73 dropped its exp number) |
 | exp40 | Hypothetical-estimand bake-off under intercurrent events (Bartlett & Daniel 2026) — specced, unbuilt (#89) |
-| exp41 | Borrowing calibration — identifiability-set `tau_sd` Type-I/power on the joint DGP with BP-decoded labels (#144); specced, unbuilt |
+| exp41 | **Built** — borrowing calibration (`exp41_borrowing_calibration.py`, #144) |
+| exp42 | **Built** — hazard-ratio built-in selection bias vs cumulative-risk estimands (`exp42_hazard_selection.py`, #181) |
+| exp43 | **Built** — MMRM under MNAR dropout (`exp43_mmrm_mnar.py`, #183) |
 
 ---
 

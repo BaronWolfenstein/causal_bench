@@ -11,12 +11,21 @@ known μ for scoring.
 ``tau_policy``:
 - ``flat``    — a fixed ``tau_sd`` (the naive baseline);
 - ``oracle``  — the true between-subgroup effect SD at the level (best case);
-- ``canonical`` — ``tau_base · canonical_tau_discount(decode_acc)``: the analyst's base
-  effect-scale prior, *discounted* by the level's decode accuracy at θ₀ (the
-  identifiability-informed prior under test — a discount, not an absolute setter);
 - ``empirical`` — the FIXED van Zwet CDSR LogNormal τ prior (SMD→raw scale-bridged), the
-  reference-class baseline the identifiability-aware policies must beat (``empirical_tau_
-  prior``); ignores decode accuracy by construction.
+  reference-class baseline the identifiability-aware policy must beat
+  (``empirical_tau_prior``); ignores decode accuracy by construction;
+- ``canonical`` — the SAME LogNormal, shifted in log-location by
+  ``log canonical_tau_discount(decode_acc)`` — i.e. "the van Zwet prior, discounted by
+  identifiability" (#144 item 3b). Holding the FAMILY fixed is deliberate: canonical was
+  previously a HalfNormal scale, so ``canonical vs empirical`` confounded the
+  identifiability discount with the prior family — the one thing the comparison is
+  meant to price.
+
+``use_true_labels=True`` is the DECONTAMINATED control (#144 item 1): pool over the true
+labels instead of the decoded ones. A truly-null *decoded* subgroup is polluted by units
+from non-null siblings before any borrowing occurs, which saturated the partial-null
+per-subgroup Type-I; removing that channel leaves inflation attributable to borrowing
+alone.
 
 This is the ENGINE (a library function); the exp41 experiment script sweeps regimes ×
 θ₀ × grammar configs × policies and compares reject/coverage curves. Requires the 3.12
@@ -30,6 +39,50 @@ from causal_bench.dgp.joint_hierarchy import (
     make_joint_hierarchy, sample_joint_cohort, decode_cohort_labels, true_tau_by_level,
 )
 from causal_bench.diagnostics.borrowing_informativeness import canonical_tau_discount
+
+
+# The estimator forms its interval as effect +/- 1.96*se (three_level_bhm._decision),
+# i.e. a nominal 95% interval. The interval score's penalty leverage is 2/alpha, so
+# this constant must track that z -- do not set one without the other.
+CI_ALPHA = 0.05
+
+# ── Monte-Carlo error on the OCs (#144 fix item 4) ───────────────────────────
+# The v2 run read coverage 0.96-1.00 everywhere and concluded "degenerate". That is only
+# a legitimate conclusion with an error bar: at n_reps=100 the MC SE on a coverage near
+# 0.95 is ~0.022, so 0.96 and 1.00 sit about one SE apart. Plain binomial SE is the wrong
+# tool at the boundary -- it is exactly 0 when the observed proportion is 1, implying
+# infinite precision when you have merely not yet seen a failure. Wilson score intervals
+# stay finite there, which is the case the K-grid run turns on.
+def binom_se(p: float, n: int) -> float:
+    """Binomial MC standard error of a proportion. Note this is 0 at p in {0, 1} --
+    prefer `wilson_ci` for statements about boundary cells."""
+    if n <= 0 or not np.isfinite(p):
+        return float("nan")
+    return float(np.sqrt(max(p * (1.0 - p), 0.0) / n))
+
+
+def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple:
+    """Wilson score interval for k successes in n trials. Stays informative at k=0 and
+    k=n, where the normal-approximation interval degenerates to a point."""
+    if n <= 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * np.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
+    lo, hi = centre - half, centre + half
+    # The exact Wilson interval always contains p; at k=0 / k=n round-off can put an
+    # endpoint an ulp on the wrong side, so clamp to guarantee containment.
+    return (float(min(max(0.0, lo), p)), float(max(min(1.0, hi), p)))
+
+
+def binom_ci_from_rate(rate: float, n: int, z: float = 1.96) -> tuple:
+    """Wilson CI from an ALREADY-AGGREGATED rate — lets runs that predate this reporting
+    (e.g. exp41 v3, launched earlier) be interpreted from `(rate, n_used)` without a
+    re-run, since a binomial CI needs nothing else."""
+    if n <= 0 or not np.isfinite(rate):
+        return (float("nan"), float("nan"))
+    return wilson_ci(int(round(rate * n)), n, z=z)
 
 
 def population_effect(spec: dict) -> float:
@@ -56,6 +109,24 @@ def _subgroup_estimates(Y, A, sub, n_sub, *, min_per_arm=3):
         se.append(np.sqrt(y1.var(ddof=1) / len(y1) + y0.var(ddof=1) / len(y0)))
         kept.append(k)
     return np.asarray(th), np.asarray(se), np.asarray(kept, int)
+
+
+def _subgroup_purity(true_lab, dec_lab, kept):
+    """Per-DECODED-subgroup purity: fraction of a decoded subgroup's units whose TRUE
+    label is the modal one. Low purity = contaminated by units from other true
+    subgroups = the estimate is attenuated/unreliable. This is the per-subgroup
+    reliability the `canonical_ps` policy uses to inflate se (regression calibration /
+    #182), so the hierarchical fit shrinks impure subgroups more -- the per-subgroup
+    reliability weighting a level-wide scalar discount (canonical) structurally cannot do."""
+    true_lab = np.asarray(true_lab); dec_lab = np.asarray(dec_lab)
+    out = []
+    for k in kept:
+        tl = true_lab[dec_lab == k]
+        if tl.size == 0:
+            out.append(1.0); continue
+        _, cnts = np.unique(tl, return_counts=True)
+        out.append(float(cnts.max() / cnts.sum()))
+    return np.asarray(out)
 
 
 # van Zwet-Więcek-Gelman 2025 empirical CDSR prior on between-study heterogeneity τ,
@@ -90,12 +161,27 @@ def _policy_tau_prior(policy, level, spec, decoded, *, flat_tau_sd, tau_base, ta
     if policy == "oracle":
         key = "tau_group" if level == "group" else "tau_member"
         return ("halfnormal", (max(true_tau_by_level(spec)[key], 1e-3),))  # scale must be > 0
+    if policy == "canonical_ps":
+        # per-subgroup reliability policy: the tau prior is the FIXED empirical (van
+        # Zwet); the reliability weighting happens on the SE side (se inflated by
+        # per-subgroup purity in the rep loop), not the tau scale. So the only change
+        # vs empirical is the heteroskedastic, reliability-inflated se -- the test of
+        # whether per-subgroup reliability (not a level-wide discount) makes an
+        # identifiability-aware policy actually beat empirical.
+        return empirical_tau_prior(sigma)
     if policy == "canonical":
         acc = decoded["group_decode_acc" if level == "group" else "member_decode_acc"]
         k = spec["g"] if level == "group" else spec["b_size"]
-        # tau_sd = tau_base · learnability-discount (NOT an absolute map — see #144/exp41):
-        # a well-decoded level recovers the base scale; a poorly-decoded one pools harder.
-        return ("halfnormal", (max(tau_base * canonical_tau_discount(acc, k), tau_sd_min),))
+        # #144 item 3b: canonical is the SAME LogNormal as `empirical`, shifted in
+        # log-location by the learnability discount -- i.e. "the van Zwet prior,
+        # discounted by identifiability". Previously canonical was a HalfNormal scale,
+        # so `canonical vs empirical` confounded the identifiability discount with the
+        # PRIOR FAMILY; holding the family fixed isolates the discount, which is the
+        # only thing this experiment is trying to price. A well-decoded level recovers
+        # the empirical prior; a poorly-decoded one shifts down and pools harder.
+        _, (mu_log, sigma_log) = empirical_tau_prior(sigma)
+        disc = float(np.clip(canonical_tau_discount(acc, k), 1e-3, 1.0))
+        return ("lognormal", (mu_log + float(np.log(disc)), sigma_log))
     if policy == "empirical":
         return empirical_tau_prior(sigma)
     raise ValueError(f"unknown policy {policy!r}")
@@ -114,7 +200,9 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
                    tau_base: float = 0.5, tau_sd_min: float = 0.05, draws: int = 500,
                    tune: int = 500, chains: int = 2, seed: int = 0,
                    chain_method: str = "sequential", fast: bool = False,
-                   tail_ess_threshold: float = 100.0, null_subgroup: int | None = None) -> dict:
+                   tail_ess_threshold: float = 100.0, null_subgroup: int | None = None,
+                   use_true_labels: bool = False, max_escalations: int = 2,
+                   resample_effects: bool = False) -> dict:
     """Operating characteristics of the borrowing prior at one (level, policy, θ₀, spec)
     cell. ``reject_rate`` is the population-μ decision (Type-I under a null spec, power
     under an alt). When ``null_subgroup`` is set (a partial-null spec, e.g.
@@ -132,35 +220,110 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
 
     mu_true = population_effect(spec)
     tau_true = true_tau_by_level(spec)["tau_group" if level == "group" else "tau_member"]
+    # v5 fix: make_scenario_spec pins the level's effect table to mean EXACTLY mu (SD
+    # exactly tau), and the rep loop reuses the SAME spec, so the population mean has zero
+    # sampling variability over the heterogeneity the interval is sized for -> coverage
+    # saturates at 1.0 and cannot rank policies. resample_effects re-draws the table
+    # GENUINELY, theta_g ~ N(mu, tau) (mean NOT pinned), fresh per replicate, so coverage
+    # of the hyper-mean mu is a real frequentist quantity. mu_true stays mu (the target).
+    _eff_key = "group_effect" if level == "group" else "member_effect"
+    _eff_w = "w_group" if level == "group" else "w_member"
+    _n_eff = spec["g"] if level == "group" else spec["b_size"]
     rejects, covers, taus, widths, sub_rejects = [], [], [], [], []
-    rejects_all, n_flagged, n_used = [], 0, 0
+    iscores, pens, sq_errs, sub_risks = [], [], [], []         # sq_errs: mu-MSE; sub_risks: subgroup MSE
+    rejects_all, n_flagged, n_used, n_escalated = [], 0, 0, 0
+    accs: list = []                                            # decode accuracy per replicate
     for r in range(n_reps):
+        if resample_effects:
+            _rng = np.random.default_rng(seed + 5000 + r)
+            spec[_eff_key] = mu_true + tau_true * _rng.standard_normal(_n_eff)
+            spec[_eff_w] = 1.0
         coh = sample_joint_cohort(spec, n_units, depth, sigma=sigma, seed=seed + r)
         dec = decode_cohort_labels(spec, coh, theta0=theta0, seed=seed + 1000 + r)
-        sub = dec["group_decoded" if level == "group" else "member_decoded"]
+        # decode accuracy at the level is the canonical policy's INPUT; record it for every
+        # replicate (it is a property of the cohort, not of the fit) so a K sweep can be
+        # read honestly — a larger K also enlarges the grammar alphabet and can depress
+        # decode accuracy, confounding "more subgroups" with "harder decode".
+        if use_true_labels:
+            # DECONTAMINATED control (#144 fix 1): pool over the TRUE labels. A
+            # truly-null DECODED subgroup is polluted by units from non-null siblings
+            # before any borrowing occurs, which saturated the partial-null
+            # per-subgroup Type-I. Removing that channel leaves inflation
+            # attributable to borrowing alone. Equivalent to perfect decode (θ₀=1).
+            sub = coh["group" if level == "group" else "member"]
+            accs.append(1.0)
+        else:
+            accs.append(dec["group_decode_acc" if level == "group"
+                            else "member_decode_acc"])
+            sub = dec["group_decoded" if level == "group" else "member_decoded"]
         n_sub = spec["g"] if level == "group" else spec["b_size"]
         th, se, kept = _subgroup_estimates(coh["Y"], coh["A"], sub, n_sub)
         if len(th) < 2:
             continue
+        se_fit = se
+        if policy == "canonical_ps":
+            # reliability-inflate se: impure (contaminated) decoded subgroups get a
+            # larger effective se, so the hierarchical fit shrinks them more. Cap the
+            # inflation at 3x (purity floored at 1/3, the chance level for K>=3).
+            true_lab = coh["group" if level == "group" else "member"]
+            purity = _subgroup_purity(true_lab, sub, kept)
+            se_fit = se / np.clip(purity, 1.0 / 3.0, 1.0)
         tau_prior = _policy_tau_prior(policy, level, spec, dec, flat_tau_sd=flat_tau_sd,
                                       tau_base=tau_base, tau_sd_min=tau_sd_min, sigma=sigma)
-        if fast and null_subgroup is None:                      # compile-once path (no return_theta)
-            fit = fit_three_level_meta_fast(th, se, tau_prior=tau_prior, true_effect=mu_true,
-                                            draws=draws, tune=tune, chains=chains,
-                                            seed=seed + r, chain_method=chain_method, n_pad=n_sub)
-        else:
-            fit = fit_three_level_meta(th, se, tau_prior=tau_prior, true_effect=mu_true,
-                                       draws=draws, tune=tune, chains=chains, seed=seed + r,
-                                       chain_method=chain_method,
-                                       return_theta=null_subgroup is not None)
+        def _fit(d, t, sd_seed):
+            if fast:                                            # compile-once path
+                # return_theta now also yields theta_g_rejects, so the partial-null
+                # (null_subgroup) path keeps the JAX compile-once speedup instead of
+                # falling back to the slow per-fit-recompile path.
+                return fit_three_level_meta_fast(
+                    th, se_fit, tau_prior=tau_prior, true_effect=mu_true, draws=d, tune=t,
+                    chains=chains, seed=sd_seed, chain_method=chain_method, n_pad=n_sub,
+                    return_theta=True)                          # subgroup-risk + partial-null size
+            return fit_three_level_meta(
+                th, se_fit, tau_prior=tau_prior, true_effect=mu_true, draws=d, tune=t,
+                chains=chains, seed=sd_seed, chain_method=chain_method,
+                return_theta=True)
+
+        fit = _fit(draws, tune, seed + r)
+        # ESCALATE rather than drop (#144). A low tail-ESS is a COMPUTATIONAL failure,
+        # not a property of the replicate, so discarding it is selection-on-data: it
+        # biases the OCs, makes n_used differ systematically across policies (a diffuse
+        # prior samples worse, so `flat` lost far more fits than `empirical`), and
+        # thins the very sample the coverage CI is computed from. Re-running with more
+        # draws is what oc_simulation_pipeline.mermaid always specified.
+        att = 0
+        while att < max_escalations and not tail_ess_ok(fit, threshold=tail_ess_threshold):
+            att += 1
+            fit = _fit(draws * 2 ** att, tune * 2 ** att, seed + r + 7919 * att)
+        n_escalated += (att > 0)
         rejects_all.append(fit["rejects_null"])                 # flagged-included sensitivity
         if not tail_ess_ok(fit, threshold=tail_ess_threshold):
             n_flagged += 1
             continue
         rejects.append(fit["rejects_null"])
         covers.append(fit["covers_truth"])
+        sq_errs.append(float((fit["effect"] - mu_true) ** 2))  # point-estimate risk (mu-hat; prior-insensitive)
+        # SUBGROUP-level risk: MSE of the shrunk theta_g estimates vs the TRUE subgroup
+        # effects. This is where the tau prior actually bites (shrinkage of groups toward
+        # mu), so unlike mu-MSE it separates policies: a fixed empirical prior over-shrinks
+        # when true tau is large, oracle shrinks correctly. Truth = the drawn effect table.
+        if "theta_g_mean" in fit and len(kept):
+            tg_true = np.asarray(spec[_eff_key], float)[kept]
+            tg_hat = np.asarray(fit["theta_g_mean"], float)[:len(kept)]
+            sub_risks.append(float(np.mean((tg_hat - tg_true) ** 2)))
         taus.append(_prior_scale(tau_prior))
         widths.append(fit["ci_hi"] - fit["ci_lo"])
+        # Interval score (Gneiting & Raftery), the proper scoring rule for an interval
+        # forecast. Coverage saturates at 1 and width just reads the prior back, so
+        # neither ranks policies on its own; IS penalises width and miscoverage jointly.
+        #   IS = (u - l) + (2/alpha)(l - y) 1{y < l} + (2/alpha)(y - u) 1{y > u}
+        # Kept DECOMPOSED as well as summed: the penalty carries a 2/alpha = 40x leverage
+        # at alpha=0.05, so a rare small miss can outweigh a width difference. Reporting
+        # only the total would hide whether IS is adding anything over mean_ci_width.
+        _l, _u = fit["ci_lo"], fit["ci_hi"]
+        _pen = (max(_l - mu_true, 0.0) + max(mu_true - _u, 0.0)) * (2.0 / CI_ALPHA)
+        pens.append(float(_pen))
+        iscores.append(float((_u - _l) + _pen))
         if null_subgroup is not None:
             pos = np.where(kept == null_subgroup)[0]
             if len(pos):                                        # null subgroup survived drops
@@ -171,10 +334,35 @@ def joint_fidelity(spec: dict, *, level: str = "group", policy: str = "canonical
         "reject_rate_uncond": float(np.mean(rejects_all)) if rejects_all else float("nan"),
         "subgroup_reject_rate": float(np.mean(sub_rejects)) if sub_rejects else float("nan"),
         "coverage": float(np.mean(covers)) if covers else float("nan"),
+        "coverage_se": binom_se(float(np.mean(covers)), len(covers)) if covers else float("nan"),
+        "coverage_lo": wilson_ci(int(np.sum(covers)), len(covers))[0] if covers else float("nan"),
+        "coverage_hi": wilson_ci(int(np.sum(covers)), len(covers))[1] if covers else float("nan"),
+        "reject_rate_se": binom_se(float(np.mean(rejects)), len(rejects)) if rejects else float("nan"),
         "mean_ci_width": float(np.mean(widths)) if widths else float("nan"),
+        "mean_ci_width_se": (float(np.std(widths, ddof=1) / np.sqrt(len(widths)))
+                             if len(widths) > 1 else float("nan")),
+        # Proper scoring rule: lower is better. `mean_penalty` is the miscoverage part
+        # ALONE -- if it is ~0 the score has collapsed to the width and adds nothing,
+        # which is the check that decides whether IS rescues this design.
+        "mean_interval_score": float(np.mean(iscores)) if iscores else float("nan"),
+        "mean_interval_score_se": (float(np.std(iscores, ddof=1) / np.sqrt(len(iscores)))
+                                   if len(iscores) > 1 else float("nan")),
+        "mean_penalty": float(np.mean(pens)) if pens else float("nan"),
         "mean_tau_sd": float(np.mean(taus)) if taus else float("nan"),
+        "mean_decode_acc": float(np.mean(accs)) if accs else float("nan"),
         "mu_true": mu_true, "tau_true": float(tau_true),
-        "n_flagged": n_flagged, "n_used": n_used,
+        # Point-estimate risk (MSE of mu-hat): the DISCRIMINATING metric v4 lacked.
+        # Unlike coverage (saturates) and width (reads the prior), MSE separates policies
+        # by how well each shrinks -- empirical over-pools when tau_true is large, oracle
+        # is best, canonical should sit between. Reported with its MC SE.
+        "mse": float(np.mean(sq_errs)) if sq_errs else float("nan"),
+        "mse_se": (float(np.std(sq_errs, ddof=1) / np.sqrt(len(sq_errs)))
+                   if len(sq_errs) > 1 else float("nan")),
+        # subgroup-level risk -- the DISCRIMINATING metric (mu-MSE is prior-insensitive)
+        "subgroup_risk": float(np.mean(sub_risks)) if sub_risks else float("nan"),
+        "subgroup_risk_se": (float(np.std(sub_risks, ddof=1) / np.sqrt(len(sub_risks)))
+                             if len(sub_risks) > 1 else float("nan")),
+        "n_flagged": n_flagged, "n_used": n_used, "n_escalated": int(n_escalated),
     }
 
 

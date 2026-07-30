@@ -71,6 +71,70 @@ def make_rhm(v: int, s: int, m: int, *, seed: int = 0) -> np.ndarray:
     return np.random.default_rng(seed).integers(0, v, size=(v, m, s))
 
 
+def make_emission(v: int, p_merge: float, *, seed: int = 0) -> np.ndarray:
+    """Leaf emission map ``E: true symbol -> observed token``, the AMBIGUITY knob (#137).
+
+    Ambiguity in a PCFG is exactly **non-injective emission**: when two distinct latent
+    symbols emit the same surface token, several parses are consistent with one surface
+    string. ``p_merge`` is the fraction of the vocabulary drawn into a merge; merged
+    symbols are paired, so each ambiguous token has exactly two preimages and the
+    ambiguity level is interpretable rather than an artifact of how collisions landed.
+
+    ``p_merge=0`` returns the identity — the control, which must reproduce the
+    unambiguous RHM results EXACTLY (asserted in the tests, not eyeballed).
+
+    Why this cannot be emulated by raising the corruption rate ``1-theta``: corruption is
+    a STOCHASTIC channel and is recoverable in expectation — averaging more leaves
+    recovers the true symbol. A merge is DETERMINISTIC and many-to-one, so no amount of
+    data separates the merged symbols. That is precisely the intrinsic reconstruction
+    floor described in Parley/Cagnetta/Wyart (arXiv:2602.06065), and it is why the
+    existing theta knob does not already cover this case.
+    """
+    emit = np.arange(v)
+    n_pairs = int(round(p_merge * v / 2.0))
+    if n_pairs > 0:
+        rng = np.random.default_rng(seed)
+        chosen = rng.permutation(v)[: 2 * n_pairs].reshape(n_pairs, 2)
+        for a, b in chosen:
+            emit[b] = emit[a]                       # b becomes indistinguishable from a
+    return emit
+
+
+def emission_matrix(emit: np.ndarray, v: int) -> np.ndarray:
+    """``A[a, z] = 1`` iff true symbol ``a`` emits token ``z``. Columns are the preimage
+    indicators, which is the form both BP leaf messages need."""
+    A = np.zeros((v, v), dtype=float)
+    A[np.arange(v), emit] = 1.0
+    return A
+
+
+def _leaf_channel(v: int, theta: float, corruption: np.ndarray | None,
+                  emission: np.ndarray | None) -> np.ndarray:
+    """``P(observed token z | true symbol a)`` as a ``(v, v)`` array indexed ``[a, z]``.
+
+    Generalises the two existing leaf messages rather than branching beside them:
+
+        P(z|a) = theta·1[E(a)=z] + (1-theta)·Σ_{b: E(b)=z} C[a,b]
+
+    With ``emission=None`` (A = I) this collapses to the original
+    ``msg = (1-theta)·C[:,y]; msg[y] += theta`` exactly, so the unambiguous path is
+    unchanged rather than merely approximated."""
+    A = emission_matrix(emit=emission, v=v) if emission is not None else np.eye(v)
+    if corruption is None:
+        # uniform replacement over the v SYMBOLS lands on token z with prob |E^-1(z)|/v
+        CA = np.broadcast_to(A.sum(axis=0) / v, (v, v))
+    else:
+        CA = corruption @ A
+    return theta * A + (1.0 - theta) * CA
+
+
+def apply_emission(leaves: np.ndarray, emission: np.ndarray | None) -> np.ndarray:
+    """Map true/corrupted leaf symbols to observed tokens. Applied AFTER corruption:
+    the replacement draws a symbol, and the emission map acts on whatever symbol
+    resulted — which is the ordering the leaf channel above assumes."""
+    return leaves if emission is None else np.asarray(emission)[np.asarray(leaves)]
+
+
 def _generate(sym: int, depth: int, rules: np.ndarray, rng: np.random.Generator) -> list:
     """Sample a leaf-token string by expanding ``sym`` down ``depth`` levels."""
     if depth == 0:
@@ -83,7 +147,8 @@ def _generate(sym: int, depth: int, rules: np.ndarray, rng: np.random.Generator)
 
 
 def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
-               corruption: np.ndarray | None = None) -> np.ndarray:
+               corruption: np.ndarray | None = None,
+               emission: np.ndarray | None = None) -> np.ndarray:
     """Exact rule-BP upward pass → the posterior belief (v-vector) over this node's
     symbol given its (corrupted) subtree leaves. ``corruption`` = an optional
     row-stochastic channel ``C`` (``C[a,b] = P(replacement b | true a)``); ``None``
@@ -91,16 +156,11 @@ def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
     + (1-theta)·C[a,y]`` → ``msg = (1-theta)·C[:,y]; msg[y] += theta``."""
     if depth == 0:
         y = int(leaves[0])
-        if corruption is None:
-            msg = np.full(v, (1.0 - theta) / v)
-        else:
-            msg = (1.0 - theta) * corruption[:, y].copy()
-        msg[y] += theta                                  # P(observed y | true ·)
-        return msg
+        return _leaf_channel(v, theta, corruption, emission)[:, y].copy()
     s = rules.shape[2]
     csz = len(leaves) // s
     child = np.stack([_bp_belief(leaves[i * csz:(i + 1) * csz], depth - 1, rules, v, theta,
-                                 corruption)
+                                 corruption, emission)
                       for i in range(s)])                # (s, v)
     # belief(a) ∝ Σ_{rule r of a} Π_i child[i, rules[a,r,i]]
     gathered = child[np.arange(s)[None, None, :], rules]  # (v, m, s)
@@ -109,7 +169,8 @@ def _bp_belief(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
 
 
 def _bp_belief_batch(leaves, depth: int, rules: np.ndarray, v: int, theta: float,
-                     corruption: np.ndarray | None = None) -> np.ndarray:
+                     corruption: np.ndarray | None = None,
+                     emission: np.ndarray | None = None) -> np.ndarray:
     """Batched exact rule-BP: identical recursion to `_bp_belief` but with a leading
     unit axis. `leaves` is (n, s**depth); returns (n, v) beliefs. Bit-identical to
     running `_bp_belief` per row — it just shares the tree walk across all units,
@@ -118,16 +179,11 @@ def _bp_belief_batch(leaves, depth: int, rules: np.ndarray, v: int, theta: float
     n = leaves.shape[0]
     if depth == 0:
         y = leaves[:, 0].astype(int)                      # (n,)
-        if corruption is None:
-            msg = np.full((n, v), (1.0 - theta) / v)
-        else:
-            msg = (1.0 - theta) * corruption[:, y].T.copy()   # (n, v)
-        msg[np.arange(n), y] += theta
-        return msg
+        return _leaf_channel(v, theta, corruption, emission)[:, y].T.copy()   # (n, v)
     s = rules.shape[2]
     csz = leaves.shape[1] // s
     child = np.stack([_bp_belief_batch(leaves[:, i * csz:(i + 1) * csz], depth - 1,
-                                       rules, v, theta, corruption)
+                                       rules, v, theta, corruption, emission)
                       for i in range(s)])                 # (s, n, v)
     # belief(n, a) ∝ Σ_r Π_i child[i, n, rules[a,r,i]]
     gathered = np.stack([child[i][:, rules[:, :, i]] for i in range(s)])  # (s, n, v, m)
@@ -166,7 +222,8 @@ def _sample_corruption(leaves: np.ndarray, C: np.ndarray, rng: np.random.Generat
 def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
                       n_trees: int = 200, seed: int = 0, grammar_seed: int = 0,
                       corruption: np.ndarray | None = None,
-                      rules: np.ndarray | None = None) -> float:
+                      rules: np.ndarray | None = None,
+                      emission: np.ndarray | None = None) -> float:
     """The SFW **class-overlap** order parameter on the RHM grammar, via exact
     rule-BP. For each sampled tree: generate leaves from a root class, corrupt each
     leaf (keep w.p. ``theta``, else replace — uniform over ``v`` if ``corruption``
@@ -186,7 +243,10 @@ def rhm_class_overlap(v: int, s: int, m: int, depth: int, theta: float, *,
         repl = (rng.integers(0, v, size=len(leaves)) if corruption is None
                 else _sample_corruption(leaves, corruption, rng))
         y = np.where(keep, leaves, repl)
-        tot += _bp_belief(y, depth, rules, v, theta, corruption)[root]
+        # emission acts on the RESULT of the keep/replace draw, matching the leaf
+        # channel's P(z|a) = theta*1[E(a)=z] + (1-theta)*sum_{b in E^-1(z)} C[a,b]
+        y = apply_emission(y, emission)
+        tot += _bp_belief(y, depth, rules, v, theta, corruption, emission)[root]
     mean_p = tot / n_trees
     return float((v * mean_p - 1.0) / (v - 1))
 
