@@ -15,4 +15,4 @@ def test_report_renders_a_markdown_row_per_cell():
 
 def test_scenario_and_policy_grid_is_complete():
     assert set(SCENARIOS) == {"global_null", "hetero_null", "alt"}
-    assert POLICIES == ["flat", "oracle", "canonical"]
+    assert POLICIES == ["flat", "oracle", "canonical", "empirical"]

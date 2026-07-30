@@ -75,7 +75,7 @@ def _diagnostics(idata, var: str) -> dict:
 
 def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
                         chains: int = 2, seed: int = 0,
-                        sampler: str = "numpyro") -> dict:
+                        sampler: str = "numpyro", chain_method: str = "sequential") -> dict:
     """Three-level BHM in PyMC: population ``mu``, subgroup effects
     ``~ N(mu, τ²)`` with ``τ ~ HalfNormal`` (non-conjugate), patient obs
     ``~ N(subgroup_effect, σ²)``. Sampled via ``nuts_sampler=sampler`` (default
@@ -96,6 +96,7 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
         idata = pm.sample(draws=draws, tune=tune, chains=chains,
                           nuts_sampler=sampler, progressbar=False,
                           random_seed=seed,
+                          chain_method=chain_method,
                           nuts_sampler_kwargs={"target_accept": 0.9},
                           idata_kwargs={"log_likelihood": False})
     post = idata.posterior["mu"]
@@ -105,20 +106,43 @@ def fit_three_level_bhm(data: dict, *, draws: int = 500, tune: int = 500,
     return out
 
 
+def _build_tau(pm, tau_prior, tau_sd):
+    """Construct the between-subgroup SD prior τ. ``tau_prior`` is a tagged pair
+    ``(family, params)`` — ``("halfnormal", (scale,))`` or ``("lognormal", (mu_log,
+    sigma_log))`` (the van Zwet empirical policy). When ``tau_prior`` is None the legacy
+    ``HalfNormal(tau_sd)`` is used, so callers passing only ``tau_sd`` are unchanged."""
+    if tau_prior is None:
+        return pm.HalfNormal("tau", tau_sd)
+    family, params = tau_prior
+    if family == "halfnormal":
+        return pm.HalfNormal("tau", params[0])
+    if family == "lognormal":
+        mu_log, sigma_log = params
+        return pm.LogNormal("tau", mu=mu_log, sigma=sigma_log)
+    raise ValueError(f"unknown tau_prior family {family!r}")
+
+
 def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
                          chains: int = 2, seed: int = 0, sampler: str = "numpyro",
+                         chain_method: str = "sequential",
                          true_effect: float = 0.0, mu_sd: float = 1.0,
-                         tau_sd: float = 0.5, return_theta: bool = False) -> dict:
+                         tau_sd: float = 0.5, tau_prior: tuple | None = None,
+                         return_theta: bool = False) -> dict:
     """Three-level model on **subgroup summaries** (the exp19-compatible form): a
     Bayesian random-effects meta-analysis over per-subgroup effect estimates.
 
-        μ ~ N(0, mu_sd²);  τ ~ HalfNormal(tau_sd);
+        μ ~ N(0, mu_sd²);  τ ~ <tau_prior>;
         θ_g ~ N(μ, τ²);    θ̂_g ~ N(θ_g, se_g²)   [se_g fixed, the within-subgroup SE]
 
     ``μ`` is the population effect. Unlike an ESS-weighted pooled variance (which
     ignores between-subgroup heterogeneity), this **propagates τ into the μ
     posterior**, so the SE is honest when subgroups disagree. Sampled via the
-    NumPyro/JAX backend; reports R-hat / bulk-ESS / tail-ESS."""
+    NumPyro/JAX backend; reports R-hat / bulk-ESS / tail-ESS.
+
+    The τ prior is ``tau_prior=(family, params)`` — ``("halfnormal", (scale,))`` or
+    ``("lognormal", (mu_log, sigma_log))``. Omitting it falls back to
+    ``HalfNormal(tau_sd)`` (legacy). The lognormal family is what the empirical
+    (van Zwet) borrowing policy uses (see ``joint_fidelity.empirical_tau_prior``)."""
     import pymc as pm
 
     theta_hat = np.asarray(theta_hat, float)
@@ -126,13 +150,14 @@ def fit_three_level_meta(theta_hat, se, *, draws: int = 500, tune: int = 500,
     n_g = len(theta_hat)
     with pm.Model():
         mu = pm.Normal("mu", 0.0, mu_sd)
-        tau = pm.HalfNormal("tau", tau_sd)
+        tau = _build_tau(pm, tau_prior, tau_sd)
         z = pm.Normal("z", 0.0, 1.0, shape=n_g)            # non-centered: avoids the funnel
         theta = pm.Deterministic("theta", mu + tau * z)
         pm.Normal("obs", theta, se, observed=theta_hat)
         idata = pm.sample(draws=draws, tune=tune, chains=chains,
                           nuts_sampler=sampler, progressbar=False,
                           random_seed=seed,
+                          chain_method=chain_method,
                           nuts_sampler_kwargs={"target_accept": 0.9},
                           idata_kwargs={"log_likelihood": False})
     post = idata.posterior["mu"]
@@ -154,6 +179,98 @@ def tail_ess_ok(fit: dict, *, threshold: float = 100.0) -> bool:
     """Tail-ESS gate — Type-I is a tail event on a rare-subpop estimand, so a fit
     with tail-ESS below ``threshold`` is flagged (not silently averaged in)."""
     return bool(fit["tail_ess"] >= threshold)
+
+
+# ── compile-once direct-NumPyro path (the OC-loop fast path) ─────────────────────
+# pymc rebuilds the model graph and re-JITs every fit_three_level_meta call (~22s
+# steady, dominated by recompilation). This path builds ONE NumPyro MCMC per
+# (n_pad, draws, tune, chains) and reuses its compiled sampler across reps: only
+# the FIRST fit pays compilation, the rest are warmup+sampling. Variable decoded
+# subgroup counts are padded to a fixed n_pad with an uninformative se, so shape
+# stays constant (no recompile) and padded subgroups don't move the mu/tau posterior.
+_NUMPYRO_MCMC_CACHE: dict = {}
+
+
+def _meta_model_numpyro(theta_hat, se, mu_sd, tau_sd):
+    import numpyro
+    import numpyro.distributions as dist
+    n = theta_hat.shape[0]
+    mu = numpyro.sample("mu", dist.Normal(0.0, mu_sd))
+    tau = numpyro.sample("tau", dist.HalfNormal(tau_sd))
+    z = numpyro.sample("z", dist.Normal(0.0, 1.0).expand([n]))   # non-centered
+    theta = mu + tau * z
+    numpyro.sample("obs", dist.Normal(theta, se), obs=theta_hat)
+
+
+def _meta_model_numpyro_lognormal(theta_hat, se, mu_sd, tau_mu_log, tau_sigma_log):
+    """Empirical (van Zwet) variant: τ ~ LogNormal. A SEPARATE model fn (not a branch
+    inside ``_meta_model_numpyro``) so JAX's compile cache keys the two τ families to two
+    entries — each compiles once; the scalar params still change without recompiling."""
+    import numpyro
+    import numpyro.distributions as dist
+    n = theta_hat.shape[0]
+    mu = numpyro.sample("mu", dist.Normal(0.0, mu_sd))
+    tau = numpyro.sample("tau", dist.LogNormal(tau_mu_log, tau_sigma_log))
+    z = numpyro.sample("z", dist.Normal(0.0, 1.0).expand([n]))   # non-centered
+    theta = mu + tau * z
+    numpyro.sample("obs", dist.Normal(theta, se), obs=theta_hat)
+
+
+def fit_three_level_meta_fast(theta_hat, se, *, draws: int = 500, tune: int = 500,
+                              chains: int = 2, seed: int = 0, tau_sd: float = 0.5,
+                              tau_prior: tuple | None = None,
+                              mu_sd: float = 1.0, true_effect: float = 0.0,
+                              n_pad: int | None = None, chain_method: str = "vectorized",
+                              return_theta: bool = False) -> dict:
+    """Statistically equivalent to `fit_three_level_meta` but compiles once and
+    reuses across reps (validated against it). `n_pad` fixes the subgroup dimension
+    (default = len(theta_hat)); pass the level's max (e.g. spec['g']) so all reps
+    share one compiled sampler. mu_sd/tau params are passed as arrays so changing the
+    prior between reps does NOT recompile.
+
+    ``tau_prior=(family, params)`` selects the τ prior — ``("halfnormal", (scale,))`` or
+    ``("lognormal", (mu_log, sigma_log))`` (the empirical policy). Each family has its own
+    compiled model (one compile apiece), so a --fast sweep runs all policies on the same
+    compile-once sampler. Omitting ``tau_prior`` falls back to ``HalfNormal(tau_sd)``."""
+    import jax
+    import jax.numpy as jnp
+    import arviz as az
+    from numpyro.infer import MCMC, NUTS
+    th = np.asarray(theta_hat, float)
+    s = np.asarray(se, float)
+    n_g = len(th)
+    n_pad = int(n_pad) if n_pad else n_g
+    if n_pad < n_g:
+        raise ValueError(f"n_pad {n_pad} < n_g {n_g}")
+    thp = np.zeros(n_pad, float); thp[:n_g] = th
+    sp = np.full(n_pad, 1e6, float); sp[:n_g] = s              # padded rows uninformative
+
+    # Resolve the τ prior to (model_fn, extra scalar args). halfnormal and lognormal are
+    # distinct model fns so JAX compiles each once (see _meta_model_numpyro_lognormal).
+    family, params = tau_prior if tau_prior is not None else ("halfnormal", (tau_sd,))
+    if family == "halfnormal":
+        model_fn = _meta_model_numpyro
+        tau_args = (jnp.asarray(float(params[0])),)
+    elif family == "lognormal":
+        model_fn = _meta_model_numpyro_lognormal
+        tau_args = (jnp.asarray(float(params[0])), jnp.asarray(float(params[1])))
+    else:
+        raise ValueError(f"unknown tau_prior family {family!r}")
+
+    # Fresh MCMC each call (reusing the object breaks on re-run with vectorized
+    # chains). jax's global compile cache keys on the model fn + shapes, so with a
+    # fixed n_pad every rep hits the cache — only the first pays compilation.
+    mcmc = MCMC(NUTS(model_fn, target_accept_prob=0.9),
+                num_warmup=tune, num_samples=draws, num_chains=chains,
+                chain_method=chain_method, progress_bar=False)
+    mcmc.run(jax.random.PRNGKey(int(seed)), jnp.asarray(thp), jnp.asarray(sp),
+             jnp.asarray(float(mu_sd)), *tau_args)
+    mu_cd = np.asarray(mcmc.get_samples(group_by_chain=True)["mu"])   # (chains, draws)
+    out = _decision(float(mu_cd.mean()), float(mu_cd.std()), true_effect)
+    out.update({"r_hat": float(az.rhat(mu_cd)),                       # (chain, draw) array
+                "bulk_ess": float(az.ess(mu_cd, method="bulk")),
+                "tail_ess": float(az.ess(mu_cd, method="tail", prob=(0.05, 0.95)))})
+    return out
 
 
 def run_fidelity(*, n_reps: int = 20, tau: float = 0.3, effect_alt: float = 0.5,
