@@ -134,6 +134,16 @@ conflict diagnostic applied to the SCA). Decision:
 exp44 (Part A) validates the borrowing-under-conflict mechanism regardless; it is a general
 benchmark result independent of whether ENCIRCLE's diagnostic ever triggers Part B.
 
+**Update (built, general/simulated-data version):** both the gate and the layer are now
+implemented and tested, decoupled from real ENCIRCLE data:
+- `causal_bench/validation/residual_conflict_gate.py` — `residual_conflict_gate` /
+  `gate_by_region` (the go/no-go via `zero_flow_ci`).
+- `causal_bench/validation/residual_borrowing_layer.py` — `ps_integrated_map_prior`
+  (down-weight non-comparable pseudo-studies), `protocol_response` (#180: supports→map /
+  refutes→robust_map / underpowered→flat), `gated_borrow` (the composed layer).
+Only the **ENCIRCLE-specific instantiation** — real TVT registry partitions + the *frozen SMB
+embedding* as the propensity — remains deferred (it needs the data + the strategic decision).
+
 ---
 
 ## Files
