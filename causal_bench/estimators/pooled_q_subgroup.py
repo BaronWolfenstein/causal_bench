@@ -95,6 +95,13 @@ class PooledQSubgroupEstimator(BaseEstimator):
                  random_state: int = 42):
         self.pooled = pooled
         self.subgroup_col = subgroup_col
+        # q_learner: any sklearn-style outcome model for Q=P(Y=1|W[,S]). Defaults to
+        # LogisticRegression. Donsker-class working models — LTBClassifier (#69,
+        # arXiv:2205.10697) and HARClassifier (arXiv:2410.02680) — plug in here to license
+        # AIPW/TMLE without cross-fitting; _fit_q fits them unweighted (no sample_weight)
+        # so the IPCW correction enters only through the targeting step. LTB drives both
+        # the event-rate Q and the RMST person-time hazard; HAR (O(n^2) kernel) is for the
+        # event-rate Q only — the RMST hazard's person-time expansion is too large for it.
         self.q_learner = q_learner
         self.use_compliance = use_compliance
         self.nuisance = nuisance        # RMST survival backend: "logistic" | "rp_spline"
