@@ -16,6 +16,8 @@ flowchart TD
     TA["TEST A — encoder capacity\nclassifier rare-vs-common in embedding space; ROC-AUC\n(legitimately probes E_gen — NOT guarded)"]:::test
     TA -->|"AUC below threshold"| ESC["ESCALATE / bound scope\nencoder is the real limit, or rare region information-poor"]:::term
     TA -->|"AUC pass"| TB
+    classDef note fill:#f8f9fa,stroke:#6c757d,color:#222,stroke-dasharray: 2 2
+    TA -.-> TANOTE["cross-backbone robustness (2026-07-28): run Test A on BOTH\nQwen3-8b & Llama3-8b embeddings — agreement = real encoder capacity,\ndivergence = backbone artifact (#83). Ensemble linear probes →\ncalibrated AUC / decode confidence (#149)."]:::note
 
     TB["TEST B — direct-on-embedding faithfulness\nper-mode round-trip recon (rare vs common) + separation AUC"]:::test
     TB -->|"recon not supplied"| PB[["pending_B"]]:::pend

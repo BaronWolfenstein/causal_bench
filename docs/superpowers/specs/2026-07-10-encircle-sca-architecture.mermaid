@@ -6,6 +6,17 @@
 %% citations removed; the #88 guard is complete across ALL fidelity gates; the
 %% generative core is marked built. Gated design axes are a DASHED design-only
 %% pointer (see 2026-07-10-geometry-discreteness-axes.mermaid), not integrated.
+%% 2026-07-28 refresh: encoder is now the SMB Qwen3/Llama3-8b FAMILY (was 1.7B-Structure),
+%% two backbones enabling cross-backbone agreement/ensemble; Σ_ε via last-layer Laplace
+%% (Qwen3/Llama3 dropout=0 → MC-dropout infeasible); manifold propensity = mirror-descent /
+%% natural-gradient with the SCORE-NET metric (Landing), not Fisher; Σ_ε sensitivity band
+%% (no embedding ICC); survival-nuisance candidates #188/#189 on the estimation layer;
+%% Flow-Expander gated candidate added to the twisted-SMC diagram.
+%% 2026-07-30 refresh: merged main; kept the Qwen3/Llama3 family encoder and folded the
+%% MitralVision imaging-encoder candidate + EHR-only modality-gap note back in; added the
+%% RCGATE node — the exp44 residual-conflict GATE → gated PS-integrated robust-MAP borrowing
+%% (general version BUILT, PR #198), tied to the echo modality gap / era drift a frozen
+%% off-the-shelf EHR encoder can't capture. Complement to the SCA, not a reframe.
 flowchart TD
     %% DESIGN FACT: ENCIRCLE is single-arm vs a 45% performance goal. TVT registry
     %% + synthetic augmentation is the ENTIRE comparator. No real patient-level OMT
@@ -27,11 +38,15 @@ flowchart TD
     %% (gated on diffuse_directly resume). Auto-Contour (JACC Adv 2026, S2772963X26002887)
     %% is ICE = INTRA-PROCEDURAL segmentation, NOT a patient-level screening encoder →
     %% out of scope for this layer (procedural-guidance tooling, not a representation).
-    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB JEPA, EHR-only today)"]
+    %% This EHR-only modality gap (plus era drift on a FROZEN, off-the-shelf encoder) is
+    %% exactly what the exp44 RESIDUAL-CONFLICT GATE targets: after embedding-propensity
+    %% matching, echo/imaging-driven residual OUTCOME conflict the EHR encoder can't capture
+    %% → gated robust-MAP borrowing. See the RCGATE note on the estimation layer.
+    subgraph ENC["Layer 1 — Frozen Patient Encoder (SMB EHR world-model family, EHR-only today)"]
         direction LR
-        JEPA["JEPA EHR World Model (frozen)\nSMB-v1-1.7B-Structure"]
-        SIGEPS["Σ_ε (encoder-side): MC-dropout K passes\nper-patient embedding covariance → versioned artifact"]
-        MV_ENC["CANDIDATE (gated) — imaging encoder\nMitralVision: spatiotemporal ViT, TTE A4C B-mode → MR-severity embedding\n(JASE 2026, S0894-7317(26)00360-3)\ndisease-tuned: could pass Test A localization for rare mitral\nphenotypes the EHR encoder misses. Modality ≠ SMB JEPA (EHR)."]
+        JEPA["EHR World Model (frozen, deterministic)\nSMB-v1 family: {Qwen3,Llama3}-8b × {multi-obj,curriculum} + Qwen3-1.7b\ntwo backbones → cross-backbone agreement/ensemble & invariance check (#83/#149)"]
+        SIGEPS["Σ_ε (encoder-side): LAST-LAYER LAPLACE\n(MC-dropout infeasible — Qwen3/Llama3 default dropout=0)\nor cross-backbone ensemble → per-patient covariance artifact (#59)"]
+        MV_ENC["CANDIDATE (gated) — imaging encoder\nMitralVision: spatiotemporal ViT, TTE A4C B-mode → MR-severity embedding\n(JASE 2026, S0894-7317(26)00360-3)\ndisease-tuned: could pass Test A localization for rare mitral\nphenotypes the EHR encoder misses. Modality ≠ SMB EHR encoder."]
     end
 
     subgraph SIGREG["Embedding-Geometry Pre-processing"]
@@ -163,13 +178,23 @@ flowchart TD
     SNOTE["COLLIDER CAVEAT on S: adjustment set S ≠ Markov blanket.\nA CI oracle (zero_flow_ci) DETECTS colliders (v-structure: X⟂Y, X⟂̸Y|C)\nand is FOOLED by them (collider/descendant in Z opens the path → spurious\ndependence). MB includes collider-induced spouses by construction. So S is\nchosen by FCI backdoor-validity (colliders + descendants EXCLUDED) restricted\nto PRE-TREATMENT covariates (ICH E9(R1)); MB feeds discovery, never selection.\nM-bias (adjust-and-still-open) carried as sensitivity: exp22."]
     FCI -.-> SNOTE
 
+    %% Survival-nuisance candidates (concrete RMST estimands)
+    SURVNUIS["SURVIVAL-NUISANCE candidates (concrete RMST):\nflexible-parametric hazard learner (#188) — RP frequentist / M-spline Bayesian\n(RP breaks MCMC via non-monotone cumhaz; M-spline stan_surv 2002.09633 for Bayesian).\nPooled-Q subgroup RMST (#189) borrows across small subgroups (single-arm-safe).\nCurrent censoring G_c = Cox/PH → flexible-parametric relaxes non-PH."]
+    TMLE -.-> SURVNUIS
+    HAL -.-> SURVNUIS
+
+    %% Residual-conflict gate + gated dynamic borrowing (exp44, BUILT this session)
+    RCGATE["RESIDUAL-CONFLICT GATE → gated borrowing (exp44 — general version BUILT):\nafter embedding-propensity matching, test Y_control ⫫ Source | Z(embedding) via zero_flow_ci.\nSUPPORTS → matched SCA suffices, NO borrow; REFUTES → residual OUTCOME conflict (echo\nmodality gap / era drift a frozen off-the-shelf EHR encoder can't capture) → PS-integrated\nrobust-MAP borrow (down-weights under conflict, validated); UNDERPOWERED → flat (#194).\nCOMPLEMENT to the SCA, not a reframe: the embedding propensity IS the PS-integration layer.\nresidual_conflict_gate / residual_borrowing_layer / two_epoch_borrowing (PR #198).\nENCIRCLE-specific instantiation (real TVT partitions + frozen-embedding PS) deferred."]
+    TMLE -.-> RCGATE
+    POS -.->|"embedding-matched residual-conflict test (zero_flow_ci)"| RCGATE
+
     %% Measurement-error hand-offs (encoder repo → causal_bench)
     JEPA -.-> SIGEPS
-    SIGEPS -.->|"Σ_ε artifact"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε"]
+    SIGEPS -.->|"Σ_ε artifact (calibrated)"| MESENS["Measurement-error sensitivity (causal_bench)\nSIMEX / errors-in-variables; estimand+CI with/without Σ_ε.\nNo clinical ICC for embeddings → report Σ_ε-scale SENSITIVITY BAND (#59)"]
     HAL -.->|"noisy anatomical covariates"| COVME["Covariate measurement-error sensitivity (causal_bench)\nΣ_x; regression calibration / SIMEX → residual-confounding readout"]
 
     %% GATED design axes — design-only pointer, NOT built, NOT on the primary path
-    AXES["GATED DESIGN AXES (design-only — nothing built)\ngeometry (Riemannian TDS + manifold propensity) &\ndiscreteness (jump-diffusion; ICEs = jump markers).\nAdopt only when a detector fires (curvature / STRUCT-S), same state\nspace both sides. See 2026-07-10-geometry-discreteness-axes.mermaid."]
+    AXES["GATED DESIGN AXES (design-only — nothing built)\ngeometry (Riemannian TDS + manifold propensity) &\ndiscreteness (jump-diffusion; ICEs = jump markers).\nManifold propensity = natural-gradient ≡ MIRROR-DESCENT with the SCORE-NET\nmetric (Landing 2509.23357) or pullback J'J (#184) — NOT Fisher (no likelihood).\nAdopt only when a detector fires (curvature / STRUCT-S), same state\nspace both sides. See 2026-07-10-geometry-discreteness-axes.mermaid."]
     LOC -.->|"future axes (gated)"| AXES
     TWIST -.->|"metric-aware reward if Riemannian (gated)"| AXES
 
@@ -202,5 +227,5 @@ flowchart TD
     class LOCGATE,SCOPE gate
     class SIGEPS encoderrepo
     class MESENS,COVME causalrepo
-    class ESSNOTE,AUGNOTE,SNOTE annotation
+    class ESSNOTE,AUGNOTE,SNOTE,SURVNUIS,RCGATE annotation
     class AXES gated
