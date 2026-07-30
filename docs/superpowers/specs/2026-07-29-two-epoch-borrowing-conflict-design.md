@@ -134,8 +134,14 @@ validates the borrowing-under-conflict mechanism the application layer would rel
   here only as the `robust_map` policy; their prespecifiable form is #180's build.
 - The full Part-B application (PS-integrated, partitioned registry) — its own spec.
 
-## Open item to finalize from the running validation
+## Role relative to exp41 (finalized)
 
-Whether exp44 is the **primary** conflict-demonstration vehicle (if exp41's existing
-composite-null / partial-null validation comes back benign) or **secondary** (if the
-partial-null already inflates clearly). One line, set when `results/exp41_composite_null_validation/summary.md` lands.
+**exp44 is the SECONDARY conflict-demonstration vehicle.** Local validation of the exp41
+composite-null work (#195) already surfaced clear borrowing-inflation: the partial-null
+(`make_partial_null_spec`, empirical prior) drives the truly-null subgroup's Type-I to
+**~0.5** under adversarial siblings — i.e. exp41's existing heterogeneity/partial-null axes
+already demonstrate that borrowing violates size. So exp44's temporal-departure δ axis is the
+*"and drift-from-a-historical-anchor does it too, via genuine prior–data conflict"* extension
+— a distinct mechanism (historical-as-data + MAP-from-data), not a redundant one, but not the
+first evidence of borrowing-inflation. (The larger box OC sweep was not needed to settle this;
+the local fast≡slow + partial-null result was decisive.)
