@@ -36,9 +36,17 @@ class ClinicalPSNBEstimator(BaseEstimator):
     e.g. (0.3, 0.7) to weight death more heavily, matching the clinical
     charter used in the trial protocol.
 
-    Returns two EstimatorResult objects: one for PSNB (scale: time units,
-    interpreted as average extra time in a more-favorable state) and one
-    for PSWR (unitless ratio, same interpretation as win ratio).
+    Returns two EstimatorResult objects: one for PSNB and one for PSWR.
+
+    Scale (McCoy et al., arXiv:2607.22950, Def 1 / Eq 3): PSNB = Σ_k α_k Δ_k is a
+    charter-weighted NET-BENEFIT (win minus loss) PROBABILITY imbalance, where
+    Δ_k = E[c_k | R_k=1] with c_k ∈ {-1,0,+1}; it is dimensionless and bounded in
+    [-1, 1] (a positive value favors treatment). It is NOT a time-scale quantity —
+    "average extra time in a more-favorable state" is the RMT-IF estimand
+    (ClinicalRMTIFEstimator), a different summary; only the illness-death event
+    mapping is shared. PSWR = Σ_k α_k w_k / Σ_k α_k ℓ_k is the ratio-scale companion
+    (unitless; PSWR>1 iff PSNB>0), interpreted like a win ratio but only within a
+    fixed charter (not comparable across charters).
 
     Requires a competing-risks DGP (event_type in {0, 1, 2}).
     """
@@ -50,6 +58,15 @@ class ClinicalPSNBEstimator(BaseEstimator):
         signif: float = 0.05,
     ):
         charter = tuple(float(w) for w in charter)
+        # The illness-death mapping is 2-tier (death, illness); the R bridge hardcodes
+        # n_tiers=2, so a longer charter would otherwise fail deep inside clinicalPSNB.
+        if len(charter) != 2:
+            raise ValueError(
+                f"charter must have 2 weights for the illness-death mapping "
+                f"(death, illness); got {len(charter)}"
+            )
+        if any(w < 0 for w in charter):
+            raise ValueError(f"charter weights must be non-negative (got {charter})")
         if abs(sum(charter) - 1.0) > 1e-9:
             raise ValueError(
                 f"charter weights must sum to 1 (got {sum(charter):.6f})"
