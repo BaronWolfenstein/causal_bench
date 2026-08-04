@@ -17,6 +17,13 @@
 %% RCGATE node — the exp44 residual-conflict GATE → gated PS-integrated robust-MAP borrowing
 %% (general version BUILT, PR #198), tied to the echo modality gap / era drift a frozen
 %% off-the-shelf EHR encoder can't capture. Complement to the SCA, not a reframe.
+%% 2026-08-04 refresh (SMB oncology-demo findings; causal_bench #205/#206/#207): (1) EVAL_ENC
+%% guard — the MEDS-render->re-encode path is the OPEN seam (base model is ENCODE-ONLY; the
+%% ELF decoder is a gated follow-up, NOT built); the LIVE per-sample guard is typicality/density
+%% + memorize-vs-interpolate on generated Z*. (2) ADJSET — adjusting for the RAW embedding Z is a
+%% POSITIVITY TRAP (exp50); prognostic-score reduction is the working fix. (3) QBASENS —
+%% probabilistic QBA for unmeasured confounding (#205). (4) Causal covariate = BASELINE
+%% (pre-treatment) embedding, not the full trajectory.
 flowchart TD
     %% DESIGN FACT: ENCIRCLE is single-arm vs a 45% performance goal. TVT registry
     %% + synthetic augmentation is the ENTIRE comparator. No real patient-level OMT
@@ -127,7 +134,7 @@ flowchart TD
         RIPPIN["estimand-alignment sensitivity (TMVR vs TAVR SoC)"]
         RTRIP["ROUND-TRIP VALIDATOR (separate-latent path only)"]
         LAND["TWIST-LANDING CHECK (always) — decoded Z* land in R"]
-        EVAL_ENC["#88 DECOUPLED-EVAL GUARD — E_eval != E_gen (Van Assel 2606.00514)\nrender to MEDS via ELF final-step → re-encode in E_eval;\nmetric_hacking_flag NOW ON ALL FIDELITY GATES: B/B'/C recon\nAND the B'' landing gate (_landing_test). Not Test A."]
+        EVAL_ENC["#88 DECOUPLED-EVAL GUARD — E_eval != E_gen (cross-backbone, independent failure).\nLIVE per-sample guard (validated on 8B): typicality/density + memorize-vs-interpolate on Z*.\nMEDS-render → re-encode in E_eval is the OPEN SEAM — base model is ENCODE-ONLY (arch-3 dead),\nELF decoder is a GATED follow-up (not built), so that path is not a live gate yet. Not Test A."]
     end
 
     OUT["CMS evidence package — simultaneous bands, ICH E9(R1) estimand report\n+ explicit scope: single-arm vs 45% PG; TVT + synthetic = ENTIRE comparator"]
@@ -183,10 +190,23 @@ flowchart TD
     TMLE -.-> SURVNUIS
     HAL -.-> SURVNUIS
 
+    %% Adjustment-set frontier + prognostic-score fix (SMB oncology demo → exp50 / #206)
+    ADJSET["ADJUSTMENT-SET FRONTIER (exp50 / #206): adjusting for the RAW embedding Z is a\nPOSITIVITY TRAP — high-fidelity confounder encoding near-determines A; a flexible outcome\nmodel then ATTENUATES the effect toward null, defeating cross-fit doubly-robust AIPW/TMLE\nEVEN with the confounder measured. FIXES: augmented DR-ATO (positivity-robust, ATO!=ATE)\n~halves it; PROGNOSTIC-SCORE reduction (control-outcome surface; balancing score, NOT\ntreatment-degenerate) LARGELY RECOVERS. => adjust for a low-dim SUFFICIENT confounder, not raw Z."]
+    HAL -.->|"raw-Z adjustment is the trap"| ADJSET
+    TMLE -.-> ADJSET
+
+    %% Unmeasured-confounding QBA (#205 / exp49)
+    QBASENS["QBA — probabilistic bias analysis for UNMEASURED confounding (#205 / exp49):\nFox/MacLehose/Lash record-level; priors on p(U|A) + U->Y effect; systematic + total-error\nintervals. Bounds the residual the adjustment set can't capture. Complements Σ_ε / Σ_x."]
+    TMLE -.-> QBASENS
+
     %% Residual-conflict gate + gated dynamic borrowing (exp44, BUILT this session)
     RCGATE["RESIDUAL-CONFLICT GATE → gated borrowing (exp44 — general version BUILT):\nafter embedding-propensity matching, test Y_control ⫫ Source | Z(embedding) via zero_flow_ci.\nSUPPORTS → matched SCA suffices, NO borrow; REFUTES → residual OUTCOME conflict (echo\nmodality gap / era drift a frozen off-the-shelf EHR encoder can't capture) → PS-integrated\nrobust-MAP borrow (down-weights under conflict, validated); UNDERPOWERED → flat (#194).\nCOMPLEMENT to the SCA, not a reframe: the embedding propensity IS the PS-integration layer.\nresidual_conflict_gate / residual_borrowing_layer / two_epoch_borrowing (PR #198).\nENCIRCLE-specific instantiation (real TVT partitions + frozen-embedding PS) deferred."]
     TMLE -.-> RCGATE
     POS -.->|"embedding-matched residual-conflict test (zero_flow_ci)"| RCGATE
+
+    %% Causal-covariate anchor (SMB oncology demo finding)
+    BLNOTE["CAUSAL-COVARIATE ANCHOR: encode at the BASELINE (pre-treatment) time for the\nadjustment covariate — a FULL-trajectory embedding contains the treatment itself\n(post-treatment adjustment / baseline-restriction violation). Mean-pooled hidden_states[-1]."]
+    JEPA -.-> BLNOTE
 
     %% Measurement-error hand-offs (encoder repo → causal_bench)
     JEPA -.-> SIGEPS
@@ -227,5 +247,5 @@ flowchart TD
     class LOCGATE,SCOPE gate
     class SIGEPS encoderrepo
     class MESENS,COVME causalrepo
-    class ESSNOTE,AUGNOTE,SNOTE,SURVNUIS,RCGATE annotation
+    class ESSNOTE,AUGNOTE,SNOTE,SURVNUIS,RCGATE,ADJSET,QBASENS,BLNOTE annotation
     class AXES gated
