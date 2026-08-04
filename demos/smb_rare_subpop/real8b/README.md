@@ -14,7 +14,8 @@ infrastructure with your own models**.
 - Python 3.12, `torch==2.6.0+cu124`, `transformers`, `pandas`, `pyarrow`,
   `scikit-learn`, `scipy`.
 - `smb_utils` (your MEDS→text formatter): `pip install git+https://github.com/standardmodelbio/smb-utils.git`
-- A CUDA GPU (each 8B encoder ≈ 16 GB in bf16; an A100-40GB is comfortable).
+- A CUDA GPU (each 8B encoder ≈ 16 GB in bf16; an A100-40GB is comfortable, an
+  **H100-80GB more so** — `torch 2.6+cu124` supports Hopper/sm_90, no changes needed).
 - `causal_bench` importable for the generative stack (the Flow Expander):
   run with `PYTHONPATH=/path/to/causal_bench`.
 
