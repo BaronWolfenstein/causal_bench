@@ -15,10 +15,13 @@ Key mechanism (refined from the linear scaffold, see issue #206):
     interaction, not high-dimensionality per se. The high-dim embedding's role in
     the real case is to CREATE the severe positivity (near-perfect propensity).
 
-First-cut positivity-robust responses (constant effect => every subpopulation ATE
+Positivity-robust / reduction responses (constant effect => every subpopulation ATE
 == tau, so these all target tau):
-  * trimmed  -- restrict to the propensity-overlap region [lo, hi], AIPW there.
-  * ato      -- overlap-weighted estimand (ATO): downweight extreme-propensity units.
+  * dr_ato     -- tier-1: augmented (doubly-robust) overlap weighting; ~halves the bias
+    but does not fully recover (ATO != ATE).
+  * prognostic -- tier-2: adjust for the 1-D PROGNOSTIC score alone (control-outcome
+    surface, Hansen 2008). Unlike the propensity score it is not treatment-degenerate,
+    so it escapes the positivity trap and LARGELY RECOVERS the effect.
 
 Self-validating: (i) at conf=0 (no confounding) every method is unbiased; (ii) the
 attenuation grows monotonically with confounding strength.
@@ -68,36 +71,54 @@ def _aipw(W, A, Y, flex=True, e=None):
     return float(np.mean(Q1 - Q0 + H * (Y - QA)))
 
 
-def _trimmed_aipw(W, A, Y, flex=True, lo=0.1, hi=0.9):
+def _dr_ato(W, A, Y, flex=True):
+    """Augmented (doubly-robust) overlap-weighted ATO -- the tier-1 positivity-robust
+    response. Bounded overlap weights h=e(1-e); ~halves the attenuation but does not
+    fully recover (ATO != ATE)."""
     e = _propensity(W, A)
-    m = (e >= lo) & (e <= hi)
-    if m.sum() < 50 or A[m].sum() < 10 or (1 - A[m]).sum() < 10:
-        return float("nan")
-    return _aipw(W[m], A[m], Y[m], flex=flex)
+    Q1, Q0 = _q_predict(W, A, Y, flex)
+    h = e * (1 - e)
+    plug = np.sum(h * (Q1 - Q0)) / np.sum(h)
+    c1 = np.sum(A * (1 - e) * (Y - Q1)) / np.sum(h)
+    c0 = np.sum((1 - A) * e * (Y - Q0)) / np.sum(h)
+    return float(plug + c1 - c0)
 
 
-def _ato(W, A, Y):
-    """Overlap-weighted ATO (Hajek): treated w=1-e, control w=e."""
-    e = _propensity(W, A)
-    wt, wc = (1 - e) * A, e * (1 - A)
-    return float((wt * Y).sum() / wt.sum() - (wc * Y).sum() / wc.sum())
+def _prognostic_score(W, A, Y, flex):
+    """Prognostic score E[Y | A=0, W], fit on CONTROLS only (Hansen 2008)."""
+    Wc, Yc = W[A == 0], Y[A == 0]
+    if flex:
+        m = HistGradientBoostingRegressor(max_iter=100, max_leaf_nodes=15,
+                                          learning_rate=0.1, random_state=0).fit(Wc, Yc)
+    else:
+        m = Ridge(alpha=1.0).fit(Wc, Yc)
+    return m.predict(W)
+
+
+def _prognostic_aipw(W, A, Y, flex=True):
+    """Tier-2 candidate: adjust for the 1-D PROGNOSTIC score alone. Unlike the
+    propensity score (which IS the positivity direction), the prognostic score is
+    not treatment-degenerate, so it controls confounding while escaping the
+    positivity trap -- and largely RECOVERS the effect where full-W AIPW fails."""
+    prog = _prognostic_score(W, A, Y, flex)
+    return _aipw(prog[:, None], A, Y, flex=flex)
 
 
 def one_rep(n, d, fidelity, conf, tau, seed, flex=True):
     s = simulate(n, d=d, fidelity=fidelity, conf=conf, tau=tau, seed=seed)
     W, A, Y, U = s["W"], s["A"], s["Y"], s["Ustar"]
     return {
-        "oracle_Ustar": _aipw(U, A, Y, flex=flex),
-        "naive_fullW": _aipw(W, A, Y, flex=flex),
-        "trimmed_W": _trimmed_aipw(W, A, Y, flex=flex),
-        "ato_W": _ato(W, A, Y),
+        "oracle_Ustar": _aipw(U, A, Y, flex=flex),        # adjust for the true confounder
+        "naive_fullW": _aipw(W, A, Y, flex=flex),         # the pathology
+        "dr_ato_W": _dr_ato(W, A, Y, flex=flex),          # tier-1: positivity-robust, ~halves bias
+        "prog_score_W": _prognostic_aipw(W, A, Y, flex=flex),  # tier-2: largely recovers
         "frac_extreme": float(np.mean((s["e_true"] < 0.05) | (s["e_true"] > 0.95))),
     }
 
 
 def report_rows(n=2500, d=50, fidelity=6.0, tau=1.0, n_reps=12,
                 confs=(0.0, 1.0, 2.0, 3.0, 5.0), flex=True, seed=0):
-    methods = ["oracle_Ustar", "naive_fullW", "trimmed_W", "ato_W"]
+    methods = ["oracle_Ustar", "naive_fullW", "dr_ato_W", "prog_score_W"]
     rows = []
     for conf in confs:
         acc = {m: [] for m in methods}; fe = []

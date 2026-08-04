@@ -30,3 +30,10 @@ def test_flexible_outcome_attenuates_with_positivity():
     b_low, b_high = low["naive_fullW"], high["naive_fullW"]
     assert b_high < -0.10           # clearly attenuated toward null at severe positivity
     assert b_high < b_low - 0.05     # attenuation grows with positivity severity
+
+
+def test_prognostic_reduction_recovers_at_severe_positivity():
+    # tier-2: the prognostic-score reduction largely recovers where naive full-W attenuates
+    r = _rows((5.0,), flex=True)[0]
+    assert r["naive_fullW"] < -0.12            # naive is badly attenuated
+    assert abs(r["prog_score_W"]) < 0.09       # prognostic-score reduction ~recovers

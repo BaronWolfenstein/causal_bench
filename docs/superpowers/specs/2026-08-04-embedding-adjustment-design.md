@@ -38,15 +38,18 @@ model is switchable: **Ridge (linear)** or **HistGradientBoosting (flexible)**.
    hits the **oracle** too — so it is the **flexible-Q × positivity interaction**,
    not high-dimensionality per se. The embedding's role in the real case is to
    *create* the severe positivity (near-perfect propensity separation).
-4. **Cheap positivity fixes are insufficient** — trimming helps only marginally and
-   raw overlap/ATO is biased the other way (not outcome-adjusted).
+4. **Tier-1 partial, tier-2 recovers.** Augmented **DR-ATO** (`dr_ato_W`,
+   positivity-robust, ATO≠ATE) ~halves the bias; the **prognostic-score reduction**
+   (`prog_score_W`, tier-2) *largely recovers* the effect — because the prognostic
+   score (control-outcome surface, Hansen 2008) is a balancing score that is **not
+   treatment-degenerate**, unlike the propensity score, which *is* the positivity
+   direction and so cannot escape the trap.
 
 ## What this scopes for #206 (out of scope here)
 
-The reduction/estimand fixes that *might* recover a valid target: augmented DR-ATO,
-sufficient-dimension-reduction to a low-dim **sufficient confounder** (propensity +
-prognostic score / SDR / learned bottleneck), with the open validity question of not
-dropping a confounding direction. Plus the honest ceiling: under genuine
+Remaining: characterize *when* prognostic sufficiency holds vs. when a joint
+(prognostic + a non-degenerate confounding direction) is needed; a proper SDR of the
+confounding subspace; and real-8B validation. Plus the honest ceiling: under genuine
 near-determinism there is no overlap and the ATE is unrecoverable — only a restricted
 estimand (ATO/local) is identified.
 

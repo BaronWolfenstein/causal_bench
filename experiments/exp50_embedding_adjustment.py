@@ -43,12 +43,12 @@ def run(*, n=2500, n_reps=12, seed=0):
 
 
 def _table(rows) -> list[str]:
-    hdr = f"  {'conf':>5} {'frac_ext':>8} {'oracle':>8} {'naive_W':>8} {'trimmed':>8} {'ato':>8}"
+    hdr = f"  {'conf':>5} {'frac_ext':>8} {'oracle':>8} {'naive_W':>8} {'dr_ato':>8} {'prog_sc':>8}"
     lines = [hdr, "  " + "-" * (len(hdr) - 2)]
     for r in rows:
         lines.append(f"  {r['conf']:>5.1f} {r['frac_extreme']:>8.2f} "
                      f"{r['oracle_Ustar']:>+8.3f} {r['naive_fullW']:>+8.3f} "
-                     f"{r['trimmed_W']:>+8.3f} {r['ato_W']:>+8.3f}")
+                     f"{r['dr_ato_W']:>+8.3f} {r['prog_score_W']:>+8.3f}")
     return lines
 
 
@@ -60,8 +60,10 @@ def report(res) -> str:
     lines += _table(res["linear_control"])
     lines += ["",
               "Read: flexible-Q attenuates toward null, monotone in positivity, even for the",
-              "oracle; linear control does not; conf=0 unbiased. Cheap positivity fixes",
-              "(trimmed, raw ATO) do not fully recover -> see issue #206 (sufficient-confounder SDR)."]
+              "oracle; linear control does not; conf=0 unbiased. dr_ato (tier-1, positivity-robust)",
+              "~halves the bias; prog_score (tier-2, prognostic-score reduction) LARGELY RECOVERS",
+              "-- the propensity direction can't escape positivity but the prognostic score can.",
+              "See issue #206."]
     return "\n".join(lines)
 
 
