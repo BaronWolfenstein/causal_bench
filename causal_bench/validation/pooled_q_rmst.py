@@ -136,9 +136,12 @@ def borrowing(thrs=(1.0, 1.4, 1.8), n=1500, n_reps=40, horizon=2.0, n_grid=20, s
 
 def non_ph_nuisance(n=4000, n_reps=15, horizon=2.0, n_grid=20, seed=2000):
     """Finding (C): logistic vs RP-spline nuisance under crossing hazards. RP rows are
-    empty (skipped) when rpy2/flexsurv is unavailable."""
-    from causal_bench.estimators.rp_spline_nuisance import _flexsurv_available
-    have_rp = _flexsurv_available()
+    empty (skipped) only when NEITHER backend (flexsurv/R or lifelines/Python) is
+    available; the pure-Python lifelines backend keeps the RP row alive R-free."""
+    from causal_bench.estimators.rp_spline_nuisance import (
+        _flexsurv_available, _lifelines_available,
+    )
+    have_rp = _flexsurv_available() or _lifelines_available()
     rows = []
     for nz in (["logistic", "rp_spline"] if have_rp else ["logistic"]):
         errs = {0: [], 1: []}
