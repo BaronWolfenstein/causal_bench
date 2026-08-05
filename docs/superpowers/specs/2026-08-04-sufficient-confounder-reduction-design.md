@@ -22,10 +22,13 @@ on real embeddings, handles effect modification, and escapes the positivity trap
 balancing score (no ATO needed on this cohort). The SIR/SAVE-SDR is retained only as the
 linear-regime method; the ATO-on-φ positivity response composes on top of *any* reduction when the
 positivity axis bites. The one role no reduction handles is a Y-predictive collider (estimand-side
-discipline). **Remaining:** the formal causal-sufficiency theory. (The nonlinear-SDR salvage was
-tested exhaustively — RKS kernel SDR plateaus at +0.24, a learned MLP bottleneck reaches +0.16,
-neither matching the double-score's +0.02 — so the "general reduction" resolves to the double-score
-rather than remaining an open salvage.)
+discipline). **Remaining:** essentially nothing on the core — the **causal-sufficiency theory is now
+resolved** (Validity theory section: the PO-surface pair is the *minimal* ATE-sufficient reduction,
+with a proof, the effect-modification boundary, and the positivity-escape characterization; grounded
+by the oracle-surface check). The nonlinear-SDR salvage was also tested exhaustively — RKS kernel
+plateaus at +0.24, a learned MLP bottleneck reaches +0.16, neither matching the double-score's +0.02
+— so the "general reduction" resolves to the double-score. What is left is write-up + external
+review, not open research.
 
 ## Motivation
 
@@ -258,15 +261,65 @@ did not beat the direct double-score.
    determinism to preserve overlap). Bridges to the deferred learned-latent branch but is
    adjustment-set-only.
 
-## Validity theory (the open core — the paper's contribution)
+## Validity theory (resolved — why the PO-surface pair is the right reduction)
 
-- Formalize **causal sufficiency** of a reduction `φ` and give conditions under which each
-  candidate yields a valid back-door set.
-- Characterize the **positivity-escape** property: which directions must be *excluded* (the
-  propensity-degenerate ones) and why the prognostic/double-score constructions do so.
-- State the **effect-modification boundary**: exactly when a single prognostic score
-  suffices vs. when the double-score / SDR reduction is required (the boundary sweep is the
-  empirical anchor).
+The real-8B result reframed the question from "which reduction" to "why is the pair of
+potential-outcome surfaces the right sufficient statistic". Here is the answer.
+
+**Setup.** Observed `(W, A, Y)` with potential outcomes `Y(0), Y(1)`, `Y = Y(A)`. Assume
+**unconfoundedness given `W`**: `{Y(0), Y(1)} ⊥ A | W`. Overlap on `W` may *fail* — that is the
+positivity trap. Write the outcome surfaces `b_a(W) := E[Y(a)|W] = E[Y|A=a, W]` (equality by
+unconfoundedness), the CATE `τ(W) := b₁(W) − b₀(W)`, and the **double-score**
+`φ*(W) := (b₀(W), b₁(W))`. Call a reduction `φ` **ATE-sufficient** if the g-formula computed on
+`φ` returns `E[Y(1) − Y(0)]`.
+
+**Proposition 1 (the double-score is ATE-sufficient).** Under unconfoundedness,
+`E_{φ*}[ E[Y|A=1, φ*] − E[Y|A=0, φ*] ] = E_W[b₁(W) − b₀(W)] = ATE`.
+*Proof.* `b₁(W)` is a coordinate of `φ*(W)`, hence `σ(φ*)`-measurable, so within a stratum
+`φ*=(v₀,v₁)` it is degenerate at `v₁`. By unconfoundedness `E[Y|A=1,W] = b₁(W)`, and conditioning
+further on the coarser `φ*` (a function of `W`) gives `E[Y|A=1, φ*=v] = E[b₁(W)|A=1, φ*=v] = v₁`;
+symmetrically `E[Y|A=0, φ*=v] = v₀`. The g-formula on `φ*` is therefore `E[v₁ − v₀] = ATE`. ∎
+
+**The structural reason (why the *pair*).** The ATE identifying functional
+`ψ = E_W[b₁(W) − b₀(W)]` depends on `W` **only through `(b₀(W), b₁(W))`**. So the pair is a
+*sufficient statistic* for `ψ`, and it is **minimal among outcome reductions**: the integrand is
+exactly `b₁ − b₀`, so any `φ` that fails to retain both surfaces (up to their difference) drops
+information about `τ(W)` that `E[τ(W)]` needs.
+
+**Proposition 2 (effect-modification boundary).** The prognostic score alone, `φ = b₀(W)`, is
+ATE-sufficient **iff** the effect is `W`-a.s. constant (`b₁ = b₀ + τ`). *Proof.* If `b₁ = b₀ + τ`,
+`φ = b₀` pins `b₁` up to the constant → sufficient. If `τ(W)` is non-degenerate, `b₁` is not
+`σ(b₀)`-measurable, so two DGPs sharing `b₀` but differing in `τ(W)` are indistinguishable from
+`φ = b₀` yet have different ATEs → not sufficient. ∎ (Numerically confirmed: adjusting for the
+*true* `(b₀, b₁)` recovers the ATE at every γ, |bias| ≤ 0.04; the true `b₀` alone recovers at γ=0
+but biases −0.46 at γ=2 and −0.93 at γ=4.)
+
+**Positivity-escape.** Let `T` be the directions of `W` that drive `A` but leave `(b₀, b₁)`
+invariant. If the near-determinism of `A` is carried by `T` (the propensity degenerates only along
+outcome-irrelevant directions), then `e(φ*) = E[e(W) | φ*]` averages over `T` and is bounded away
+from `{0,1}` even when `e(W)` is not. The double-score is a *prognostic* (outcome-model) balancing
+score, so it can discard `T`; the **propensity score cannot** — it *is* a maximal function of `T`,
+the degenerate direction itself. **Caveat (causal-role):** this requires the outcome-relevant
+directions to be confounders, not Y-predictive colliders — a collider enters `(b₀, b₁)` and reopens
+the M-bias path, undetectable by any reduction (the estimand-side residual; see the stress-test).
+
+**Why explicit dimension reduction underperforms (predictive ≠ causal sufficiency).** SIR/SAVE
+recover the *central subspace* of `E[Y|W]` (or `E[A|W]`) — **predictive** sufficiency for the pooled
+outcome — which is neither necessary nor sufficient for retaining `(b₀, b₁)`: (i) it pools arms, so
+it targets one surface not the pair, and the CATE direction can be a weak predictor of pooled `Y`
+and be missed (arm-stratification / SAVE is the patch); (ii) it is a *linear* subspace, while `b_a`
+are nonlinear on a real embedding — hence the real-8B failure. The double-score fits `b₀, b₁`
+*directly* with a flexible learner: it is the plug-in estimator of the minimal sufficient statistic
+itself, so there is nothing to reduce *to* beyond it, and any indirect approximation can only lose.
+The monotone real-8B ladder (SIR/SAVE +0.70 → RKS +0.24 → learned bottleneck +0.16 → double-score
++0.02) is the signature — increasing flexibility approaches, never beats, the direct fit.
+
+**Corollary (the thesis).** The "sufficient reduction for embedding adjustment" problem has a closed
+answer: the minimal causally-sufficient reduction for the ATE is the pair of potential-outcome
+surfaces, estimated directly (the double-score). Explicit SDR is unnecessary. The contributions are
+(a) identifying that the *outcome-surface pair* — not the propensity, not a learned subspace — is the
+right object and why, (b) the positivity-escape characterization, and (c) the causal-role boundary
+(colliders defeat every reduction).
 
 ## Positivity handling
 
@@ -295,9 +348,11 @@ identified target otherwise.
 
 ## Deliverables & venue
 
-Method(s) + validity theory + the exp50-extension experiment → **CLeaR** (dedicated
-causality conference) or a **CHIL** main-track paper. The workshop note (ML4H/CHIL/causal
-workshop) is the current result; this spec is the completing research.
+Method + validity theory + the exp50-extension experiment + real-8B validation → **CLeaR**
+(dedicated causality conference) or a **CHIL** main-track paper. All three legs now exist: the
+resolved method (double-score), the sufficiency theory (Validity section), and the real-clinical-FM
+demonstration with an informative negative result on the elaborate alternatives. What remains is the
+write-up, not the research.
 
 ## Prior art
 
