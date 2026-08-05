@@ -118,6 +118,16 @@ def test_causal_role_stress():
     assert abs(col["oracle_U"]) < 0.25
 
 
+def test_role_detection_catches_what_the_reduction_misses():
+    """The estimand-side DETECTION layer (zero_flow_ci / Markov blanket) flags the roles the
+    reduction is fooled by, on named variables: the MB pulls in the collider (MB != adjustment
+    set), and the v-structure signature detects the instrument-at-collider (A collider of Zi,U1)."""
+    from causal_bench.validation.embedding_positivity import role_detection
+    d = role_detection(n=1500, n_reps=3, seed=0, n_perm=50)
+    assert d["collider_in_mb"] >= 0.6          # MB is fooled -- it pulls the collider in
+    assert d["vstructure_detected"] >= 0.6     # the CI oracle orients the v-structure
+
+
 def test_oracle_double_score_is_ate_sufficient():
     """Grounds the sufficiency theory (spec Validity section, Props 1-2): adjusting for the TRUE
     potential-outcome surfaces (b0, b1) recovers the ATE under effect modification, while the true

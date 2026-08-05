@@ -234,6 +234,29 @@ stays an assumption managed on the estimand side. That is what separates the emb
 decoded-patient inference (where the DAG makes role-selection explicit) and bounds the claim to
 "as-valid-as-the-reduction-plus-estimand-discipline", not unconditional.
 
+### Detection layer — the estimand-side discipline, made concrete
+
+"Managed on the estimand side" is not hand-waving: causal_bench's own CI machinery
+(`detectors.zero_flow_ci`: the zero-flow CI test + `markov_blanket`; `validation.causal_discovery`:
+PC skeleton + `orient_colliders`) can flag the roles the reduction is blind to — **on named
+variables**. `role_detection` runs it on the stress-test's named roles (n=2500):
+
+- **`markov_blanket(Y)` pulls in the collider `Cm` in 100% of runs** (and the instrument `Zi`). The
+  MB is a *prediction* object — parents ∪ children ∪ spouses — so adjusting for it *introduces*
+  collider/M-bias. This is the concrete demonstration that **MB ≠ back-door adjustment set**: the
+  blanket is *fooled* exactly as it should be.
+- **The v-structure signature *catches* it: `Zi ⟂ U1` marginally but `Zi ⟂̸ U1 | A`** (detected in
+  83% of runs) orients `A` as a collider of the instrument and confounder. The CI *oracle* — used
+  for orientation, not blanket-adjustment — flags the structure the reduction cannot.
+
+So the discipline layer **catches what the reduction misses, where the variables are named**. Two
+honest bounds remain: (i) the M-bias collider `Cm` has *hidden* parents (`Ha, Hy`), so orienting
+*it* needs FCI-with-latents (the harder case `causal_discovery` already flags) — this layer flags
+the instrument v-structure cleanly and shows MB is fooled; (ii) on the **raw dense embedding there
+are no named variables to test**, so detection genuinely cannot run there. That, not a blanket
+"unverifiable", is the true residual — and it motivates keeping roles *named* (semi-synthetic
+injection, or derived interpretable directions) wherever a collider audit is needed.
+
 ## Candidate methods (to evaluate)
 
 **Ranking by evidence (synthetic + real-8B).** The **double-score is the recommendation.** On the
