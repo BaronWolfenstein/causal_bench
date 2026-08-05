@@ -47,6 +47,9 @@ python meds_gen_test.py --gen_model <E_gen> --eval_model <E_eval>
 # 4. Causal panels (honest): support-vs-confounding two-panel, and the real-machinery probe:
 python payoff_v6.py   # Panel A augmentation (support) + Panel B QBA (confounding)
 python payoff_v7.py   # cross-fit SuperLearner AIPW/TMLE on the embedding
+
+# 5. The fix, validated on the real encoder: the outcome-surface (double-score) reduction
+OMP_NUM_THREADS=4 python payoff_v9.py   # naive/oracle/prog/double/sdr/sdr_ato, cross-fit DML
 ```
 
 ## What each piece shows
@@ -58,19 +61,23 @@ python payoff_v7.py   # cross-fit SuperLearner AIPW/TMLE on the embedding
 | `meds_gen_test.py` | the CausalLM is **encode-only** — direct MEDS generation degenerates; generation lives in the Flow Expander |
 | `payoff_v6.py` | **generation fixes *support*** (augmentation cuts sparse-region bias); **QBA bounds *confounding*** (mechanism) |
 | `payoff_v7.py` | the **adjustment-set frontier**: adjusting for the raw embedding attenuates the effect toward null even with cross-fit doubly-robust estimators + the confounder measured |
+| `payoff_v9.py` | **the fix on the real encoder**: the **double-score** (two outcome surfaces) recovers a −1.22 effect to **+0.02 bias** where naïve/oracle attenuate 70–80%; sophisticated reductions (SIR/SAVE-SDR +0.70, RKS kernel +0.24, learned MLP bottleneck +0.16) **all underperform the simple double-score** |
 
 ## The causal frontier (self-contained, no 8B needed)
 
-The `payoff_v7` finding is reproduced and *scoped* in a controlled synthetic
+The `payoff_v7`/`payoff_v9` findings are reproduced and *scoped* in a controlled synthetic
 experiment that runs anywhere:
 
 ```bash
-python -m experiments.exp50_embedding_adjustment
+python -m experiments.exp50_embedding_adjustment   # 1-D positivity + 2-D EM×positivity frontier + role stress-test
 python -m pytest tests/test_embedding_positivity.py
 ```
 
-Read-out: a high-fidelity embedding induces a **positivity trap**; a flexible outcome
-model then attenuates the effect. **Fixes:** augmented DR-ATO ~halves the bias
-(positivity-robust, ATO≠ATE); the **prognostic-score reduction largely recovers** the
-effect (the prognostic score is a balancing score that isn't treatment-degenerate,
-unlike the propensity score). Tracked in issue #206.
+Read-out: a high-fidelity embedding induces a **positivity trap**; a flexible outcome model
+then attenuates the effect. **Fix:** adjust for the **outcome surfaces** — the prognostic
+score, or its two-arm form the **double-score** — balancing scores that aren't
+treatment-degenerate (unlike the propensity, which *is* the positivity direction). The
+key real-8B lesson (payoff_v9): the double-score already **is** the minimal outcome-sufficient
+reduction, so explicit dimension reduction (SDR / kernel / learned bottleneck) adds complexity
+without benefit — they win on a *linear* synthetic embedding but lose on the real *nonlinear*
+one. Augmented DR-ATO composes on top when positivity bites. Tracked in issue #206.

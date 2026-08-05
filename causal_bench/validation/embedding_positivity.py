@@ -31,19 +31,125 @@ from __future__ import annotations
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.model_selection import KFold
 
 _CLIP = (0.02, 0.98)
 
 
-def simulate(n, d=50, fidelity=6.0, conf=3.0, tau=1.0, seed=0):
+def _make_reg(flex):
+    if flex:
+        return HistGradientBoostingRegressor(max_iter=100, max_leaf_nodes=15,
+                                             learning_rate=0.1, random_state=0)
+    return Ridge(alpha=1.0)
+
+
+_EM_DIR = np.array([0.6, 0.8])       # confounder loading `d` of the effect modifier (unit norm)
+
+
+def simulate(n, d=50, fidelity=6.0, conf=3.0, tau=1.0, gamma=0.0, seed=0):
+    """Low-dim confounder ``Ustar`` -> high-dim encoding ``W``; ``conf`` sets positivity
+    severity. ``gamma`` sets EFFECT MODIFICATION: the per-unit effect is
+    ``tau_i = tau * (1 + gamma * (Ustar @ d))`` (gamma=0 -> constant effect, the exp50
+    default). Under effect modification the ATE is the mean of ``tau_i`` and a single
+    prognostic score no longer suffices -- the reason to reach for the double-score / SDR
+    reduction. ``true_ate`` is returned because with gamma!=0 it is no longer just ``tau``."""
     rng = np.random.default_rng(seed)
     Ustar = rng.normal(size=(n, 2))
     e = 1.0 / (1.0 + np.exp(-conf * (Ustar @ np.array([1.3, -1.0]))))
     A = (rng.random(n) < e).astype(float)
-    Y = tau * A + Ustar @ np.array([1.5, 1.0]) + rng.normal(size=n)
+    tau_i = tau * (1.0 + gamma * (Ustar @ _EM_DIR))
+    Y = tau_i * A + Ustar @ np.array([1.5, 1.0]) + rng.normal(size=n)
     B = rng.normal(size=(2, d)) / np.sqrt(2)
     W = Ustar @ B + (1.0 / fidelity) * rng.normal(size=(n, d))
-    return dict(W=W, Ustar=Ustar, A=A, Y=Y, e_true=e, tau=float(tau))
+    return dict(W=W, Ustar=Ustar, A=A, Y=Y, e_true=e, tau=float(tau),
+                tau_i=tau_i, true_ate=float(np.mean(tau_i)))
+
+
+def simulate_roles(n, d=50, fidelity=6.0, conf=2.0, tau=1.0, inst=0.0, collider=0.0,
+                   unmeasured=0.7, seed=0):
+    """Causal-role stress-test DGP. The embedding encodes THREE pre-treatment directions with
+    different causal roles (all legitimately baseline, so baseline-restriction does not exclude
+    them):
+
+      * confounder  U   -> A and Y   (must adjust)
+      * instrument  Zi  -> A only     (adjusting AMPLIFIES bias from the unmeasured confounder
+                                       Uh; the outcome-targeted reduction should DROP it)
+      * M-bias collider Cm <- Ha, Hy  where Ha -> A and Hy -> Y are hidden; Cm is a PRE-treatment
+                                       collider. Adjusting for Cm opens the Ha--Hy path (M-bias);
+                                       Cm predicts Y (through Hy) so it SURVIVES outcome-targeting
+                                       -> the reduction is FOOLED.
+
+    Only U, Zi, Cm are encoded in W (Uh, Ha, Hy are unmeasured). `inst` and `collider` switch the
+    bad roles on. Estimand = tau (constant effect here, to isolate the role mechanisms)."""
+    rng = np.random.default_rng(seed)
+    U = rng.normal(size=(n, 2))                              # confounder (measured, in W)
+    Uh = rng.normal(size=n)                                  # unmeasured confounder -> A, Y
+    Zi = rng.normal(size=n)                                  # instrument -> A only (in W)
+    Ha = rng.normal(size=n)                                  # hidden M-bias parent -> A
+    Hy = rng.normal(size=n)                                  # hidden M-bias parent -> Y
+    Cm = 0.9 * Ha + 0.9 * Hy + 0.4 * rng.normal(size=n)      # pre-treatment collider (in W)
+
+    logitA = conf * (U @ np.array([1.3, -1.0])) + unmeasured * Uh + inst * Zi + collider * Ha
+    A = (rng.random(n) < 1.0 / (1.0 + np.exp(-logitA))).astype(float)
+    Y = tau * A + U @ np.array([1.5, 1.0]) + unmeasured * Uh + collider * Hy + rng.normal(size=n)
+
+    feats = np.column_stack([U, Zi, Cm])                     # only pre-treatment MEASURED roles
+    B = rng.normal(size=(feats.shape[1], d)) / np.sqrt(feats.shape[1])
+    W = feats @ B + (1.0 / fidelity) * rng.normal(size=(n, d))
+    return dict(W=W, Ustar=U, A=A, Y=Y, tau=float(tau), true_ate=float(tau))
+
+
+_ROLE_SCENARIOS = {"base": dict(inst=0.0, collider=0.0),
+                   "+instrument": dict(inst=3.0, collider=0.0),
+                   "+collider": dict(inst=0.0, collider=1.3)}
+_ROLE_METHODS = ("oracle_U", "naive_fullW", "prog", "double", "sdr")
+
+
+def role_stress_rows(n=3000, n_reps=12, seed=0, flex=True, crossfit=True, n_folds=5,
+                     conf=1.5, unmeasured=0.4):
+    """Does the outcome-targeted reduction handle each pre-treatment causal ROLE? Compares the
+    oracle (adjust the true confounder U only), naive (full embedding), and the prognostic /
+    double-score / arm-stratified-SDR reductions. Reports bias vs the true ATE AND the excess
+    over the oracle (`*_excess`) -- the extra bias from using the embedding vs the correct
+    adjustment set, which nets out the common unmeasured-confounder baseline.
+
+      base        -> all reductions ~ oracle (small excess): sanity.
+      +instrument -> a strong instrument leaks into the ARM-CONDITIONAL surfaces (conditioning
+                     on A opens the Zi--U collider path), so the prognostic / double-score reductions
+                     pick up excess bias; naive and the moment-based SDR are less affected. An honest
+                     caution -- outcome-surface reductions are not automatically instrument-proof.
+      +collider   -> a pre-treatment M-bias collider Cm predicts Y, so it SURVIVES outcome-targeting:
+                     naive AND every reduction are biased (large negative excess); only the oracle,
+                     which never adjusts Cm, is clean. The reduction is a not de-biasing wand --
+                     estimand-side discipline (baseline restriction / FCI / M-bias sensitivity) is
+                     the recourse. See project_collider_estimand_discipline."""
+    def point(X, s):
+        if crossfit:
+            return _crossfit_ic(X, s["A"], s["Y"], _fit_identity, flex=flex, n_folds=n_folds, seed=seed)[0]
+        return _aipw(X, s["A"], s["Y"], flex=flex)
+
+    def reduced(s, fitter):
+        if crossfit:
+            return _crossfit_ic(s["W"], s["A"], s["Y"], fitter, flex=flex, n_folds=n_folds, seed=seed)[0]
+        phi = fitter(s["W"], s["A"], s["Y"], flex)(s["W"])
+        return _aipw(phi, s["A"], s["Y"], flex=flex)
+
+    rows = []
+    for name, kw in _ROLE_SCENARIOS.items():
+        acc = {m: [] for m in _ROLE_METHODS}
+        for r in range(n_reps):
+            s = simulate_roles(n, conf=conf, unmeasured=unmeasured, seed=seed + r, **kw)
+            acc["oracle_U"].append(point(s["Ustar"], s))
+            acc["naive_fullW"].append(point(s["W"], s))
+            acc["prog"].append(reduced(s, _fit_prognostic_map))
+            acc["double"].append(reduced(s, _fit_double_score_map))
+            acc["sdr"].append(reduced(s, _fit_sdr_map))
+        bias = {m: float(np.mean(acc[m]) - 1.0) for m in _ROLE_METHODS}
+        row = {"scenario": name, **bias}
+        for m in _ROLE_METHODS:
+            row[f"{m}_excess"] = bias[m] - bias["oracle_U"]
+        rows.append(row)
+    return rows
 
 
 def _propensity(W, A):
@@ -104,6 +210,195 @@ def _prognostic_aipw(W, A, Y, flex=True):
     return _aipw(prog[:, None], A, Y, flex=flex)
 
 
+# ---------------------------------------------------------------------------
+# Effect-modification reductions + interval coverage (the SDR-spec frontier).
+# These return (point, se) so the 2-D sweep can report coverage. The 1-D conf
+# path above (floats) is unchanged.
+# ---------------------------------------------------------------------------
+
+def _aipw_ci(X, A, Y, flex=True, e=None):
+    """AIPW point estimate + influence-function SE (for interval coverage)."""
+    e = _propensity(X, A) if e is None else e
+    Q1, Q0 = _q_predict(X, A, Y, flex)
+    QA = A * Q1 + (1 - A) * Q0
+    H = A / e - (1 - A) / (1 - e)
+    ic = Q1 - Q0 + H * (Y - QA)
+    psi = float(np.mean(ic))
+    se = float(np.std(ic - psi, ddof=1) / np.sqrt(len(A)))
+    return psi, se
+
+
+def _prognostic_ci(W, A, Y, flex=True):
+    return _aipw_ci(_prognostic_score(W, A, Y, flex)[:, None], A, Y, flex=flex)
+
+
+def _double_score(W, A, Y, flex):
+    """The two potential-outcome surfaces (E[Y|A=0,W], E[Y|A=1,W]) as a 2-D balancing
+    score. Captures the CATE -- hence effect modification -- that the 1-D prognostic
+    (control surface only) cannot. Each arm fit on its own subjects, predicted for all."""
+    def fit(Wa, Ya):
+        if flex:
+            return HistGradientBoostingRegressor(max_iter=100, max_leaf_nodes=15,
+                                                 learning_rate=0.1, random_state=0).fit(Wa, Ya)
+        return Ridge(alpha=1.0).fit(Wa, Ya)
+    m0 = fit(W[A == 0], Y[A == 0])
+    m1 = fit(W[A == 1], Y[A == 1])
+    return np.column_stack([m0.predict(W), m1.predict(W)])
+
+
+def _double_score_aipw(W, A, Y, flex=True):
+    return _aipw_ci(_double_score(W, A, Y, flex), A, Y, flex=flex)
+
+
+# ---- Sufficient-dimension reduction (SIR + SAVE) of the OUTCOME subspace ----
+# Target the subspace relevant to Y (prognostic + effect-modification directions), NOT
+# the propensity: the propensity direction IS the positivity direction, so an A-targeted
+# reduction would re-import the trap. This is the causal-vs-predictive-sufficiency
+# discipline -- reduce toward OUTCOME-sufficiency, then adjust.
+
+def _whiten(W):
+    Wc = W - W.mean(0)
+    Sigma = np.cov(Wc, rowvar=False) + 1e-6 * np.eye(W.shape[1])
+    vals, vecs = np.linalg.eigh(Sigma)
+    inv_half = vecs @ np.diag(1.0 / np.sqrt(np.maximum(vals, 1e-12))) @ vecs.T
+    return Wc @ inv_half
+
+
+def _sir_dirs(Z, resp, H=10):
+    n, p = Z.shape
+    M = np.zeros((p, p))
+    for b in np.array_split(np.argsort(resp), H):
+        zbar = Z[b].mean(0)
+        M += (len(b) / n) * np.outer(zbar, zbar)
+    _, vecs = np.linalg.eigh(M)
+    return vecs[:, ::-1]                       # columns = directions, desc eigenvalue
+
+
+def _save_dirs(Z, resp, H=10):
+    n, p = Z.shape
+    M = np.zeros((p, p))
+    for b in np.array_split(np.argsort(resp), H):
+        C = np.cov(Z[b], rowvar=False) if len(b) > 1 else np.eye(p)
+        D = np.eye(p) - C
+        M += (len(b) / n) * (D @ D)
+    _, vecs = np.linalg.eigh(M)
+    return vecs[:, ::-1]
+
+
+def _sdr_reduce(W, A, Y, k=2, use_save=True):
+    """Arm-stratified central-subspace reduction of the outcome surfaces. Fitting SIR/SAVE
+    on the POOLED Y contaminates the subspace with the treatment signal (Y contains the
+    tau*A term, and A is confounded), which re-imports the propensity direction and biases
+    the adjustment. Instead we estimate the central subspace WITHIN each arm and union them:
+    the A=0 fit is the prognostic subspace (Hansen-style balancing score), the A=1 fit adds
+    the effect-modification directions -- the linear-reduction analog of the double-score.
+    SIR gives first-moment (prognostic) directions; SAVE adds a second-moment direction.
+    Returns phi(W) = whitened W projected onto the combined orthonormal subspace."""
+    Z = _whiten(W)
+    dirs = []
+    for a in (0.0, 1.0):
+        m = A == a
+        dirs.extend(_sir_dirs(Z[m], Y[m]).T[:k])
+        if use_save:
+            dirs.append(_save_dirs(Z[m], Y[m]).T[0])
+    D, _ = np.linalg.qr(np.column_stack(dirs))   # orthonormalize the unioned subspace
+    return Z @ D
+
+
+def _sdr_aipw(W, A, Y, flex=True, k=2):
+    return _aipw_ci(_sdr_reduce(W, A, Y, k=k), A, Y, flex=flex)
+
+
+def _sdr_ato(W, A, Y, flex=True, k=2):
+    """Positivity RESPONSE on the reduced set: overlap-weighted (ATO) adjustment on the
+    SDR subspace. Where the outcome-relevant subspace still contains the positivity
+    direction (severe conf), the ATE on phi is not identified; overlap weighting targets
+    the identified ATO instead (== ATE under a constant effect). Combine the reduction
+    with this, reporting ATO != ATE, per the spec's positivity handling."""
+    return _dr_ato(_sdr_reduce(W, A, Y, k=k), A, Y, flex=flex)
+
+
+# ---------------------------------------------------------------------------
+# Cross-fit (DML) versions for VALID interval coverage. The reduction map is a
+# nuisance too, so it is fit out-of-fold alongside the propensity and outcome
+# models; the influence function is then evaluated only on held-out folds.
+# Each fitter takes training data and returns an apply-map W -> phi.
+# ---------------------------------------------------------------------------
+
+def _fit_identity(Wtr, Atr, Ytr, flex):
+    return lambda W: W
+
+
+def _fit_prognostic_map(Wtr, Atr, Ytr, flex):
+    m = _make_reg(flex).fit(Wtr[Atr == 0], Ytr[Atr == 0])
+    return lambda W: m.predict(W)[:, None]
+
+
+def _fit_double_score_map(Wtr, Atr, Ytr, flex):
+    m0 = _make_reg(flex).fit(Wtr[Atr == 0], Ytr[Atr == 0])
+    m1 = _make_reg(flex).fit(Wtr[Atr == 1], Ytr[Atr == 1])
+    return lambda W: np.column_stack([m0.predict(W), m1.predict(W)])
+
+
+def _fit_sdr_map(Wtr, Atr, Ytr, flex, k=2, use_save=True):
+    """Fit the arm-stratified SIR+SAVE reduction on training data; return the apply-map
+    that whitens with the TRAIN moments and projects onto the TRAIN directions."""
+    mu = Wtr.mean(0)
+    Sigma = np.cov(Wtr - mu, rowvar=False) + 1e-6 * np.eye(Wtr.shape[1])
+    vals, vecs = np.linalg.eigh(Sigma)
+    inv_half = vecs @ np.diag(1.0 / np.sqrt(np.maximum(vals, 1e-12))) @ vecs.T
+    Ztr = (Wtr - mu) @ inv_half
+    dirs = []
+    for a in (0.0, 1.0):
+        m = Atr == a
+        dirs.extend(_sir_dirs(Ztr[m], Ytr[m]).T[:k])
+        if use_save:
+            dirs.append(_save_dirs(Ztr[m], Ytr[m]).T[0])
+    D, _ = np.linalg.qr(np.column_stack(dirs))
+    return lambda W: ((W - mu) @ inv_half) @ D
+
+
+def _crossfit_ic(W, A, Y, reduce_fit, flex=True, n_folds=5, seed=0, ato=False):
+    """Cross-fit AIPW on a fitted reduction: nuisances and the reduction map are trained
+    out-of-fold, the influence function evaluated on the held-out fold. Returns (point, se)
+    with a DML-valid SE. ato=True targets the overlap-weighted ATO (a ratio estimand)."""
+    n = len(A)
+    ic = np.zeros(n)
+    num = np.zeros(n)
+    den = np.zeros(n)
+    for tr, te in KFold(n_splits=n_folds, shuffle=True, random_state=seed).split(W):
+        phi = reduce_fit(W[tr], A[tr], Y[tr], flex)
+        Ptr, Pte = phi(W[tr]), phi(W[te])
+        Ptr = Ptr if Ptr.ndim > 1 else Ptr[:, None]
+        Pte = Pte if Pte.ndim > 1 else Pte[:, None]
+        e = np.clip(LogisticRegression(max_iter=2000).fit(Ptr, A[tr]).predict_proba(Pte)[:, 1], *_CLIP)
+        Qm = _make_reg(flex).fit(np.column_stack([A[tr], Ptr]), Y[tr])
+        m = len(te)
+        Q1 = Qm.predict(np.column_stack([np.ones(m), Pte]))
+        Q0 = Qm.predict(np.column_stack([np.zeros(m), Pte]))
+        QA = A[te] * Q1 + (1 - A[te]) * Q0
+        if ato:
+            h = e * (1 - e)
+            num[te] = h * (Q1 - Q0) + A[te] * (1 - e) * (Y[te] - Q1) - (1 - A[te]) * e * (Y[te] - Q0)
+            den[te] = h
+        else:
+            H = A[te] / e - (1 - A[te]) / (1 - e)
+            ic[te] = Q1 - Q0 + H * (Y[te] - QA)
+    if ato:
+        psi = float(num.sum() / den.sum())
+        ic = (num - psi * den) / den.mean()          # ratio-estimator IF
+        return psi, float(np.std(ic, ddof=1) / np.sqrt(n))
+    psi = float(np.mean(ic))
+    return psi, float(np.std(ic - psi, ddof=1) / np.sqrt(n))
+
+
+def _frac_extreme_on(X, A, clip_lo=0.05):
+    """Positivity diagnostic on a (reduced) adjustment set: fraction with estimated
+    propensity outside [clip_lo, 1-clip_lo]. Small on a positivity-escaping reduction."""
+    e = _propensity(X if X.ndim > 1 else X[:, None], A)
+    return float(np.mean((e < clip_lo) | (e > 1 - clip_lo)))
+
+
 def one_rep(n, d, fidelity, conf, tau, seed, flex=True):
     s = simulate(n, d=d, fidelity=fidelity, conf=conf, tau=tau, seed=seed)
     W, A, Y, U = s["W"], s["A"], s["Y"], s["Ustar"]
@@ -129,4 +424,59 @@ def report_rows(n=2500, d=50, fidelity=6.0, tau=1.0, n_reps=12,
             fe.append(res["frac_extreme"])
         rows.append({"conf": conf, "frac_extreme": float(np.mean(fe)),
                      **{m: float(np.nanmean(acc[m])) for m in methods}})
+    return rows
+
+
+def _bias_cov(points, ses, truth):
+    p, s = np.asarray(points), np.asarray(ses)
+    bias = float(np.mean(p - truth))
+    cov = float(np.mean((p - 1.96 * s <= truth) & (truth <= p + 1.96 * s)))
+    return bias, cov
+
+
+def report_rows_2d(n=2000, d=50, fidelity=6.0, tau=1.0, n_reps=15,
+                   gammas=(0.0, 2.0, 4.0), confs=(1.0, 3.0), flex=True, seed=0,
+                   crossfit=True, n_folds=5):
+    """The SDR-spec 2-D frontier: effect-modification (gamma) x positivity-severity (conf).
+    Reports bias AND 95%-interval coverage for {naive, prognostic, double-score, SDR, and the
+    ATO-on-phi response}, plus positivity diagnostics (fraction of near-deterministic
+    propensities on the full embedding vs the SDR-reduced set). Estimand = tau (the effect
+    modifier is mean-zero, so the population ATE stays tau for every gamma).
+
+    crossfit=True (default) fits the nuisances AND the reduction map out-of-fold (DML), so the
+    interval coverage is valid; crossfit=False uses the faster in-sample IF (optimistic SE)."""
+    maps = {"naive_fullW": _fit_identity, "prog_score": _fit_prognostic_map,
+            "double_score": _fit_double_score_map, "sdr": _fit_sdr_map}
+
+    def estimate(s, fitter, ato=False):
+        if crossfit:
+            return _crossfit_ic(s["W"], s["A"], s["Y"], fitter, flex=flex,
+                                n_folds=n_folds, seed=seed, ato=ato)
+        phi = fitter(s["W"], s["A"], s["Y"], flex)(s["W"])
+        if ato:
+            return _dr_ato(phi, s["A"], s["Y"], flex=flex), float("nan")
+        return _aipw_ci(phi, s["A"], s["Y"], flex=flex)
+
+    rows = []
+    for gamma in gammas:
+        for conf in confs:
+            acc = {m: ([], []) for m in maps}
+            ato_pt, ato_se, feW, feS = [], [], [], []
+            for r in range(n_reps):
+                s = simulate(n, d=d, fidelity=fidelity, conf=conf, tau=tau, gamma=gamma, seed=seed + r)
+                for m, fitter in maps.items():
+                    p, se = estimate(s, fitter)
+                    acc[m][0].append(p); acc[m][1].append(se)
+                p, se = estimate(s, _fit_sdr_map, ato=True)           # positivity response on phi
+                ato_pt.append(p); ato_se.append(se)
+                feW.append(_frac_extreme_on(s["W"], s["A"]))
+                feS.append(_frac_extreme_on(_sdr_reduce(s["W"], s["A"], s["Y"]), s["A"]))
+            b_ato, c_ato = _bias_cov(ato_pt, ato_se, tau)
+            row = {"gamma": gamma, "conf": conf,
+                   "posv_full": float(np.mean(feW)), "posv_sdr": float(np.mean(feS)),
+                   "sdr_ato_bias": b_ato, "sdr_ato_cov": c_ato}       # ATO estimand (==ATE at gamma=0)
+            for m in maps:
+                b, c = _bias_cov(acc[m][0], acc[m][1], tau)
+                row[f"{m}_bias"], row[f"{m}_cov"] = b, c
+            rows.append(row)
     return rows
