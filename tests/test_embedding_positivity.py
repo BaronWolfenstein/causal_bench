@@ -21,7 +21,9 @@ def _rows(confs, flex, n=1500, n_reps=5):
 
 
 def _cell(gamma, conf, n=1200, n_reps=6):
-    return report_rows_2d(n=n, n_reps=n_reps, gammas=(gamma,), confs=(conf,), seed=0)[0]
+    # bias-ORDERING checks: the fast in-sample IF is sufficient (relationships hold either way)
+    return report_rows_2d(n=n, n_reps=n_reps, gammas=(gamma,), confs=(conf,),
+                          crossfit=False, seed=0)[0]
 
 
 def test_no_confounding_unbiased():
@@ -79,3 +81,13 @@ def test_conf0_reductions_all_unbiased():
     r = _cell(gamma=0.0, conf=0.0)
     for m in ("double_score_bias", "sdr_bias", "prog_score_bias"):
         assert abs(r[m]) < 0.15
+
+
+def test_crossfit_gives_near_nominal_coverage_and_low_bias():
+    # DML cross-fitting (nuisances AND the reduction map fit out-of-fold) brings the
+    # composition's interval coverage toward nominal AND removes the in-sample plug-in bias,
+    # at the hardest corner (strong effect modification x severe positivity).
+    cf = report_rows_2d(n=1500, n_reps=10, gammas=(4.0,), confs=(3.0,),
+                        crossfit=True, n_folds=5, seed=0)[0]
+    assert cf["sdr_ato_cov"] >= 0.8            # ~nominal 95% coverage
+    assert abs(cf["sdr_ato_bias"]) < 0.12      # composition near-unbiased under cross-fit

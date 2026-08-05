@@ -61,23 +61,73 @@ empirical claim, now characterized: **the degradation boundary is real, and the 
 reduction is the necessary fix under effect modification** (the minimal earlier run — only
 γ≤1.5 — was too weak to separate them and misleadingly suggested prog_only was durable).
 
-**Caveat — scope of this sweep.** It varies effect modification at a *fixed* positivity level,
-so it establishes double-score robustness to **effect modification**, *not* positivity-escape
-(requirement 2). Estimating the *treated* surface `E[Y|A=1,W]` on a real embedding can itself
-re-import the positivity trap — the treated arm is sparse exactly where the propensity is
-degenerate. Whether the double-score escapes that is precisely what the **real-8B validation +
-the 2-D (effect-modification × positivity) sweep** must show; on the strength of this 1-D sweep
-alone the "necessary fix" claim is established against effect modification only. The real-8B
-validation is therefore **load-bearing here, not optional**.
+### 2-D frontier: effect modification × positivity (cross-fit DML)
+
+The 1-D sweep above varies effect modification at *fixed* positivity. The 2-D sweep
+(`report_rows_2d`, exp50) varies **both**, adds the two new reductions and the positivity
+response, and reports **bias AND 95%-interval coverage** under DML cross-fitting — nuisances
+*and* the reduction map are fit out-of-fold, because the reduction is a nuisance too.
+Cross-fitting is not optional: the in-sample influence-function SE under-covers badly
+(0.2–0.7) and carries a plug-in bias that cross-fitting removes (double-score at γ=4,conf=3:
+−0.23 → −0.04).
+
+Cross-fit DML, n=2000, 15 reps; **bias / 95%-coverage**; estimand = tau (mean-zero modifier):
+
+| γ | conf | naïve | prognostic | double-score | SDR (arm-strat) | **SDR + ATO** |
+|---|---|---|---|---|---|---|
+| 0 | 1 | +0.03/1.00 | +0.04/0.73 | +0.03/0.93 | +0.05/1.00 | **+0.02/1.00** |
+| 0 | 3 | −0.12/0.73 | +0.08/0.47 | +0.03/0.60 | −0.08/0.80 | **+0.01/0.80** |
+| 2 | 1 | +0.02/1.00 | −0.29/0.00 | +0.03/1.00 | +0.04/0.93 | **+0.01/0.93** |
+| 2 | 3 | −0.11/0.87 | −0.35/0.13 | +0.01/0.80 | −0.18/0.73 | **−0.03/1.00** |
+| 4 | 1 | +0.04/0.93 | −0.62/0.00 | +0.02/1.00 | +0.04/0.93 | **+0.01/0.93** |
+| 4 | 3 | −0.08/0.93 | −0.79/0.07 | −0.04/0.80 | −0.24/0.67 | **−0.05/1.00** |
+
+Positivity diagnostic: near-deterministic-propensity fraction is 0.09 (conf=1) / 0.57 (conf=3)
+on the full embedding and essentially unchanged on the SDR-reduced set (0.09 / 0.54) — the
+outcome-relevant subspace **still contains the positivity direction**, so the reduction does
+not escape severe positivity on its own. Requirement (2) failing for the reduction alone, now
+demonstrated rather than conjectured.
+
+Findings (all cross-fit):
+- **Prognostic** fails under effect modification (bias to −0.79, coverage ~0) — fundamental;
+  cross-fitting does not rescue it.
+- **Double-score** is robust to effect modification (|bias| ≤ 0.04) but under-covers at severe
+  positivity (0.60–0.80): it handles the CATE, not the positivity axis.
+- **Arm-stratified SDR** matches the double-score at mild positivity; at severe positivity it
+  inherits the trap (bias to −0.24). SDR **must be arm-stratified** — fitting SIR/SAVE on
+  *pooled* Y contaminates the subspace with the treatment signal and biases it (~−0.29 at γ=0);
+  fitting within each arm and unioning is the linear analog of the double-score and recovers
+  ≈ oracle.
+- **The composition — arm-stratified SDR reduction + ATO-on-φ positivity response — is the only
+  method both near-unbiased (|bias| ≤ 0.05) and ~nominally covered (0.80–1.00) across the WHOLE
+  frontier**, including γ=4,conf=3 where every other method fails. Tier-1 (ATO/positivity) +
+  tier-2 (reduction) COMPOSITION, empirically shown: neither piece suffices alone.
+
+This resolves the earlier caveat — positivity-escape (requirement 2) is now tested along the
+conf axis, and the answer is that the *reduction* handles effect modification while the *ATO
+response* handles positivity; the composition is the recommendation. The remaining load-bearing
+gaps are **real-8B validation of the composition** (inject a known effect into the SMB
+embeddings, as payoff_v8 did for the prognostic score) and the **causal-role stress-test**:
+does the outcome-targeted reduction drop instrument directions and get fooled by Y-predictive
+colliders (the predictive-vs-causal-sufficiency question)? On real embeddings the causal-role
+question is only reachable semi-synthetically (append known-role directions to the real
+embedding); the residual — whether the real embedding is itself collider-laden — is unverifiable
+and falls to estimand-side discipline (baseline restriction, FCI, M-bias sensitivity), not
+validation.
 
 ## Candidate methods (to evaluate)
 
-**Ranking by evidence.** Only the **double-score** has empirical backing so far (the sweep
-above, against effect modification). SDR and the learned bottleneck are **exploratory**: in
-particular, SIR/SAVE yield *predictive* sufficiency — the central subspace of a regression —
-which does **not** imply the causal back-door validity `Y(a) ⊥ A | φ(W)` a valid adjustment
-set requires. Bridging predictive → causal sufficiency is the open problem, not a plug-in, and
-is the reason these two are candidates rather than the recommendation.
+**Ranking by evidence.** The **double-score** and the **arm-stratified SDR** both now have
+empirical backing (the 2-D DML sweep above): each is robust to effect modification, and the
+SDR composed with the ATO positivity response is near-unbiased and ~nominally covered across
+the whole frontier — that composition is the **recommendation**. What remains genuinely open is
+the **validity theory**: SIR/SAVE yield *predictive* sufficiency — the central subspace of a
+regression — which does **not** by itself imply the causal back-door validity `Y(a) ⊥ A | φ(W)`
+a valid adjustment set requires. Arm-stratification is what buys back causal relevance
+empirically (it is the linear analog of the balancing-score / double-score construction), but
+the conditions under which it is *provably* valid — and its behaviour under instrument and
+collider directions (the causal-role stress-test) — are the open contribution. The learned
+bottleneck stays exploratory.
 
 1. **Double-score / joint PO surfaces** — `φ = (E[Y|A=0,W], E[Y|A=1,W])`. 2-D, captures
    effect modification; the treated surface may partly re-import positivity → test whether

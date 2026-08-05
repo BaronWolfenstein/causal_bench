@@ -31,8 +31,16 @@ from __future__ import annotations
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.model_selection import KFold
 
 _CLIP = (0.02, 0.98)
+
+
+def _make_reg(flex):
+    if flex:
+        return HistGradientBoostingRegressor(max_iter=100, max_leaf_nodes=15,
+                                             learning_rate=0.1, random_state=0)
+    return Ridge(alpha=1.0)
 
 
 _EM_DIR = np.array([0.6, 0.8])       # confounder loading `d` of the effect modifier (unit norm)
@@ -223,6 +231,80 @@ def _sdr_ato(W, A, Y, flex=True, k=2):
     return _dr_ato(_sdr_reduce(W, A, Y, k=k), A, Y, flex=flex)
 
 
+# ---------------------------------------------------------------------------
+# Cross-fit (DML) versions for VALID interval coverage. The reduction map is a
+# nuisance too, so it is fit out-of-fold alongside the propensity and outcome
+# models; the influence function is then evaluated only on held-out folds.
+# Each fitter takes training data and returns an apply-map W -> phi.
+# ---------------------------------------------------------------------------
+
+def _fit_identity(Wtr, Atr, Ytr, flex):
+    return lambda W: W
+
+
+def _fit_prognostic_map(Wtr, Atr, Ytr, flex):
+    m = _make_reg(flex).fit(Wtr[Atr == 0], Ytr[Atr == 0])
+    return lambda W: m.predict(W)[:, None]
+
+
+def _fit_double_score_map(Wtr, Atr, Ytr, flex):
+    m0 = _make_reg(flex).fit(Wtr[Atr == 0], Ytr[Atr == 0])
+    m1 = _make_reg(flex).fit(Wtr[Atr == 1], Ytr[Atr == 1])
+    return lambda W: np.column_stack([m0.predict(W), m1.predict(W)])
+
+
+def _fit_sdr_map(Wtr, Atr, Ytr, flex, k=2, use_save=True):
+    """Fit the arm-stratified SIR+SAVE reduction on training data; return the apply-map
+    that whitens with the TRAIN moments and projects onto the TRAIN directions."""
+    mu = Wtr.mean(0)
+    Sigma = np.cov(Wtr - mu, rowvar=False) + 1e-6 * np.eye(Wtr.shape[1])
+    vals, vecs = np.linalg.eigh(Sigma)
+    inv_half = vecs @ np.diag(1.0 / np.sqrt(np.maximum(vals, 1e-12))) @ vecs.T
+    Ztr = (Wtr - mu) @ inv_half
+    dirs = []
+    for a in (0.0, 1.0):
+        m = Atr == a
+        dirs.extend(_sir_dirs(Ztr[m], Ytr[m]).T[:k])
+        if use_save:
+            dirs.append(_save_dirs(Ztr[m], Ytr[m]).T[0])
+    D, _ = np.linalg.qr(np.column_stack(dirs))
+    return lambda W: ((W - mu) @ inv_half) @ D
+
+
+def _crossfit_ic(W, A, Y, reduce_fit, flex=True, n_folds=5, seed=0, ato=False):
+    """Cross-fit AIPW on a fitted reduction: nuisances and the reduction map are trained
+    out-of-fold, the influence function evaluated on the held-out fold. Returns (point, se)
+    with a DML-valid SE. ato=True targets the overlap-weighted ATO (a ratio estimand)."""
+    n = len(A)
+    ic = np.zeros(n)
+    num = np.zeros(n)
+    den = np.zeros(n)
+    for tr, te in KFold(n_splits=n_folds, shuffle=True, random_state=seed).split(W):
+        phi = reduce_fit(W[tr], A[tr], Y[tr], flex)
+        Ptr, Pte = phi(W[tr]), phi(W[te])
+        Ptr = Ptr if Ptr.ndim > 1 else Ptr[:, None]
+        Pte = Pte if Pte.ndim > 1 else Pte[:, None]
+        e = np.clip(LogisticRegression(max_iter=2000).fit(Ptr, A[tr]).predict_proba(Pte)[:, 1], *_CLIP)
+        Qm = _make_reg(flex).fit(np.column_stack([A[tr], Ptr]), Y[tr])
+        m = len(te)
+        Q1 = Qm.predict(np.column_stack([np.ones(m), Pte]))
+        Q0 = Qm.predict(np.column_stack([np.zeros(m), Pte]))
+        QA = A[te] * Q1 + (1 - A[te]) * Q0
+        if ato:
+            h = e * (1 - e)
+            num[te] = h * (Q1 - Q0) + A[te] * (1 - e) * (Y[te] - Q1) - (1 - A[te]) * e * (Y[te] - Q0)
+            den[te] = h
+        else:
+            H = A[te] / e - (1 - A[te]) / (1 - e)
+            ic[te] = Q1 - Q0 + H * (Y[te] - QA)
+    if ato:
+        psi = float(num.sum() / den.sum())
+        ic = (num - psi * den) / den.mean()          # ratio-estimator IF
+        return psi, float(np.std(ic, ddof=1) / np.sqrt(n))
+    psi = float(np.mean(ic))
+    return psi, float(np.std(ic - psi, ddof=1) / np.sqrt(n))
+
+
 def _frac_extreme_on(X, A, clip_lo=0.05):
     """Positivity diagnostic on a (reduced) adjustment set: fraction with estimated
     propensity outside [clip_lo, 1-clip_lo]. Small on a positivity-escaping reduction."""
@@ -266,36 +348,47 @@ def _bias_cov(points, ses, truth):
 
 
 def report_rows_2d(n=2000, d=50, fidelity=6.0, tau=1.0, n_reps=15,
-                   gammas=(0.0, 2.0, 4.0), confs=(1.0, 3.0), flex=True, seed=0):
+                   gammas=(0.0, 2.0, 4.0), confs=(1.0, 3.0), flex=True, seed=0,
+                   crossfit=True, n_folds=5):
     """The SDR-spec 2-D frontier: effect-modification (gamma) x positivity-severity (conf).
-    Reports bias AND 95%-interval coverage for {naive, prognostic, double-score, SDR}, plus
-    positivity diagnostics (fraction of near-deterministic propensities on the full embedding
-    vs the SDR-reduced set). Estimand = tau (the effect modifier is mean-zero, so the
-    population ATE stays tau for every gamma)."""
-    fns = {
-        "naive_fullW":  lambda s: _aipw_ci(s["W"], s["A"], s["Y"], flex=flex),
-        "prog_score":   lambda s: _prognostic_ci(s["W"], s["A"], s["Y"], flex=flex),
-        "double_score": lambda s: _double_score_aipw(s["W"], s["A"], s["Y"], flex=flex),
-        "sdr":          lambda s: _sdr_aipw(s["W"], s["A"], s["Y"], flex=flex),
-    }
+    Reports bias AND 95%-interval coverage for {naive, prognostic, double-score, SDR, and the
+    ATO-on-phi response}, plus positivity diagnostics (fraction of near-deterministic
+    propensities on the full embedding vs the SDR-reduced set). Estimand = tau (the effect
+    modifier is mean-zero, so the population ATE stays tau for every gamma).
+
+    crossfit=True (default) fits the nuisances AND the reduction map out-of-fold (DML), so the
+    interval coverage is valid; crossfit=False uses the faster in-sample IF (optimistic SE)."""
+    maps = {"naive_fullW": _fit_identity, "prog_score": _fit_prognostic_map,
+            "double_score": _fit_double_score_map, "sdr": _fit_sdr_map}
+
+    def estimate(s, fitter, ato=False):
+        if crossfit:
+            return _crossfit_ic(s["W"], s["A"], s["Y"], fitter, flex=flex,
+                                n_folds=n_folds, seed=seed, ato=ato)
+        phi = fitter(s["W"], s["A"], s["Y"], flex)(s["W"])
+        if ato:
+            return _dr_ato(phi, s["A"], s["Y"], flex=flex), float("nan")
+        return _aipw_ci(phi, s["A"], s["Y"], flex=flex)
+
     rows = []
     for gamma in gammas:
         for conf in confs:
-            acc = {m: ([], []) for m in fns}
-            feW, feS, ato = [], [], []
+            acc = {m: ([], []) for m in maps}
+            ato_pt, ato_se, feW, feS = [], [], [], []
             for r in range(n_reps):
                 s = simulate(n, d=d, fidelity=fidelity, conf=conf, tau=tau, gamma=gamma, seed=seed + r)
-                for m, fn in fns.items():
-                    p, se = fn(s)
+                for m, fitter in maps.items():
+                    p, se = estimate(s, fitter)
                     acc[m][0].append(p); acc[m][1].append(se)
-                phi = _sdr_reduce(s["W"], s["A"], s["Y"])
+                p, se = estimate(s, _fit_sdr_map, ato=True)           # positivity response on phi
+                ato_pt.append(p); ato_se.append(se)
                 feW.append(_frac_extreme_on(s["W"], s["A"]))
-                feS.append(_frac_extreme_on(phi, s["A"]))
-                ato.append(_dr_ato(phi, s["A"], s["Y"], flex=flex))    # positivity response on phi
+                feS.append(_frac_extreme_on(_sdr_reduce(s["W"], s["A"], s["Y"]), s["A"]))
+            b_ato, c_ato = _bias_cov(ato_pt, ato_se, tau)
             row = {"gamma": gamma, "conf": conf,
                    "posv_full": float(np.mean(feW)), "posv_sdr": float(np.mean(feS)),
-                   "sdr_ato_bias": float(np.mean(ato)) - tau}          # ATO estimand (==ATE at gamma=0)
-            for m in fns:
+                   "sdr_ato_bias": b_ato, "sdr_ato_cov": c_ato}       # ATO estimand (==ATE at gamma=0)
+            for m in maps:
                 b, c = _bias_cov(acc[m][0], acc[m][1], tau)
                 row[f"{m}_bias"], row[f"{m}_cov"] = b, c
             rows.append(row)
