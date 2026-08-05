@@ -259,6 +259,23 @@ def test_rmst_rp_spline_falls_back_when_unavailable(monkeypatch):
         assert np.isfinite(r.point_estimate) and r.standard_error > 0
 
 
+def test_rmst_rp_spline_lifelines_backend_recovers_truth(monkeypatch):
+    """The pure-Python lifelines (CRCSplineFitter) RP-spline nuisance — used when the R
+    flexsurv stack is absent (e.g. the SMB demo box, R-free CI) — is likewise debiased by
+    our per-subgroup TMLE to the targeted RMST. Forces the R backend off so ONLY the
+    lifelines path runs, covering the R-free machine that the R-gated test above skips."""
+    import causal_bench.estimators.rp_spline_nuisance as rp
+    if not rp._lifelines_available():
+        pytest.skip("lifelines not available")
+    monkeypatch.setattr(rp, "_flexsurv_available", lambda: False)  # simulate no R stack
+    df, truth, h = _make_rmst_df(n=4000, seed=11, horizon=2.0, non_ph=True)
+    res = {r.estimand: r for r in PooledQSubgroupEstimator(
+        nuisance="rp_spline", n_grid=20).estimate(df, horizon=h, estimand="subgroup_rmst")}
+    for s in (0, 1):
+        r = res[f"rmst|S={s}"]
+        assert abs(r.point_estimate - truth[s]) < 2.5 * r.standard_error + 0.02
+
+
 # ---------------------------------------- Donsker-class q_learner: LTB / HAR (#69)
 
 # xgboost (LTB) and lifelines (KM/Cox, used above) load conflicting OpenMP runtimes and
