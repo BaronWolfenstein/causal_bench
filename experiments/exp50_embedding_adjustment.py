@@ -29,16 +29,20 @@ Run: python -m experiments.exp50_embedding_adjustment
 import json
 from pathlib import Path
 
-from causal_bench.validation.embedding_positivity import report_rows
+from causal_bench.validation.embedding_positivity import report_rows, report_rows_2d
 
 OUT_DIR = Path("results/exp50_embedding_adjustment")
 CONFS = (0.0, 1.0, 2.0, 3.0, 5.0)
+GAMMAS = (0.0, 2.0, 4.0)          # effect-modification axis (SDR-spec 2-D frontier)
+CONFS_2D = (1.0, 3.0)             # positivity axis for the frontier sweep
 
 
 def run(*, n=2500, n_reps=12, seed=0):
     return {
         "flexible": report_rows(n=n, n_reps=n_reps, confs=CONFS, flex=True, seed=seed),
         "linear_control": report_rows(n=n, n_reps=n_reps, confs=CONFS, flex=False, seed=seed),
+        "frontier_2d": report_rows_2d(n=n, n_reps=n_reps, gammas=GAMMAS, confs=CONFS_2D,
+                                      flex=True, seed=seed),
     }
 
 
@@ -64,7 +68,26 @@ def report(res) -> str:
               "~halves the bias; prog_score (tier-2, prognostic-score reduction) LARGELY RECOVERS",
               "-- the propensity direction can't escape positivity but the prognostic score can.",
               "See issue #206."]
+    lines += ["", _frontier_table(res["frontier_2d"])]
     return "\n".join(lines)
+
+
+def _frontier_table(rows) -> str:
+    hdr = (f"  {'gamma':>5} {'conf':>5} {'naive':>8} {'prog':>8} {'double':>8} {'sdr':>8} "
+           f"{'sdr_ato':>8} {'posvW':>6} {'posvSDR':>7}")
+    out = ["2-D frontier -- effect modification (gamma) x positivity (conf); bias vs ATE=1.0,",
+           "and the SDR-spec reductions (double-score, arm-stratified SDR, ATO-on-phi):",
+           hdr, "  " + "-" * (len(hdr) - 2)]
+    for r in rows:
+        out.append(f"  {r['gamma']:>5.1f} {r['conf']:>5.1f} {r['naive_fullW_bias']:>+8.3f} "
+                   f"{r['prog_score_bias']:>+8.3f} {r['double_score_bias']:>+8.3f} "
+                   f"{r['sdr_bias']:>+8.3f} {r['sdr_ato_bias']:>+8.3f} "
+                   f"{r['posv_full']:>6.2f} {r['posv_sdr']:>7.2f}")
+    out += ["  Read: prognostic fails under effect modification; the double-score and (arm-",
+            "  stratified) SDR stay robust to it; but at severe positivity the outcome subspace",
+            "  still holds the positivity direction (posvSDR high) so ATO-on-phi is needed on top.",
+            "  Composition (SDR reduction + ATO) is the most robust across the whole frontier."]
+    return "\n".join(out)
 
 
 def main():
