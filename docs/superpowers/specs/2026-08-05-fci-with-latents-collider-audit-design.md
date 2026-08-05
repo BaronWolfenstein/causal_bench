@@ -75,16 +75,30 @@ structures** — which is itself informative ("CI structure alone does not ident
 orientation rests on non-Gaussianity"). Degrades to `None` when R is absent (the box), exactly like
 `rp_spline_nuisance`.
 
-**Reconciliation / read-off (the audit verdict).** Combine: (i) RCD's latent-confounded pairs +
-arrowheads → **exclude** those covariates; (ii) where FCI *also* orients (not circles) and **agrees**,
-mark the exclusion **high-confidence**; where FCI is all-circles, mark it **"identified only under
-LiNGAM assumptions"** (non-Gaussianity/linearity). Emit (a) a **safe adjustment set** (pre-treatment,
-not latent-confounded, no arrowhead-into) and (b) **flagged exclusions with a confidence tag**. This
-is the object `role_detection` needs for the hidden-parent case; it never silently trusts one method.
+**Ensemble of latent-aware LiNGAM variants — RCD *and* ParceLiNGAM.** They have complementary error
+modes (verified on the tangled M-structure): **RCD misses latent pairs (false negatives); ParceLiNGAM
+over-flags (false positives, up to flagging everything).** For an audit the asymmetry is decisive — a
+**missed collider (false negative) lets bias through**, the dangerous error; over-exclusion is merely
+inefficient. So take the **union of the latent-confounded flags** (conservative: flag if *either*
+flags) and rank by agreement.
 
-**Deferred:** a from-scratch minimal Python FCI (PC skeleton + possible-d-sep + R1–R4) as a box-side
-FCI cross-check — only if a box-side *nonparametric* cross-check is needed and installing R via conda
-is undesirable. RCD already covers the box; the pcalg cross-check covers Mac/production.
+**Reconciliation / read-off (the audit verdict) — confidence by agreement, never a single method.**
+For each candidate covariate, combine RCD ∪ ParceLiNGAM (latent-confounded pairs + arrowheads-into)
+with the FCI cross-check:
+- **high-confidence exclude** — flagged by a latent-aware method **and** FCI orients-and-agrees;
+- **exclude (method-dependent)** — flagged by RCD and/or ParceLiNGAM but FCI is all-circles
+  ("not CI-identifiable; rests on LiNGAM's non-Gaussianity/linearity");
+- **conflict** — RCD and ParceLiNGAM disagree ⇒ report both, lean exclude (conservative).
+Emit (a) a **safe adjustment set** (pre-treatment, not latent-confounded, no arrowhead-into) and (b)
+**flagged exclusions with a confidence tag**. **Honest bound baked in:** the fully-tangled
+latent-collider is near the identifiability boundary — the audit reports *which methods say what*, not
+a false-confident single verdict.
+
+**Deferred (filed as #218):** a from-scratch minimal Python FCI as a box-side FCI cross-check —
+small, because `pc_skeleton` + `orient_colliders` + `zero_flow_ci_test` already exist (the delta is
+possible-d-sep + R1–R4 + the bidirected read-off). Only if a box-side *nonparametric* cross-check is
+needed and installing R via conda is undesirable. RCD already covers the box; the pcalg cross-check
+covers Mac/production.
 
 ## Cross-repo — SGA consumes the PAG
 
