@@ -3,6 +3,16 @@
 Design spec for the tier-2 general method of issue #206 — the piece that elevates the
 current result from a workshop note to a full CLeaR/CHIL methods paper.
 
+**Status — design + results.** Built and validated in exp50 (PR #213): the effect-modification
+× positivity 2-D frontier with cross-fit DML coverage; the double-score, arm-stratified SDR, and
+ATO-on-φ reductions; and the causal-role stress-test. Headline: the **composition — arm-stratified
+SDR reduction + ATO-on-φ positivity response, cross-fit — is the recommendation**, near-unbiased
+(|bias| ≤ 0.05) and ~nominally covered (0.80–1.00) across the whole synthetic frontier, and it is
+the most instrument-robust reduction; the one role it cannot handle is a Y-predictive collider
+(no reduction can — that falls to estimand-side discipline). **Remaining:** real-8B validation of
+the composition (payoff_v8-style injected effect + semi-synthetic role injection), the formal
+causal-sufficiency theory, and — exploratory — the learned bottleneck.
+
 ## Motivation
 
 Using a foundation-model embedding as a causal adjustment set induces a **positivity
@@ -199,16 +209,23 @@ bottleneck stays exploratory.
 
 ## Positivity handling
 
-Combine the reduction with an explicit positivity response on `φ(W)`: overlap weights /
-trimming, reporting ATO≠ATE where the ATE is unidentified.
+**Done** (ATO-on-φ, exp50). Combine the reduction with an explicit positivity response on
+`φ(W)` — overlap weighting (ATO), reporting ATO≠ATE where the ATE is unidentified. On the 2-D
+frontier the reduction *alone* inherits severe positivity (the outcome subspace still contains
+the positivity direction, `posv_sdr ≈ posv_full`); the **SDR+ATO composition recovers there**.
+The ATO targets the overlap estimand — equal to the ATE under a constant effect, and the honest
+identified target otherwise.
 
 ## Evaluation plan (extends exp50)
 
-- Sweep **effect modification × positivity severity**; report bias + interval coverage for
-  {prognostic, double-score, SDR, learned}.
-- **Real-8B validation** of the winning reduction on the SMB embeddings (as payoff_v8 did
-  for the prognostic score).
-- Self-validating controls (linear outcome = no pathology; γ=0 = prognostic suffices).
+- **Done** — swept effect modification × positivity severity; reported bias + cross-fit DML
+  coverage for {prognostic, double-score, SDR}; the SDR+ATO composition is near-unbiased and
+  ~nominally covered across the frontier (2-D frontier table above).
+- **Done** — causal-role stress-test (instrument vs Y-predictive collider).
+- **Done** — self-validating controls (linear outcome = no pathology; γ=0 = prognostic
+  suffices; conf=0 unbiased).
+- **Remaining** — **real-8B validation** of the composition on the SMB embeddings (payoff_v8-style
+  injected known effect + semi-synthetic known-role injection); the learned bottleneck (exploratory).
 
 ## Deliverables & venue
 
