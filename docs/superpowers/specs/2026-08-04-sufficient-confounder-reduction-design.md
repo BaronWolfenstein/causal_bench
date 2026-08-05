@@ -33,26 +33,31 @@ modification.
 - **Prognostic-score reduction** (`E[Y|A=0,W]`): recovers under prognostic-sufficiency
   (synthetic ~0.02 residual; real-8B ~65% bias cut). Boundary: **degrades under effect
   modification** (boundary sweep — see Results).
-- **Double-score** (both potential-outcome surfaces `E[Y|A=0,W]`, `E[Y|A=1,W]`): expected
-  to recover under effect modification because the pair captures the CATE (boundary sweep).
+- **Double-score** (both potential-outcome surfaces `E[Y|A=0,W]`, `E[Y|A=1,W]`): **recovers
+  across the whole effect-modification range** because the pair captures the CATE — |bias|
+  ≤ 0.05 for all γ in the sweep below, vs a single prognostic score that degrades.
 
 ### Boundary-sweep results (effect modification γ)
 
-Minimal run (n=1200; effect modifier `τ(U) = 1 + γ·(U·d)`; bias vs true ATE = 1.0):
+Big run (n=2000, 15 reps; effect modifier `τ(U) = 1 + γ·(U·d)`; bias vs true ATE = 1.0):
 
 | γ | naive (full W) | prog_only | prog + treated |
 |---|---|---|---|
-| 0.0 | −0.28 | −0.04 | −0.08 |
-| 1.5 | −0.17 | +0.06 | −0.05 |
+| 0.0 | −0.197 | +0.004 | −0.045 |
+| 1.0 | −0.159 | +0.071 | −0.010 |
+| 2.0 | −0.129 | +0.137 | +0.020 |
+| 3.0 | −0.105 | +0.198 | +0.040 |
+| 4.0 | −0.109 | +0.258 | +0.048 |
 
-Read: at γ=0 the prognostic score recovers (as expected). At **moderate** effect
-modification (γ=1.5) prognostic-only stays roughly valid (bias ~0.06) — **prognostic-
-sufficiency is more robust than feared**, and the double-score shows no clear advantage
-*yet*. The precise degradation boundary (where a single prognostic score clearly breaks
-and the double-score / SDR reduction becomes necessary) needs a **larger run at stronger
-γ + more replicates** — that characterization is the deferred work this spec scopes. (A
-useful practical implication already: on this synthetic setting the cheap prognostic-only
-fix is surprisingly durable.)
+Read: at γ=0 both reductions recover (prog_only +0.004). As effect modification grows,
+**a single prognostic score degrades monotonically** (+0.004 → +0.258) and by γ≈3 its bias
+*exceeds naïve's* in magnitude — prognostic-sufficiency fails exactly where the treatment
+effect varies with the confounder, as the theory predicts. The **double-score (prog+treated)
+stays valid throughout** (|bias| ≤ 0.048), because the pair of potential-outcome surfaces
+captures the CATE that a single control-outcome surface cannot. This is the spec's central
+empirical claim, now characterized: **the degradation boundary is real, and the double-score
+reduction is the necessary fix under effect modification** (the minimal earlier run — only
+γ≤1.5 — was too weak to separate them and misleadingly suggested prog_only was durable).
 
 ## Candidate methods (to evaluate)
 
