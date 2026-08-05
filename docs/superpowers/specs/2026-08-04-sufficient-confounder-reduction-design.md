@@ -39,9 +39,11 @@ modification.
 
 ### Boundary-sweep results (effect modification γ)
 
-Big run (n=2000, 15 reps; effect modifier `τ(U) = 1 + γ·(U·d)`; bias vs true ATE = 1.0):
+Big run (n=2000, 15 reps; effect modifier `τ(U) = 1 + γ·(U·d)`, where `d` is the confounder
+loading from exp50; bias vs true ATE = 1.0). The `prog + treated` column is the **double-score**
+— both potential-outcome surfaces `(E[Y|A=0,W], E[Y|A=1,W])`:
 
-| γ | naive (full W) | prog_only | prog + treated |
+| γ | naive (full W) | prog_only | prog + treated (double-score) |
 |---|---|---|---|
 | 0.0 | −0.197 | +0.004 | −0.045 |
 | 1.0 | −0.159 | +0.071 | −0.010 |
@@ -59,7 +61,23 @@ empirical claim, now characterized: **the degradation boundary is real, and the 
 reduction is the necessary fix under effect modification** (the minimal earlier run — only
 γ≤1.5 — was too weak to separate them and misleadingly suggested prog_only was durable).
 
+**Caveat — scope of this sweep.** It varies effect modification at a *fixed* positivity level,
+so it establishes double-score robustness to **effect modification**, *not* positivity-escape
+(requirement 2). Estimating the *treated* surface `E[Y|A=1,W]` on a real embedding can itself
+re-import the positivity trap — the treated arm is sparse exactly where the propensity is
+degenerate. Whether the double-score escapes that is precisely what the **real-8B validation +
+the 2-D (effect-modification × positivity) sweep** must show; on the strength of this 1-D sweep
+alone the "necessary fix" claim is established against effect modification only. The real-8B
+validation is therefore **load-bearing here, not optional**.
+
 ## Candidate methods (to evaluate)
+
+**Ranking by evidence.** Only the **double-score** has empirical backing so far (the sweep
+above, against effect modification). SDR and the learned bottleneck are **exploratory**: in
+particular, SIR/SAVE yield *predictive* sufficiency — the central subspace of a regression —
+which does **not** imply the causal back-door validity `Y(a) ⊥ A | φ(W)` a valid adjustment
+set requires. Bridging predictive → causal sufficiency is the open problem, not a plug-in, and
+is the reason these two are candidates rather than the recommendation.
 
 1. **Double-score / joint PO surfaces** — `φ = (E[Y|A=0,W], E[Y|A=1,W])`. 2-D, captures
    effect modification; the treated surface may partly re-import positivity → test whether
@@ -110,4 +128,4 @@ inference); double-score / double-robustness literature.
 ## Non-goals
 
 Not the learned-latent *generative* branch (separate); not solving unmeasured confounding
-(that is QBA / #205 — composes on top). Adjustment-set reduction only.
+(that is QBA / exp49 — composes on top). Adjustment-set reduction only.
