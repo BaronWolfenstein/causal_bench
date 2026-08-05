@@ -1,4 +1,15 @@
-# FCI-with-latents for the collider audit (design spec, issue #216)
+# Latent-aware collider audit — RCD (LiNGAM) primary + FCI cross-check (design spec, issue #216)
+
+> **Revised after empirical checks (2026-08-05).** Constraint-based FCI is *uninformative* on the
+> tangled latent-collider: the M-structure `A–Y–Cm` is a fully-connected triangle (A→Y, A↔Cm via
+> latent `Ha`, Cm↔Y via latent `Hy`), so there are **no unshielded triples** and pcalg `fci` returns
+> an **all-circle PAG** (nothing oriented) — structural, not tuning. That is LiNGAM's sweet spot:
+> non-Gaussianity (our treatment `A` is binary → strongly non-Gaussian) orients a unique DAG where
+> CI-based methods are stuck. So the **latent-aware LiNGAM variant RCD** is the *primary* orienter and
+> pcalg **FCI is the assumption-light cross-check** (which honestly reports "unidentified" as circles).
+> Verified: RCD flags `A↔Cm` latent (NaN) where plain DirectLiNGAM misattributes it as a direct edge;
+> RCD is imperfect (missed the `Cm↔Y` pair) → the cross-check + "identified only under assumptions"
+> reporting is load-bearing. `lingam` (RCD) installed; `pcalg` installed via rpy2.
 
 Design spec for the estimand-side **collider-audit** residual left by the SDR detection layer
 (PR #215, `role_detection`) — the audit that certifies the "confounders, not colliders" assumption the
@@ -29,35 +40,51 @@ cause", distinguishing a genuine collider/confounded pair from a direct edge.
 - `validation/causal_discovery.orient_colliders(edges, sepset, p)` — v-structure rule
   `X → C ← Y` when `C ∉ sepset(X,Y)`.
 - `sim_fork / sim_collider / sim_chain` — self-validation DGPs (extend for the latent case).
-- **`pcalg` (R, via rpy2) — installed and verified**: exposes `fci`, `rfci`, `fciPlus`, `skeleton`,
-  and pluggable `indepTest`s. This is canonical FCI-with-latents — **we do not hand-roll the
-  algorithm; we bridge it**, exactly mirroring the existing `r_scripts/{flexsurv,concrete,cobalt}_bridge.R`
-  + rpy2 pattern (and the dual-backend pattern of `estimators/rp_spline_nuisance.py`).
+- **`lingam` (Python) — installed (1.13.0), the PRIMARY orienter**: `RCD` (latent-aware, Maeda–Shimizu)
+  outputs a directed adjacency **plus explicit latent-confounded pairs** (NaN entries) — exactly the
+  collider/latent flag the audit needs, and it orients the fully-connected structures FCI cannot.
+  Pure Python ⇒ runs everywhere including the R-free box. `DirectLiNGAM` is the no-latent special case
+  (do NOT use it alone — it misattributes latent confounding as direct edges).
+- **`pcalg` (R, via rpy2) — installed on R-capable machines, the CROSS-CHECK**: `fci`/`rfci`/`fciPlus`
+  with a pluggable `indepTest` (inject `zero_flow_ci_test` → nonparametric). Assumption-light (no
+  non-Gaussianity needed) but returns an equivalence class (often all-circles on tangled structures).
+  **Bridge it, don't hand-roll**, mirroring `r_scripts/{flexsurv,concrete}_bridge.R` + the dual-backend
+  pattern of `estimators/rp_spline_nuisance.py`.
 
-So the build is a **bridge + a fallback + a read-off**, not a from-scratch FCI.
+So the build is **RCD (primary, Python) + a pcalg-FCI bridge (cross-check, R) + a shared read-off** —
+no from-scratch algorithm.
 
-## Design — dual-backend `fci_audit`, mirroring `rp_spline_nuisance`
+## Design — `causal_role_audit.py`, RCD primary + FCI cross-check, backends by environment
 
-A new `validation/fci_audit.py` (or `detectors/`) with the **same dual-backend shape** as the
-survival nuisance: canonical R implementation preferred, pure-Python fallback so it never hard-fails
-on the R-free box.
+A new `validation/causal_role_audit.py` that runs **both** discovery methods and reconciles them.
+Backends are selected by what the environment has, mirroring `rp_spline_nuisance`'s
+degrade-gracefully shape:
 
-**Primary backend — pcalg via rpy2 (`r_scripts/pcalg_bridge.R`).** Call `pcalg::fci` (or `rfci` for
-speed / `fciPlus` for completeness) with our own CI oracle injected as the `indepTest`: wrap
-`zero_flow_ci_test` behind pcalg's `indepTest(x, y, S, suffStat)` signature (returning a p-value), so
-FCI runs **nonparametrically** on the same residualize-then-permutation test the rest of the pipeline
-uses — not restricted to `gaussCItest`'s linear-Gaussian assumption. Return the PAG (amat) to Python.
+**Primary orienter — RCD (`lingam`, Python, runs everywhere incl. the box).** `lingam.RCD().fit(X)`
+returns a directed adjacency **plus latent-confounded pairs** (NaN entries). Read-off: a NaN pair ⇒
+**latent common cause** (the `Cm ← Ha,Hy` signature); an arrowhead into a candidate covariate ⇒
+collider/descendant. Exploits non-Gaussianity to orient the tangled structures FCI leaves as circles.
+Assumes (near-)linearity + non-Gaussian noise — so it is *strong where those hold*, and the
+cross-check flags where they don't.
 
-**Fallback backend — minimal Python FCI** (only if R absent, e.g. the box): PC skeleton (reuse
-`pc_skeleton`) → **possible-d-sep** pruning → v-structures (reuse `orient_colliders`) → FCI rules
-**R1–R4** (Zhang 2008 subset) producing a PAG with bidirected edges. More work, so build it only if a
-box-side audit is actually needed; the R backend covers Mac/production.
+**Cross-check — pcalg FCI (`r_scripts/pcalg_bridge.R`, R, Mac/production only).** `pcalg::fci`/`rfci`
+with `zero_flow_ci_test` injected as the `indepTest` (nonparametric; behind pcalg's
+`indepTest(x,y,S,suffStat)` p-value signature). Assumption-light (no non-Gaussianity needed) but
+returns an equivalence-class PAG that is **often all-circles on fully-connected latent-collider
+structures** — which is itself informative ("CI structure alone does not identify this; the RCD
+orientation rests on non-Gaussianity"). Degrades to `None` when R is absent (the box), exactly like
+`rp_spline_nuisance`.
 
-**Read-off (shared, backend-agnostic).** From the PAG: a **bidirected `X ↔ Y`** ⇒ latent common cause
-(the `Cm ← Ha,Hy` signature); an arrowhead **into** a candidate covariate ⇒ collider/descendant ⇒
-**exclude from adjustment**. Emit (i) a **backdoor-/FCI-valid adjustment set** (pre-treatment, no
-arrowhead-into, not on a bidirected/collider path) and (ii) the **audit-flagged exclusions**. This is
-the object `role_detection` needs but cannot produce for the hidden-parent case.
+**Reconciliation / read-off (the audit verdict).** Combine: (i) RCD's latent-confounded pairs +
+arrowheads → **exclude** those covariates; (ii) where FCI *also* orients (not circles) and **agrees**,
+mark the exclusion **high-confidence**; where FCI is all-circles, mark it **"identified only under
+LiNGAM assumptions"** (non-Gaussianity/linearity). Emit (a) a **safe adjustment set** (pre-treatment,
+not latent-confounded, no arrowhead-into) and (b) **flagged exclusions with a confidence tag**. This
+is the object `role_detection` needs for the hidden-parent case; it never silently trusts one method.
+
+**Deferred:** a from-scratch minimal Python FCI (PC skeleton + possible-d-sep + R1–R4) as a box-side
+FCI cross-check — only if a box-side *nonparametric* cross-check is needed and installing R via conda
+is undesirable. RCD already covers the box; the pcalg cross-check covers Mac/production.
 
 ## Cross-repo — SGA consumes the PAG
 
@@ -81,6 +108,31 @@ verdict list (no causal_bench-only deps) so SGA can import it.
   collider flags; the pure `sim_collider` must still orient.
 - Wire the resulting safe-adjustment-set into `role_detection` and show the M-bias `Cm` is now
   *excluded* (closing the residual the instrument case already closes).
+
+## ENCIRCLE application (the real payoff — more applicable than the embedding case)
+
+The audit *runs* on ENCIRCLE because ENCIRCLE has **named baseline covariates** (LVEDD, stage,
+clinical flags), unlike the raw embedding. Value: (a) **certify the adjustment set** — flag any
+candidate covariate that is actually a collider or an instrument and *exclude* it, giving a
+**defensible, regulatory-credible covariate selection** rather than a data-dredged one; (b) the
+**selection-into-trial collider** (a known single-arm synthetic-control concern — `project_collider_
+estimand_discipline` point 5) is exactly what the audit + M-bias sensitivity address.
+
+**Caveat — mixed types.** ENCIRCLE covariates are mixed (continuous LVEDD, categorical stage, binary
+flags), where LiNGAM's non-Gaussianity + linearity is strained. There the **FCI-nonparametric**
+backend (`zero_flow_ci` handles mixed types) is likely *more* applicable, with RCD as the cross-check
+where continuous non-Gaussian covariates dominate. So the dual-backend earns its keep on ENCIRCLE:
+run whichever's assumptions hold, and agreement is the confidence signal.
+
+## Deployment (box vs Mac) — a real constraint
+
+- **`lingam` / RCD** is pure Python → installs on the **box** (`~/venv`) and Mac alike; RCD is the
+  everywhere-available audit backend.
+- **`pcalg` FCI needs R**, and the **box has no R** (same reason the survival nuisance fell back to
+  lifelines). So on the box the audit is **RCD-only**; the pcalg FCI cross-check runs on Mac/production
+  (or via a conda-R env if a box-side cross-check is ever wanted, or the deferred Python-FCI). The
+  dual-backend split is therefore **Python-everywhere (RCD) + R-where-available (pcalg)** — degrade
+  gracefully, never hard-fail.
 
 ## Scope / non-goals
 
