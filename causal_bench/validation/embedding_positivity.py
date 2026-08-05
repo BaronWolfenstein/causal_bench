@@ -65,6 +65,93 @@ def simulate(n, d=50, fidelity=6.0, conf=3.0, tau=1.0, gamma=0.0, seed=0):
                 tau_i=tau_i, true_ate=float(np.mean(tau_i)))
 
 
+def simulate_roles(n, d=50, fidelity=6.0, conf=2.0, tau=1.0, inst=0.0, collider=0.0,
+                   unmeasured=0.7, seed=0):
+    """Causal-role stress-test DGP. The embedding encodes THREE pre-treatment directions with
+    different causal roles (all legitimately baseline, so baseline-restriction does not exclude
+    them):
+
+      * confounder  U   -> A and Y   (must adjust)
+      * instrument  Zi  -> A only     (adjusting AMPLIFIES bias from the unmeasured confounder
+                                       Uh; the outcome-targeted reduction should DROP it)
+      * M-bias collider Cm <- Ha, Hy  where Ha -> A and Hy -> Y are hidden; Cm is a PRE-treatment
+                                       collider. Adjusting for Cm opens the Ha--Hy path (M-bias);
+                                       Cm predicts Y (through Hy) so it SURVIVES outcome-targeting
+                                       -> the reduction is FOOLED.
+
+    Only U, Zi, Cm are encoded in W (Uh, Ha, Hy are unmeasured). `inst` and `collider` switch the
+    bad roles on. Estimand = tau (constant effect here, to isolate the role mechanisms)."""
+    rng = np.random.default_rng(seed)
+    U = rng.normal(size=(n, 2))                              # confounder (measured, in W)
+    Uh = rng.normal(size=n)                                  # unmeasured confounder -> A, Y
+    Zi = rng.normal(size=n)                                  # instrument -> A only (in W)
+    Ha = rng.normal(size=n)                                  # hidden M-bias parent -> A
+    Hy = rng.normal(size=n)                                  # hidden M-bias parent -> Y
+    Cm = 0.9 * Ha + 0.9 * Hy + 0.4 * rng.normal(size=n)      # pre-treatment collider (in W)
+
+    logitA = conf * (U @ np.array([1.3, -1.0])) + unmeasured * Uh + inst * Zi + collider * Ha
+    A = (rng.random(n) < 1.0 / (1.0 + np.exp(-logitA))).astype(float)
+    Y = tau * A + U @ np.array([1.5, 1.0]) + unmeasured * Uh + collider * Hy + rng.normal(size=n)
+
+    feats = np.column_stack([U, Zi, Cm])                     # only pre-treatment MEASURED roles
+    B = rng.normal(size=(feats.shape[1], d)) / np.sqrt(feats.shape[1])
+    W = feats @ B + (1.0 / fidelity) * rng.normal(size=(n, d))
+    return dict(W=W, Ustar=U, A=A, Y=Y, tau=float(tau), true_ate=float(tau))
+
+
+_ROLE_SCENARIOS = {"base": dict(inst=0.0, collider=0.0),
+                   "+instrument": dict(inst=3.0, collider=0.0),
+                   "+collider": dict(inst=0.0, collider=1.3)}
+_ROLE_METHODS = ("oracle_U", "naive_fullW", "prog", "double", "sdr")
+
+
+def role_stress_rows(n=3000, n_reps=12, seed=0, flex=True, crossfit=True, n_folds=5,
+                     conf=1.5, unmeasured=0.4):
+    """Does the outcome-targeted reduction handle each pre-treatment causal ROLE? Compares the
+    oracle (adjust the true confounder U only), naive (full embedding), and the prognostic /
+    double-score / arm-stratified-SDR reductions. Reports bias vs the true ATE AND the excess
+    over the oracle (`*_excess`) -- the extra bias from using the embedding vs the correct
+    adjustment set, which nets out the common unmeasured-confounder baseline.
+
+      base        -> all reductions ~ oracle (small excess): sanity.
+      +instrument -> a strong instrument leaks into the ARM-CONDITIONAL surfaces (conditioning
+                     on A opens the Zi--U collider path), so the prognostic / double-score reductions
+                     pick up excess bias; naive and the moment-based SDR are less affected. An honest
+                     caution -- outcome-surface reductions are not automatically instrument-proof.
+      +collider   -> a pre-treatment M-bias collider Cm predicts Y, so it SURVIVES outcome-targeting:
+                     naive AND every reduction are biased (large negative excess); only the oracle,
+                     which never adjusts Cm, is clean. The reduction is a not de-biasing wand --
+                     estimand-side discipline (baseline restriction / FCI / M-bias sensitivity) is
+                     the recourse. See project_collider_estimand_discipline."""
+    def point(X, s):
+        if crossfit:
+            return _crossfit_ic(X, s["A"], s["Y"], _fit_identity, flex=flex, n_folds=n_folds, seed=seed)[0]
+        return _aipw(X, s["A"], s["Y"], flex=flex)
+
+    def reduced(s, fitter):
+        if crossfit:
+            return _crossfit_ic(s["W"], s["A"], s["Y"], fitter, flex=flex, n_folds=n_folds, seed=seed)[0]
+        phi = fitter(s["W"], s["A"], s["Y"], flex)(s["W"])
+        return _aipw(phi, s["A"], s["Y"], flex=flex)
+
+    rows = []
+    for name, kw in _ROLE_SCENARIOS.items():
+        acc = {m: [] for m in _ROLE_METHODS}
+        for r in range(n_reps):
+            s = simulate_roles(n, conf=conf, unmeasured=unmeasured, seed=seed + r, **kw)
+            acc["oracle_U"].append(point(s["Ustar"], s))
+            acc["naive_fullW"].append(point(s["W"], s))
+            acc["prog"].append(reduced(s, _fit_prognostic_map))
+            acc["double"].append(reduced(s, _fit_double_score_map))
+            acc["sdr"].append(reduced(s, _fit_sdr_map))
+        bias = {m: float(np.mean(acc[m]) - 1.0) for m in _ROLE_METHODS}
+        row = {"scenario": name, **bias}
+        for m in _ROLE_METHODS:
+            row[f"{m}_excess"] = bias[m] - bias["oracle_U"]
+        rows.append(row)
+    return rows
+
+
 def _propensity(W, A):
     return np.clip(LogisticRegression(max_iter=2000, C=1.0).fit(W, A).predict_proba(W)[:, 1], *_CLIP)
 

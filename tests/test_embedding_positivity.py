@@ -13,7 +13,9 @@ sweep:
   6. at severe positivity the outcome-relevant subspace still contains the positivity
      direction, so the ATO-on-phi response is needed on top of the reduction.
 """
-from causal_bench.validation.embedding_positivity import report_rows, report_rows_2d
+from causal_bench.validation.embedding_positivity import (
+    report_rows, report_rows_2d, role_stress_rows,
+)
 
 
 def _rows(confs, flex, n=1500, n_reps=5):
@@ -91,3 +93,26 @@ def test_crossfit_gives_near_nominal_coverage_and_low_bias():
                         crossfit=True, n_folds=5, seed=0)[0]
     assert cf["sdr_ato_cov"] >= 0.8            # ~nominal 95% coverage
     assert abs(cf["sdr_ato_bias"]) < 0.12      # composition near-unbiased under cross-fit
+
+
+# ---- causal-role stress-test: does the outcome-targeted reduction handle each role? ----
+
+def test_causal_role_stress():
+    """Instrument vs collider behaviour of the reductions (bias excess over the oracle, which
+    adjusts the true confounder only). Robust relationships, checked in-sample for speed."""
+    rows = {r["scenario"]: r for r in role_stress_rows(n=2000, n_reps=6, crossfit=False, seed=0)}
+    base, inst, col = rows["base"], rows["+instrument"], rows["+collider"]
+
+    # base: every reduction tracks the oracle (small excess)
+    for m in ("prog_excess", "double_excess", "sdr_excess"):
+        assert abs(base[m]) < 0.2
+
+    # instrument: the moment-based SDR is more instrument-robust than the arm-conditional
+    # double-score (conditioning on A opens the instrument->treatment collider path)
+    assert abs(inst["sdr_excess"]) < abs(inst["double_excess"])
+
+    # collider (Y-predictive M-bias): NO reduction protects -- all fooled with large excess,
+    # while the oracle (never adjusts the collider) stays clean. The honest limit.
+    for m in ("naive_fullW_excess", "prog_excess", "double_excess", "sdr_excess"):
+        assert col[m] < -0.3
+    assert abs(col["oracle_U"]) < 0.25

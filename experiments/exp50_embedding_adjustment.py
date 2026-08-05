@@ -29,7 +29,9 @@ Run: python -m experiments.exp50_embedding_adjustment
 import json
 from pathlib import Path
 
-from causal_bench.validation.embedding_positivity import report_rows, report_rows_2d
+from causal_bench.validation.embedding_positivity import (
+    report_rows, report_rows_2d, role_stress_rows,
+)
 
 OUT_DIR = Path("results/exp50_embedding_adjustment")
 CONFS = (0.0, 1.0, 2.0, 3.0, 5.0)
@@ -43,6 +45,7 @@ def run(*, n=2500, n_reps=12, seed=0):
         "linear_control": report_rows(n=n, n_reps=n_reps, confs=CONFS, flex=False, seed=seed),
         "frontier_2d": report_rows_2d(n=n, n_reps=n_reps, gammas=GAMMAS, confs=CONFS_2D,
                                       flex=True, seed=seed),
+        "role_stress": role_stress_rows(n=n, n_reps=n_reps, crossfit=True, seed=seed),
     }
 
 
@@ -69,7 +72,27 @@ def report(res) -> str:
               "-- the propensity direction can't escape positivity but the prognostic score can.",
               "See issue #206."]
     lines += ["", _frontier_table(res["frontier_2d"])]
+    lines += ["", _role_table(res["role_stress"])]
     return "\n".join(lines)
+
+
+def _role_table(rows) -> str:
+    hdr = (f"  {'scenario':>12} {'oracle':>7} {'naive':>7} {'prog':>7} {'double':>7} {'sdr':>7}"
+           f"  | excess over oracle: {'naive':>6} {'prog':>6} {'double':>6} {'sdr':>6}")
+    out = ["Causal-role stress-test -- pre-treatment confounder + injected instrument / M-bias",
+           "collider (bias vs ATE=1.0; excess = bias - oracle, netting the unmeasured baseline):",
+           hdr, "  " + "-" * (len(hdr) - 2)]
+    for r in rows:
+        out.append(f"  {r['scenario']:>12} {r['oracle_U']:>+7.2f} {r['naive_fullW']:>+7.2f} "
+                   f"{r['prog']:>+7.2f} {r['double']:>+7.2f} {r['sdr']:>+7.2f}  |"
+                   f"                     {r['naive_fullW_excess']:>+6.2f} {r['prog_excess']:>+6.2f} "
+                   f"{r['double_excess']:>+6.2f} {r['sdr_excess']:>+6.2f}")
+    out += ["  Read: instrument -> the moment-based SDR stays ~oracle, but the arm-conditional",
+            "  prognostic/double-score leak it (conditioning on A opens the instrument->A collider).",
+            "  Y-predictive collider -> EVERY embedding method is fooled (large excess); only the",
+            "  oracle, which never adjusts the collider, is clean. The reduction is not a de-biasing",
+            "  wand -- estimand-side discipline (baseline restriction / FCI / M-bias sens) is the recourse."]
+    return "\n".join(out)
 
 
 def _frontier_table(rows) -> str:

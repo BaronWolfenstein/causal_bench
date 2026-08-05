@@ -115,6 +115,53 @@ embedding); the residual — whether the real embedding is itself collider-laden
 and falls to estimand-side discipline (baseline restriction, FCI, M-bias sensitivity), not
 validation.
 
+## Causal-role stress-test (validity beyond confounding)
+
+The sweeps above use a *friendly* DGP — the embedding is a pure encoding of the confounder. A
+real FM embedding is an undifferentiated mix of causal roles, and (unlike decoded variables) you
+cannot select the adjustment set by role. `simulate_roles` (exp50) injects two **pre-treatment**
+roles a baseline embedding can legitimately contain, alongside the confounder, and asks whether
+the outcome-targeted reduction handles them:
+
+  * **instrument** `Zi → A` only, with an unmeasured confounder `Uh` for it to amplify;
+  * **M-bias collider** `Cm ← Ha, Hy` (`Ha → A`, `Hy → Y`, both hidden) — a *pre-treatment*
+    collider, so baseline-restriction does not exclude it.
+
+Cross-fit DML, n=3000, 12 reps; **excess bias over the oracle** (adjust the true confounder `U`
+only), which nets out the common unmeasured-`Uh` baseline:
+
+| scenario | naïve | prognostic | double-score | SDR |
+|---|---|---|---|---|
+| base | +0.05 | +0.07 | +0.07 | +0.05 |
+| +instrument | +0.06 | +0.18 | +0.16 | +0.08 |
+| +collider | −0.68 | −0.58 | −0.59 | −0.67 |
+
+- **Instrument — the reduction is *not* automatically instrument-proof, and *which* reduction
+  matters.** The moment-based SDR (+0.08) and naïve (+0.06) barely move, but the **arm-conditional**
+  reductions — prognostic (+0.18), double-score (+0.16) — *leak* a strong instrument: conditioning
+  on `A` opens the `Zi → A ← U` collider path, so within an arm the instrument becomes spuriously
+  Y-predictive and survives the outcome surface. A real caution, and a mild point for the SDR over
+  the double-score in instrument-heavy settings — and it interacts with the earlier
+  arm-stratification result (arm-stratification fixes treatment contamination but is the very
+  conditioning that leaks the instrument).
+
+- **Y-predictive collider — every embedding method is fooled (−0.58…−0.68 excess); only the oracle
+  is clean.** `Cm` predicts `Y` (through `Hy`), so it survives outcome-targeting; the reduction
+  cannot drop it, and adjusting for it opens the M-bias path. No reduction is a de-biasing wand
+  here — the recourse is **estimand-side discipline** (baseline restriction, FCI orientation,
+  M-bias sensitivity; `project_collider_estimand_discipline`), *not* a better reduction. On a real
+  embedding the collider question is only reachable **semi-synthetically** (append a known-role
+  direction to the real embedding); whether the real embedding is itself collider-laden is
+  unverifiable.
+
+**Bottom line for validity.** Adjusting on an FM embedding is valid only under
+unconfoundedness-given-`W` **and** a confounder-rich (not collider-laden) baseline representation.
+The outcome-targeted reduction buys back the instrument-exclusion an analyst would do by hand with
+decoded variables — but only the moment-based SDR, and it cannot buy back collider-avoidance, which
+stays an assumption managed on the estimand side. That is what separates the embedding program from
+decoded-patient inference (where the DAG makes role-selection explicit) and bounds the claim to
+"as-valid-as-the-reduction-plus-estimand-discipline", not unconditional.
+
 ## Candidate methods (to evaluate)
 
 **Ranking by evidence.** The **double-score** and the **arm-stratified SDR** both now have
