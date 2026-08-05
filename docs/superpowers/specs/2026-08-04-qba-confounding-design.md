@@ -42,3 +42,9 @@ an influence-function one-step update (avoids per-iteration refit), to certify Q
 the nonlinear TMLE/AIPW-ML estimators at OC-sim scale — a small methods contribution.
 Survival (HR/RMST) QBA composes with `concrete` later. Complements #206 (adjustment-set
 validity) and Σ_ε/Σ_x; QBA bounds the residual a valid adjustment set can't capture.
+
+**Relation to existing experiments.** `exp3_unmeasured` *demonstrates* that estimators
+fail under unmeasured confounding (the honest null); exp49 is the QBA *tool that responds*
+to exactly that failure (quantify + bound it). `exp40_bias_amplification` is the adjacent
+OVB phenomenon. exp49 does not duplicate these — it adds the correction/sensitivity that
+was missing.
