@@ -116,3 +116,34 @@ def test_causal_role_stress():
     for m in ("naive_fullW_excess", "prog_excess", "double_excess", "sdr_excess"):
         assert col[m] < -0.3
     assert abs(col["oracle_U"]) < 0.25
+
+
+def test_role_detection_catches_what_the_reduction_misses():
+    """The estimand-side DETECTION layer (zero_flow_ci / Markov blanket) flags the roles the
+    reduction is fooled by, on named variables: the MB pulls in the collider (MB != adjustment
+    set), and the v-structure signature detects the instrument-at-collider (A collider of Zi,U1)."""
+    from causal_bench.validation.embedding_positivity import role_detection
+    d = role_detection(n=1500, n_reps=3, seed=0, n_perm=50)
+    assert d["collider_in_mb"] >= 0.6          # MB is fooled -- it pulls the collider in
+    assert d["vstructure_detected"] >= 0.6     # the CI oracle orients the v-structure
+
+
+def test_oracle_double_score_is_ate_sufficient():
+    """Grounds the sufficiency theory (spec Validity section, Props 1-2): adjusting for the TRUE
+    potential-outcome surfaces (b0, b1) recovers the ATE under effect modification, while the true
+    prognostic b0 ALONE fails -- the pair is the minimal ATE-sufficient reduction."""
+    import numpy as np
+    from causal_bench.validation.embedding_positivity import simulate, _EM_DIR, _aipw
+    beta = np.array([1.5, 1.0])                       # the DGP's outcome loading (Y = tau_i*A + U@beta)
+    dbl, prog, tru = [], [], []
+    for r in range(15):
+        s = simulate(2500, conf=2.0, tau=1.0, gamma=4.0, seed=r)
+        U, A, Y = s["Ustar"], s["A"], s["Y"]
+        b0 = U @ beta                                # true E[Y(0)|W]
+        b1 = 1.0 * (1.0 + 4.0 * (U @ _EM_DIR)) + U @ beta   # true E[Y(1)|W]
+        tru.append(s["true_ate"])
+        dbl.append(_aipw(np.column_stack([b0, b1]), A, Y))
+        prog.append(_aipw(b0[:, None], A, Y))
+    t = float(np.mean(tru))
+    assert abs(np.mean(dbl) - t) < 0.15              # double-score: ATE-sufficient at strong EM
+    assert np.mean(prog) - t < -0.4                  # prognostic alone: fails under EM (Prop 2)

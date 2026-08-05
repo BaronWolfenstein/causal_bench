@@ -96,7 +96,9 @@ def simulate_roles(n, d=50, fidelity=6.0, conf=2.0, tau=1.0, inst=0.0, collider=
     feats = np.column_stack([U, Zi, Cm])                     # only pre-treatment MEASURED roles
     B = rng.normal(size=(feats.shape[1], d)) / np.sqrt(feats.shape[1])
     W = feats @ B + (1.0 / fidelity) * rng.normal(size=(n, d))
-    return dict(W=W, Ustar=U, A=A, Y=Y, tau=float(tau), true_ate=float(tau))
+    # named role columns (before mixing into W) — for the detection layer on NAMED variables
+    return dict(W=W, Ustar=U, A=A, Y=Y, tau=float(tau), true_ate=float(tau),
+                U1=U[:, 0], Zi=Zi, Cm=Cm)
 
 
 _ROLE_SCENARIOS = {"base": dict(inst=0.0, collider=0.0),
@@ -150,6 +152,39 @@ def role_stress_rows(n=3000, n_reps=12, seed=0, flex=True, crossfit=True, n_fold
             row[f"{m}_excess"] = bias[m] - bias["oracle_U"]
         rows.append(row)
     return rows
+
+
+def role_detection(n=2500, n_reps=8, seed=0, n_perm=80):
+    """Estimand-side DETECTION layer for the causal-role residual, on the NAMED role variables
+    (the semi-synthetic setting where roles aren't yet dissolved into anonymous embedding dims).
+    Uses causal_bench's own CI machinery (`detectors.zero_flow_ci`):
+
+      * markov_blanket(Y) — the MB is a *prediction* object; it pulls in the collider Cm (and the
+        instrument Zi). So adjusting for the MB is fooled: **MB != back-door adjustment set**.
+      * v-structure orientation — the two-test signature Zi ⟂ U1 (marginally) but Zi ⟂̸ U1 | A
+        *detects* that A is a collider of the instrument and confounder. The CI oracle CATCHES the
+        structure the reduction is blind to — where the variables are named.
+
+    Returns detection rates. The M-bias collider Cm has HIDDEN parents (Ha,Hy), so orienting *it*
+    needs FCI-with-latents (the harder case `causal_discovery` flags); this layer flags the
+    instrument v-structure cleanly and shows MB is fooled. On the RAW embedding there are no named
+    variables to test — that is the true residual, not a blanket 'unverifiable'."""
+    from causal_bench.detectors.zero_flow_ci import markov_blanket, zero_flow_ci_test
+    cm_in_mb, zi_in_mb, vstruct = [], [], []
+    for r in range(n_reps):
+        s = simulate_roles(n, inst=3.0, collider=1.3, seed=seed + r)
+        A, U1, Zi = s["A"], s["U1"], s["Zi"]
+        data = np.column_stack([A, s["Y"], U1, Zi, s["Cm"]])       # A=0 Y=1 U1=2 Zi=3 Cm=4
+        rng = np.random.default_rng(seed + r)
+        mb = set(markov_blanket(1, data, n_perm=n_perm, rng=rng))
+        cm_in_mb.append(4 in mb); zi_in_mb.append(3 in mb)
+        mrg = zero_flow_ci_test(Zi, U1, np.ones((n, 1)), n_perm=n_perm, rng=rng)
+        cnd = zero_flow_ci_test(Zi, U1, A[:, None], n_perm=n_perm, rng=rng)
+        vstruct.append(mrg.verdict == "supports" and cnd.verdict == "refutes")
+    return {"n_reps": n_reps,
+            "collider_in_mb": float(np.mean(cm_in_mb)),
+            "instrument_in_mb": float(np.mean(zi_in_mb)),
+            "vstructure_detected": float(np.mean(vstruct))}
 
 
 def _propensity(W, A):

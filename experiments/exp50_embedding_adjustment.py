@@ -30,7 +30,7 @@ import json
 from pathlib import Path
 
 from causal_bench.validation.embedding_positivity import (
-    report_rows, report_rows_2d, role_stress_rows,
+    report_rows, report_rows_2d, role_stress_rows, role_detection,
 )
 
 OUT_DIR = Path("results/exp50_embedding_adjustment")
@@ -46,6 +46,7 @@ def run(*, n=2500, n_reps=12, seed=0):
         "frontier_2d": report_rows_2d(n=n, n_reps=n_reps, gammas=GAMMAS, confs=CONFS_2D,
                                       flex=True, seed=seed),
         "role_stress": role_stress_rows(n=n, n_reps=n_reps, crossfit=True, seed=seed),
+        "role_detection": role_detection(n=n, n_reps=min(n_reps, 6), seed=seed),
     }
 
 
@@ -73,6 +74,14 @@ def report(res) -> str:
               "See issue #206."]
     lines += ["", _frontier_table(res["frontier_2d"])]
     lines += ["", _role_table(res["role_stress"])]
+    d = res["role_detection"]
+    lines += ["",
+              "Detection layer (estimand-side discipline, NAMED variables; zero_flow_ci / MB):",
+              f"  collider in MB(Y): {d['collider_in_mb']:.2f}  (MB is fooled -> MB != adjustment set)",
+              f"  instrument in MB(Y): {d['instrument_in_mb']:.2f}",
+              f"  v-structure detected (Zi⟂U1 but not | A): {d['vstructure_detected']:.2f}  (CI oracle catches it)",
+              "  Read: the discipline layer CATCHES what the reduction misses -- where variables are named;",
+              "  the raw dense embedding has no named variables to test (the true residual)."]
     return "\n".join(lines)
 
 
