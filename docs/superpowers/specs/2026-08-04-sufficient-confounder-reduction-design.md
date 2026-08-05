@@ -3,15 +3,29 @@
 Design spec for the tier-2 general method of issue #206 — the piece that elevates the
 current result from a workshop note to a full CLeaR/CHIL methods paper.
 
-**Status — design + results.** Built and validated in exp50 (PR #213): the effect-modification
-× positivity 2-D frontier with cross-fit DML coverage; the double-score, arm-stratified SDR, and
-ATO-on-φ reductions; and the causal-role stress-test. Headline: the **composition — arm-stratified
-SDR reduction + ATO-on-φ positivity response, cross-fit — is the recommendation**, near-unbiased
-(|bias| ≤ 0.05) and ~nominally covered (0.80–1.00) across the whole synthetic frontier, and it is
-the most instrument-robust reduction; the one role it cannot handle is a Y-predictive collider
-(no reduction can — that falls to estimand-side discipline). **Remaining:** real-8B validation of
-the composition (payoff_v8-style injected effect + semi-synthetic role injection), the formal
-causal-sufficiency theory, and — exploratory — the learned bottleneck.
+**Status — design + results, now with real-8B.** Built and validated in exp50 (PR #213): the
+effect-modification × positivity 2-D frontier with cross-fit DML coverage; the double-score,
+arm-stratified SDR, and ATO-on-φ reductions; the causal-role stress-test; and **real-8B validation
+on the SMB Qwen3-8B embeddings**. The synthetic frontier and the real data disagree on which
+reduction wins, and the real data is decisive:
+
+- **Synthetic (linear-Gaussian embedding):** the composition (arm-stratified SIR/SAVE SDR +
+  ATO-on-φ) was near-unbiased and best-covered across the frontier.
+- **Real 8B (nonlinear embedding), the decisive test:** the **regression-based double-score
+  recovers (bias +0.02 on a true −1.22 effect); the SIR/SAVE-SDR fails (+0.70)** because linear
+  moment methods cannot find the confounding subspace of a nonlinear embedding. Kernelizing SDR
+  (RBF features) confirms the diagnosis (+0.70 → +0.24) but plateaus ~10× worse than the
+  double-score; pooling SDR is worse still (treatment contamination).
+
+**Recommendation (revised by real-8B): the flexible regression-based DOUBLE-SCORE** — it recovers
+on real embeddings, handles effect modification, and escapes the positivity trap as a low-dim
+balancing score (no ATO needed on this cohort). The SIR/SAVE-SDR is retained only as the
+linear-regime method; the ATO-on-φ positivity response composes on top of *any* reduction when the
+positivity axis bites. The one role no reduction handles is a Y-predictive collider (estimand-side
+discipline). **Remaining:** the formal causal-sufficiency theory. (The nonlinear-SDR salvage was
+tested exhaustively — RKS kernel SDR plateaus at +0.24, a learned MLP bottleneck reaches +0.16,
+neither matching the double-score's +0.02 — so the "general reduction" resolves to the double-score
+rather than remaining an open salvage.)
 
 ## Motivation
 
@@ -115,8 +129,10 @@ Findings (all cross-fit):
 
 This resolves the earlier caveat — positivity-escape (requirement 2) is now tested along the
 conf axis, and the answer is that the *reduction* handles effect modification while the *ATO
-response* handles positivity; the composition is the recommendation. The remaining load-bearing
-gaps are **real-8B validation of the composition** (inject a known effect into the SMB
+response* handles positivity. On this synthetic **linear** DGP the SDR+ATO composition is the
+winner — **but see Real-8B validation below: on real nonlinear embeddings the regression-based
+double-score wins and the SIR/SAVE-SDR composition fails, so the composition is NOT the final
+recommendation.** The remaining load-bearing gaps were **real-8B validation** (now done) (inject a known effect into the SMB
 embeddings, as payoff_v8 did for the prognostic score) and the **causal-role stress-test**:
 does the outcome-targeted reduction drop instrument directions and get fooled by Y-predictive
 colliders (the predictive-vs-causal-sufficiency question)? On real embeddings the causal-role
@@ -124,6 +140,49 @@ question is only reachable semi-synthetically (append known-role directions to t
 embedding); the residual — whether the real embedding is itself collider-laden — is unverifiable
 and falls to estimand-side discipline (baseline restriction, FCI, M-bias sensitivity), not
 validation.
+
+## Real-8B validation (the decisive test)
+
+The synthetic sweeps use a *linear* embedding (`W = Ustar @ B`); a real FM embedding is nonlinear,
+and that difference decides which reduction wins. payoff_v9 (demo `real8b/`) encodes a 1600-patient
+oncology cohort through the SMB Qwen3-8B model (baseline, pre-treatment; PCA-64 + ZCA), injects a
+known heterogeneous continuous effect (`tau_cont`, stronger in the rare subgroup; rare are ~76%
+treated vs ~36% common — a real positivity trap), and runs every reduction cross-fit against the
+true ATE (−1.222).
+
+| method | bias vs true | read |
+|---|---|---|
+| naïve (full embedding) | +0.967 | pathology — attenuates a −1.22 effect to ~−0.25 |
+| oracle (embedding + U) | +0.842 | positivity trap: still attenuated *with* U measured |
+| **prognostic** | **−0.011** | recovers |
+| **double-score** | **+0.024** | recovers |
+| SIR/SAVE-SDR (arm-strat, k=2) | +0.701 | **fails** on the nonlinear embedding |
+| SDR + ATO composition | +0.606 | fails (inherits the SDR base) |
+
+**The regression-based reductions recover; the SIR/SAVE-SDR fails** — linear moment methods cannot
+find the confounding subspace of a nonlinear encoding. This inverts the synthetic-frontier result,
+where the SDR composition won on the *linear* DGP, and it is exactly why real-8B validation was
+load-bearing.
+
+SDR salvage attempts (real-8B), all cross-fit — the explicit reductions improve monotonically with
+nonlinearity but none reach the double-score:
+
+| reduction | bias | note |
+|---|---|---|
+| double-score | **+0.02** | the winner — the two PO surfaces, fit directly with HGB |
+| learned bottleneck (MLP, k=4) | +0.16 | best explicit reduction; still 6× the double-score |
+| RKS kernel SDR (SIR/SAVE on random Fourier features) | +0.24 | D×γ sweep plateaus; more features give no gain |
+| SIR/SAVE SDR, k=6 | +0.63 | more components barely help |
+| SIR/SAVE SDR, k=2 | +0.70 | the failing baseline |
+| pooled SIR/SAVE | +1.00 | worse — treatment contamination, as predicted |
+
+**Conclusion — the "general SDR method" resolves to the double-score.** The double-score already *is*
+the minimal outcome-sufficient reduction — the two potential-outcome surfaces, fit with the strongest
+flexible learner. SIR/SAVE (linear or RKS) and the learned MLP bottleneck are all more elaborate ways
+of approximating those two surfaces, and each loses something the direct fit does not; the monotone
++0.70 → +0.24 → +0.16 → +0.02 progression is the evidence. The double-score is the real-data
+recommendation; explicit dimension reduction adds complexity without benefit on real embeddings, and
+the SIR/SAVE-SDR is retained only for the linear regime.
 
 ## Causal-role stress-test (validity beyond confounding)
 
@@ -174,17 +233,19 @@ decoded-patient inference (where the DAG makes role-selection explicit) and boun
 
 ## Candidate methods (to evaluate)
 
-**Ranking by evidence.** The **double-score** and the **arm-stratified SDR** both now have
-empirical backing (the 2-D DML sweep above): each is robust to effect modification, and the
-SDR composed with the ATO positivity response is near-unbiased and ~nominally covered across
-the whole frontier — that composition is the **recommendation**. What remains genuinely open is
-the **validity theory**: SIR/SAVE yield *predictive* sufficiency — the central subspace of a
-regression — which does **not** by itself imply the causal back-door validity `Y(a) ⊥ A | φ(W)`
-a valid adjustment set requires. Arm-stratification is what buys back causal relevance
-empirically (it is the linear analog of the balancing-score / double-score construction), but
-the conditions under which it is *provably* valid — and its behaviour under instrument and
-collider directions (the causal-role stress-test) — are the open contribution. The learned
-bottleneck stays exploratory.
+**Ranking by evidence (synthetic + real-8B).** The **double-score is the recommendation.** On the
+synthetic linear frontier the SDR+ATO composition tied it; on **real nonlinear 8B embeddings the
+double-score recovers (+0.02) while every explicit dimension reduction underperforms** — SIR/SAVE
++0.70, RKS kernel +0.24, learned MLP bottleneck +0.16 (Real-8B validation). The double-score *is*
+the minimal outcome-sufficient reduction (the two PO surfaces, flexibly fit), so there is nothing
+better to reduce to; the other methods are more elaborate approximations of it. The **ATO-on-φ**
+positivity response composes on top of the double-score when the positivity axis bites (though the
+double-score escaped it unaided on the real cohort). What remains genuinely open is the **validity
+theory**: SIR/SAVE yield *predictive* sufficiency, which does not by itself imply back-door validity
+`Y(a) ⊥ A | φ(W)` — but since the double-score won empirically, the theory question is now "why is
+the PO-surface pair the right sufficient statistic", not "which reduction". SDR (linear/RKS) is
+retained only for the linear regime; the learned bottleneck confirmed nonlinearity is the axis but
+did not beat the direct double-score.
 
 1. **Double-score / joint PO surfaces** — `φ = (E[Y|A=0,W], E[Y|A=1,W])`. 2-D, captures
    effect modification; the treated surface may partly re-import positivity → test whether
@@ -224,8 +285,13 @@ identified target otherwise.
 - **Done** — causal-role stress-test (instrument vs Y-predictive collider).
 - **Done** — self-validating controls (linear outcome = no pathology; γ=0 = prognostic
   suffices; conf=0 unbiased).
-- **Remaining** — **real-8B validation** of the composition on the SMB embeddings (payoff_v8-style
-  injected known effect + semi-synthetic known-role injection); the learned bottleneck (exploratory).
+- **Done** — **real-8B validation** on the SMB Qwen3-8B embeddings (payoff_v9): the regression
+  double-score recovers (+0.02); the SIR/SAVE-SDR fails on the nonlinear embedding (+0.70, RKS
+  salvage plateaus +0.24). See the Real-8B validation section — this reversed the recommendation.
+- **Done** — nonlinear-SDR salvage swept (RKS kernel +0.24; learned MLP bottleneck +0.16); neither
+  matches the double-score (+0.02), which is the resolution.
+- **Remaining** — formal causal-sufficiency theory; the semi-synthetic role injection was
+  inconclusive (SDR already failed for the nonlinearity reason).
 
 ## Deliverables & venue
 
