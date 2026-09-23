@@ -16,6 +16,7 @@ import numpy as np
 
 from causal_bench.validation.survival_uplift import (
     sim_survival_uplift, true_cate, km_cate, tmle_cate, concrete_cate,
+    true_rmst_cate, rmst_tmle_cate,
 )
 
 OUT_DIR = Path("results/exp51_survival_uplift")
@@ -40,7 +41,8 @@ def run(*, n=6000, tau=3.0, seed=0, seeds=None, concrete_seeds=None):
     if seeds is None:
         df = sim_survival_uplift(n, tau=tau, seed=seed)
         return {"truth": truth, "km": km_cate(df, tau), "tmle": tmle_cate(df, tau),
-                "concrete": concrete_cate(df, tau), "n": n, "tau": tau, "multiseed": False}
+                "concrete": concrete_cate(df, tau), "n": n, "tau": tau, "multiseed": False,
+                "rmst_truth": true_rmst_cate(tau=tau), "rmst_tmle": rmst_tmle_cate(df, tau)}
     seeds = list(seeds); cseeds = list(concrete_seeds) if concrete_seeds is not None else seeds[:min(6, len(seeds))]
     return {"truth": truth, "km": _mean_se(km_cate, tau, n, seeds),
             "tmle": _mean_se(tmle_cate, tau, n, seeds),
@@ -72,7 +74,17 @@ def report(r) -> str:
          f"**Uplift heterogeneity** CATE(1)−CATE(0): truth {r['truth']['heterogeneity']:.3f}"
          + (f", CONCRETE {het(cc):.3f}" if het(cc) is not None else "")
          + f", TMLE-IPCW {het(tm):.3f}, KM {het(km):.3f}.",
-         "",
+         ""]
+    if r.get("rmst_truth") and not ms:      # the OTHER product metric: extra retention-days (RMST), TIME units
+        rt = r["rmst_truth"]["cate"]; rm = r["rmst_tmle"]
+        L += [f"**RMST uplift** ('extra active-days over τ={r['tau']}', time units) — DR via ∫S(t)dt over a horizon grid:",
+              "| stratum V | truth (days) | TMLE-IPCW RMST (DR) |",
+              "|-----------|--------------|---------------------|",
+              f"| V=0 | {rt[0.0]:.3f} | {rm[0.0]:.3f} |",
+              f"| V=1 | {rt[1.0]:.3f} | {rm[1.0]:.3f} |",
+              "(the more product-intuitive metric: retention-days gained, alongside the retention-rate lift above.)",
+              ""]
+    L += [
          "Read-out: under confounding (A↑ with W1, which also ↑ hazard → treated look sicker) + informative",
          "censoring in W1, naive Kaplan–Meier is systematically biased LOW for the per-stratum uplift. Among the",
          "doubly-robust survival estimators, CONCRETE (McCoy's fork, CONTINUOUS-time TMLE) is best-calibrated —",

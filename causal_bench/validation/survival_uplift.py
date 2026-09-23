@@ -99,3 +99,35 @@ def concrete_cate(df, tau):
         res = est.estimate(df[df["W2"] == v].reset_index(drop=True), horizon=tau)
         out[v] = -float(res[0].point_estimate) if res else float("nan")
     return out
+
+
+# ---- the OTHER product metric: RMST-difference ("extra retention-days"), in TIME units ----
+def true_rmst_cate(*, tau=3.0, n=2_000_000, seed=99):
+    """Interventional MC truth: per-stratum RMST uplift RMST(τ|1,v)−RMST(τ|0,v). RMST for Exp(λ) capped
+    at τ is E[min(T,τ)] = (1−e^{−λτ})/λ. This is 'extra active-days over τ' — the time-units product metric."""
+    rng = np.random.default_rng(seed); W1 = rng.normal(size=n)
+    def rmst(a, v):
+        lam = np.exp(_B0 + _BW * W1 + _BA * a + _BAV * a * v)
+        return float(np.mean((1.0 - np.exp(-lam * tau)) / lam))
+    cate = {v: rmst(1, v) - rmst(0, v) for v in (0.0, 1.0)}
+    return {"cate": cate, "heterogeneity": cate[1.0] - cate[0.0]}
+
+
+def rmst_tmle_cate(df, tau, grid=None):
+    """DR RMST-difference CATE = ∫₀^τ [S(t|1,v)−S(t|0,v)] dt, via TMLE-IPCW survival-difference over a horizon
+    grid, trapezoid-integrated (S-diff at t=0 is 0). Doubly robust, avoids the CONCRETE-bridge LYL convention;
+    the 'extra retention-days' metric. (CONCRETE could supply this via getRMST(Intervention=c(1,0)); not wired
+    to keep the shared bridge on its risk-difference contract.)"""
+    from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
+    grid = np.asarray(grid) if grid is not None else np.linspace(tau / 6, tau, 6)
+    ts = np.concatenate([[0.0], grid])
+    out = {}
+    for v in (0.0, 1.0):
+        sub = df[df["W2"] == v].reset_index(drop=True)
+        sdiff = [0.0]
+        for t in grid:
+            res = TMLEIPCWEstimator().estimate(sub, horizon=float(t))
+            sdiff.append(-float(res[0].point_estimate) if res else float("nan"))  # survival-diff = −risk-diff
+        sdiff = np.array(sdiff)
+        out[v] = float(np.sum((sdiff[:-1] + sdiff[1:]) / 2 * np.diff(ts)))          # ∫ S-diff dt
+    return out
