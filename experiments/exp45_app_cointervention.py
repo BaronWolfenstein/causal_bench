@@ -7,6 +7,9 @@ the question):
 
   • **naive** (OLS adjusting the feedback confounder L1) — biased for A0's blip: adjusting the
     *mediator* L1 blocks A0's effect through L1.
+  • **time-varying IPTW-MSM** (Robins) — the entry-rung g-method baseline: stabilized inverse-
+    treatment-probability weights over both decision points → saturated marginal structural model;
+    unbiased for the regime contrast under sequential exchangeability, singly robust.
   • **two-timepoint LTMLE** — not applicable: it has a fixed baseline A + a single mediator, no
     second treatment A1 (reported, not run).
   • **sequential regression (ICE)** — the multi-period LTMLE g-computation backbone; recovers the
@@ -20,8 +23,8 @@ Run: python -m experiments.exp45_app_cointervention
 from pathlib import Path
 
 from causal_bench.validation.longitudinal_cointervention import (
-    g_estimation, g_estimation_effect_mod, ice_contrast, naive_effects, sim_longitudinal,
-    true_values,
+    g_estimation, g_estimation_effect_mod, ice_contrast, msm_iptw, naive_effects,
+    sim_longitudinal, true_values,
 )
 
 OUT_DIR = Path("results/exp45_app_cointervention")
@@ -34,8 +37,9 @@ def run(*, n=8000, psi0=0.3, psi1=0.5, effect_mod=0.4, seed=0):
     ne = naive_effects(d)
     dm = sim_longitudinal(n, psi0=psi0, psi1=psi1, effect_mod=effect_mod, seed=seed + 1)
     em = g_estimation_effect_mod(dm)
+    msm = msm_iptw(d)
     return {"truth": tv, "g_psi0": gp0, "g_psi1": gp1, "ice_contrast": ice_contrast(d),
-            "naive": ne, "em": em, "effect_mod": effect_mod}
+            "msm_contrast": msm["contrast"], "naive": ne, "em": em, "effect_mod": effect_mod}
 
 
 def report(r) -> str:
@@ -43,6 +47,7 @@ def report(r) -> str:
     L = ["## Exp 45 — time-varying app co-intervention: estimand distinction\n",
          "| estimand / estimator | estimate | truth |",
          "|----------------------|----------|-------|",
+         f"| **regime contrast** E[Y₁₁]−E[Y₀₀] — time-varying IPTW-MSM (baseline, singly robust) | {r['msm_contrast']:.3f} | {tv['contrast']:.3f} |",
          f"| **regime contrast** E[Y₁₁]−E[Y₀₀] — sequential regression (ICE) | {r['ice_contrast']:.3f} | {tv['contrast']:.3f} |",
          f"| **blip ψ(A1)** — g-estimation | {r['g_psi1']:.3f} | {tv['blip_A1']:.3f} |",
          f"| **blip ψ(A0)** (total, incl. L1-mediated) — g-estimation | {r['g_psi0']:.3f} | {tv['blip_A0']:.3f} |",
