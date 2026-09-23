@@ -25,6 +25,53 @@ suppressPackageStartupMessages({
 
 
 ## ---------------------------------------------------------------------------
+## .concrete_args — the single builder for the formatArguments analysis plan (the shared seam every run_*
+## entry should use). Centralises: id/event_type/A coercion, the L1 -> CensoringTV routing (the collider-
+## avoidance invariant, previously copy-pasted ~5x), and the horizon cap; plus the #223 fixes — a DENSE RMST
+## TargetTime grid (a single target time cannot integrate the RMST integral ∫S dt) and the MinNuisance
+## positivity bound (lower-bounds the propensity g so the TMLE clever covariate 1/g cannot blow up on
+## overlap tails; the residual bias grew with n from exactly that). Params mirror ConcreteConfig.to_r_kwargs()
+## in causal_bench/estimators/concrete_config.py. Returns list(args, horizon, dt).
+## `rmst_grid=FALSE` gives a single TargetTime (for callers that pass their own grid / don't integrate RMST).
+## ---------------------------------------------------------------------------
+.concrete_args <- function(df, horizon, covars = c("W1", "W2", "W3", "W4"),
+                           crossover_col = NULL, strata_cols = NULL,
+                           cv_folds = 5, min_nuisance = NULL, rmst_grid_n = 12,
+                           rmst_grid = TRUE, target_time = NULL, verbose = FALSE) {
+  dt <- as.data.table(df)
+  dt[, id := .I]; dt[, event_type := as.integer(event_type)]; dt[, A := as.integer(A)]
+  ctv <- NULL
+  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
+    obs_idx <- !is.na(dt[["L1"]])
+    ctv <- data.table(id = dt$id[obs_idx], time = 0.5, L1 = dt[["L1"]][obs_idx])
+    if (verbose) message(".concrete_args: L1 -> CensoringTV (not the outcome model)")
+  }
+  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
+  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  if (horizon >= last_event) {
+    horizon <- last_event * 0.999
+    if (verbose) message(sprintf(".concrete_args: horizon capped to %.6f (last event)", horizon))
+  }
+  ## TargetTime: an explicit `target_time` (e.g. the simultaneous multi-horizon vector) wins; else a dense
+  ## RMST grid; else the single (capped) horizon. `target_time` is still capped to the last event above.
+  tt <- if (!is.null(target_time)) pmin(target_time, horizon)
+        else if (isTRUE(rmst_grid) && rmst_grid_n >= 2)
+          seq(horizon / rmst_grid_n, horizon, length.out = as.integer(rmst_grid_n)) else horizon
+  fa <- list(
+    DataTable = dt, EventTime = "T_obs", EventType = "event_type", Treatment = "A", ID = "id",
+    Intervention = list(`1` = 1L, `0` = 0L), TargetTime = tt, TargetEvent = 1L,
+    Covariates = covars, CVArg = list(V = as.integer(cv_folds)), CensoringTV = ctv,
+    Crossover = crossover_col, Strata = strata_cols, Verbose = verbose)
+  ## MinNuisance is the positivity bound — omitted (concrete's own default) unless explicitly set, so the
+  ## structural fix stays positivity-neutral; the positivity fix supplies a value once verified (#223).
+  if (!is.null(min_nuisance)) fa$MinNuisance <- as.numeric(min_nuisance)
+  args <- tryCatch(do.call(concrete::formatArguments, fa),
+                   error = function(e) stop(".concrete_args: formatArguments failed: ", conditionMessage(e)))
+  list(args = args, horizon = horizon, dt = dt)
+}
+
+
+## ---------------------------------------------------------------------------
 ## run_concrete_bridge
 ##
 ## Parameters
@@ -48,67 +95,23 @@ run_concrete_bridge <- function(df,
                                 covars       = c("W1", "W2", "W3", "W4"),
                                 crossover_col = NULL,
                                 strata_cols  = NULL,
+                                cv_folds     = 5,
+                                min_nuisance = NULL,
+                                rmst_grid_n  = 12,
                                 verbose      = FALSE) {
 
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
   stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
 
-  ## concrete requires a data.table; add a row ID for CensoringTV matching
-  dt <- as.data.table(df)
-  dt[, id         := .I]
-  dt[, event_type := as.integer(event_type)]
-  dt[, A          := as.integer(A)]
-
-  ## Build CensoringTV from L1 if present.
-  ## L1 is a post-treatment time-varying covariate that drives both the event
-  ## and informative censoring. It must enter ONLY the censoring model — passing
-  ## it to the outcome model as a covariate creates collider bias (the same trap
-  ## Exp 5 demonstrates with cox_l1).
-  ctv <- NULL
-  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
-    obs_idx <- !is.na(dt[["L1"]])
-    ctv <- data.table(id   = dt$id[obs_idx],
-                      time = 0.5,               # t_L1 matches DGPConfig.t_L1
-                      L1   = dt[["L1"]][obs_idx])
-    if (verbose) message("concrete_bridge: passing L1 to CensoringTV (not outcome model)")
-  }
-  ## Drop L1 (and any other L-columns) from the main table — they've been
-  ## extracted to CensoringTV; formatArguments rejects NaN-valued columns.
-  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
-
-  ## Cap TargetTime at the last observed event — concrete errors if the
-  ## horizon falls after all individuals are censored.
-  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
-  if (horizon >= last_event) {
-    horizon <- last_event * 0.999
-    if (verbose) message(sprintf("concrete_bridge: horizon capped to %.6f (last event time)", horizon))
-  }
-
-  ## formatArguments — wraps data + analysis plan into a single object.
-  ## CensoringTV conditions the IPCW on L1 (LOCF + change-from-baseline).
-  ## Crossover (when supplied) moves from ITT to the per-protocol "no-switching"
-  ## estimand: each switcher is re-censored at switch time and a separate
-  ## crossover hazard is multiplied into the IPCW.
-  args <- tryCatch(
-    concrete::formatArguments(
-      DataTable   = dt,
-      EventTime   = "T_obs",
-      EventType   = "event_type",
-      Treatment   = "A",
-      ID          = "id",
-      Intervention = list(`1` = 1L, `0` = 0L),
-      TargetTime  = horizon,
-      TargetEvent = 1L,
-      Covariates  = covars,
-      CVArg       = list(V = 5L),
-      CensoringTV = ctv,
-      Crossover   = crossover_col,
-      Strata      = strata_cols,
-      Verbose     = verbose
-    ),
-    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
-  )
+  ## Build the analysis plan via the shared helper (L1->CensoringTV, horizon cap, dense RMST grid,
+  ## MinNuisance positivity bound — see .concrete_args + #223).
+  ca      <- .concrete_args(df, horizon, covars = covars, crossover_col = crossover_col,
+                            strata_cols = strata_cols, cv_folds = cv_folds,
+                            min_nuisance = min_nuisance, rmst_grid_n = rmst_grid_n, verbose = verbose)
+  args    <- ca$args
+  horizon <- ca$horizon
+  dt      <- ca$dt
 
   ## Fit nuisance models + TMLE update
   est <- tryCatch(
@@ -125,7 +128,10 @@ run_concrete_bridge <- function(df,
   ## Extract RMST contrast — try getRMST() first (current API), fall back to
   ## targetRMST() for older installed versions.
   rmst <- tryCatch(
-    concrete::getRMST(est, Horizon = horizon, Intervention = c(1L, 0L)),
+    ## Intervention = c(1L, 2L): the two intervention SLOTS (1-based) of Intervention=list('1','0'), i.e. the
+    ## A=1 vs A=0 contrast. The old c(1L,0L) referenced a non-existent slot 0 — erroring on a grid, silently
+    ## falling through to the LYL parse on a single time (the 0.221 "attenuation"). #223.
+    concrete::getRMST(est, Horizon = horizon, Intervention = c(1L, 2L)),
     error = function(e) {
       if (verbose) message("getRMST failed, trying targetRMST()")
       tryCatch(
@@ -221,11 +227,31 @@ run_concrete_bridge <- function(df,
     }
   }
 
+  ## Additively parse the pre-computed RMST-Diff contrast row (Estimand == "RMST Diff"): treated − control,
+  ## positive = survival BENEFIT, NO negation (unlike the LYL/risk-difference `ATE` above, which the Python
+  ## side negates). Now reachable given the Intervention=c(1,2) + dense-grid fix. Consumers opt in via
+  ## ConcreteRMSTEstimator(rmst_contrast=True) so the existing ATE/SE contract is untouched. #223 (Fix 1).
+  rmst_point <- NA_real_; rmst_se <- NA_real_
+  if (is.data.frame(rmst) || is.data.table(rmst)) {
+    rdf2 <- as.data.frame(rmst)
+    ec   <- .est_col(rdf2)
+    if (!is.na(ec)) {
+      dr <- rdf2[grepl("RMST Diff", rdf2[[ec]], ignore.case = TRUE), ]
+      if (nrow(dr) > 0) {
+        pc <- .pt_col(dr); sc <- .se_col(dr)
+        if (!is.na(pc)) rmst_point <- as.numeric(dr[[pc]][1])
+        if (!is.na(sc)) rmst_se    <- as.numeric(dr[[sc]][1])
+      }
+    }
+  }
+
   converged <- !is.na(point) && is.finite(point) && is.finite(se)
 
   list(
     ATE          = point,
     SE           = se,
+    RMST_ATE     = rmst_point,   # treated−control RMST diff (survival benefit; NO negation) — #223 Fix 1
+    RMST_SE      = rmst_se,
     CI_lower     = point - 1.96 * se,
     CI_upper     = point + 1.96 * se,
     converged    = converged,
@@ -277,43 +303,11 @@ run_concrete_sensitivity <- function(df,
   stopifnot(is.numeric(deltas), all(deltas >= 0), all(deltas <= 1))
   mechanism <- match.arg(mechanism, c("all", "dropout", "crossover"))
 
-  ## Build data.table + id + CensoringTV (identical logic to run_concrete_bridge)
-  dt <- as.data.table(df)
-  dt[, id         := .I]
-  dt[, event_type := as.integer(event_type)]
-  dt[, A          := as.integer(A)]
-
-  ctv <- NULL
-  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
-    obs_idx <- !is.na(dt[["L1"]])
-    ctv <- data.table(id   = dt$id[obs_idx],
-                      time = 0.5,
-                      L1   = dt[["L1"]][obs_idx])
-  }
-  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
-
-  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
-  if (horizon >= last_event) horizon <- last_event * 0.999
-
-  args <- tryCatch(
-    concrete::formatArguments(
-      DataTable   = dt,
-      EventTime   = "T_obs",
-      EventType   = "event_type",
-      Treatment   = "A",
-      ID          = "id",
-      Intervention = list(`1` = 1L, `0` = 0L),
-      TargetTime  = horizon,
-      TargetEvent = 1L,
-      Covariates  = covars,
-      CVArg       = list(V = 5L),
-      CensoringTV = ctv,
-      Crossover   = crossover_col,
-      Strata      = strata_cols,
-      Verbose     = verbose
-    ),
-    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
-  )
+  ## Analysis plan via the shared helper (single horizon; senseCensoring does not integrate RMST).
+  ca      <- .concrete_args(df, horizon, covars = covars, crossover_col = crossover_col,
+                            strata_cols = strata_cols, rmst_grid = FALSE, verbose = verbose)
+  args    <- ca$args
+  horizon <- ca$horizon
 
   sens_raw <- tryCatch(
     concrete::senseCensoring(args, deltas = deltas, Estimand = "RD",
@@ -396,33 +390,10 @@ run_concrete_positivity_dx <- function(df,
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
 
-  dt <- as.data.table(df)
-  dt[, id         := .I]
-  dt[, event_type := as.integer(event_type)]
-  dt[, A          := as.integer(A)]
-
-  ctv <- NULL
-  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
-    obs_idx <- !is.na(dt[["L1"]])
-    ctv <- data.table(id = dt$id[obs_idx], time = 0.5, L1 = dt[["L1"]][obs_idx])
-  }
-  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
-
-  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
-  if (horizon >= last_event) horizon <- last_event * 0.999
-
-  args <- tryCatch(
-    concrete::formatArguments(
-      DataTable   = dt, EventTime = "T_obs", EventType = "event_type",
-      Treatment   = "A", ID = "id",
-      Intervention = list(`1` = 1L, `0` = 0L),
-      TargetTime  = horizon, TargetEvent = 1L,
-      Covariates  = covars, CVArg = list(V = 5L),
-      CensoringTV = ctv, Crossover = crossover_col,
-      Strata      = strata_cols, Verbose = verbose
-    ),
-    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
-  )
+  ## Analysis plan via the shared helper (single horizon; positivity Dx is per-time on the doConcrete fit).
+  ca   <- .concrete_args(df, horizon, covars = covars, crossover_col = crossover_col,
+                         strata_cols = strata_cols, rmst_grid = FALSE, verbose = verbose)
+  args <- ca$args
 
   est <- tryCatch(
     concrete::doConcrete(args),
@@ -483,45 +454,16 @@ run_concrete_simultaneous <- function(df,
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
   stopifnot(is.numeric(horizons), length(horizons) >= 1)
 
-  dt <- as.data.table(df)
-  dt[, id         := .I]
-  dt[, event_type := as.integer(event_type)]
-  dt[, A          := as.integer(A)]
-
-  ctv <- NULL
-  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
-    obs_idx <- !is.na(dt[["L1"]])
-    ctv <- data.table(id   = dt$id[obs_idx],
-                      time = 0.5,
-                      L1   = dt[["L1"]][obs_idx])
-    if (verbose) message("run_concrete_simultaneous: routing L1 to CensoringTV")
-  }
-  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
-
-  last_event    <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
-  horizons_used <- pmin(sort(horizons), last_event * 0.999)
+  ## Analysis plan via the shared helper. All horizons as TargetTime (target_time override) so every
+  ## estimand function sees the same doConcrete fit and subject IDs align for getSimultaneousFamily();
+  ## the helper caps them to the last event, reproducing the old horizons_used.
+  ca            <- .concrete_args(df, max(horizons), covars = covars,
+                                  target_time = sort(horizons), verbose = verbose)
+  args          <- ca$args
+  dt            <- ca$dt
+  horizons_used <- pmin(sort(horizons), ca$horizon)
   if (verbose && any(horizons != horizons_used))
-    message("run_concrete_simultaneous: some horizons capped to ", last_event * 0.999)
-
-  ## All horizons as TargetTime so every estimand function sees the same
-  ## doConcrete fit and subject IDs align for getSimultaneousFamily().
-  args <- tryCatch(
-    concrete::formatArguments(
-      DataTable    = dt,
-      EventTime    = "T_obs",
-      EventType    = "event_type",
-      Treatment    = "A",
-      ID           = "id",
-      Intervention = list(`1` = 1L, `0` = 0L),
-      TargetTime   = horizons_used,
-      TargetEvent  = 1L,
-      Covariates   = covars,
-      CVArg        = list(V = 5L),
-      CensoringTV  = ctv,
-      Verbose      = verbose
-    ),
-    error = function(e) stop("formatArguments failed: ", conditionMessage(e))
-  )
+    message("run_concrete_simultaneous: some horizons capped to ", ca$horizon)
 
   est <- tryCatch(
     concrete::doConcrete(args),
@@ -721,46 +663,11 @@ run_concrete_win_ratio <- function(df,
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
   stopifnot(is.numeric(horizon), length(horizon) == 1, horizon > 0)
 
-  dt <- as.data.table(df)
-  dt[, id         := .I]
-  dt[, event_type := as.integer(event_type)]
-  dt[, A          := as.integer(A)]
-
-  ctv <- NULL
-  if ("L1" %in% names(dt) && any(!is.na(dt[["L1"]]))) {
-    obs_idx <- !is.na(dt[["L1"]])
-    ctv <- data.table(id   = dt$id[obs_idx],
-                      time = 0.5,
-                      L1   = dt[["L1"]][obs_idx])
-    if (verbose) message("concrete_bridge: passing L1 to CensoringTV (not outcome model)")
-  }
-  dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
-
-  last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
-  if (horizon >= last_event) {
-    horizon <- last_event * 0.999
-    if (verbose) message(sprintf("concrete_bridge: horizon capped to %.6f", horizon))
-  }
-
-  args <- tryCatch(
-    concrete::formatArguments(
-      DataTable    = dt,
-      EventTime    = "T_obs",
-      EventType    = "event_type",
-      Treatment    = "A",
-      ID           = "id",
-      Intervention = list(`1` = 1L, `0` = 0L),
-      TargetTime   = horizon,
-      TargetEvent  = 1L,
-      Covariates   = covars,
-      CVArg        = list(V = 5L),
-      CensoringTV  = ctv,
-      Crossover    = crossover_col,
-      Strata       = strata_cols,
-      Verbose      = verbose
-    ),
-    error = function(e) stop("concrete::formatArguments failed: ", conditionMessage(e))
-  )
+  ## Analysis plan via the shared helper (single horizon; the win ratio is evaluated at one target time).
+  ca      <- .concrete_args(df, horizon, covars = covars, crossover_col = crossover_col,
+                            strata_cols = strata_cols, rmst_grid = FALSE, verbose = verbose)
+  args    <- ca$args
+  horizon <- ca$horizon
 
   wr_raw <- tryCatch({
     if (method == "direct") {

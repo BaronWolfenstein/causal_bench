@@ -1,5 +1,16 @@
 # Concrete-RMST fixes — spec (2026-09-23)
 
+> **CORRECTION (2026-09-23, later same day).** Empirical investigation overturned this doc's central claim.
+> **Fix 2 (de-regularize the survival hazard learners) is UNNECESSARY** — introspection shows the hazards are
+> already unregularized `Lrnr.Cox`; only the *propensity* is `SL.xgboost/glmnet`, and swapping it to `SL.glm`
+> is a no-op (0.343→0.345). The real attenuation had two other causes: **(1)** an `Intervention=c(1L,0L)`
+> slot-index bug in `run_concrete_bridge` (slot 0 doesn't exist; should be `c(1L,2L)`) + the missing dense
+> TargetTime grid — together **0.221 → 0.343**; and **(2)** a positivity/overlap residual that grows with n,
+> fixed by `MinNuisance` truncation — see `2026-09-23-concrete-positivity-fix.md`. Fix 1 (parse the `RMST Diff`
+> row) below is still correct. Treat the "Fix 2" learner section here as **superseded**; kept for provenance.
+> All tracked under #223 (retitled).
+
+
 **Status: DEFERRED / gated.** The Python grid-TMLE RMST (`survival_uplift.rmst_tmle_cate`) is the working default
 for exp51 (−0.05 additive bias, fast, no OOM). Pursue the concrete-native RMST **only if** a continuous-time
 RMST becomes load-bearing on a real dataset. This spec records the three fixes and the diagnostic evidence so

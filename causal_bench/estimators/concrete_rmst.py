@@ -36,6 +36,7 @@ import pandera.pandas as pa
 from pandera.pandas import Column, DataFrameSchema
 
 from causal_bench.estimators.base import BaseEstimator
+from causal_bench.estimators.concrete_config import ConcreteConfig
 from causal_bench.metrics import EstimatorResult
 
 # Required columns that concrete's formatArguments expects
@@ -311,9 +312,15 @@ class ConcreteRMSTEstimator(BaseEstimator):
 
     name = "concrete_RMST"
 
-    def __init__(self, horizon: float = 1.0, strata_cols: list[str] | None = None):
+    def __init__(self, horizon: float = 1.0, strata_cols: list[str] | None = None,
+                 config: ConcreteConfig | None = None, rmst_contrast: bool = False):
         self._horizon = horizon
         self._strata_cols = strata_cols
+        self._config = config or ConcreteConfig()
+        # rmst_contrast=True returns the RMST-Diff contrast (treated−control, positive = survival benefit,
+        # NO negation) instead of the LYL/risk-difference ATE. Opt-in so existing consumers (which negate the
+        # risk-difference ATE, e.g. survival_uplift.concrete_cate) are unaffected. #223 Fix 1.
+        self._rmst_contrast = rmst_contrast
 
     def estimate(
         self,
@@ -342,13 +349,26 @@ class ConcreteRMSTEstimator(BaseEstimator):
 
         r_strata = ro.StrVector(self._strata_cols) if self._strata_cols else ro.rinterface.NULL
 
+        # Validated analysis-plan knobs (covariates, CV folds, MinNuisance positivity bound, RMST grid) — one
+        # authoritative default, checked in Python before crossing the opaque rpy2 seam. #223.
+        cfg = self._config.to_r_kwargs()
+
         with localconverter(ro.default_converter + pandas2ri.converter):
             r_df = ro.conversion.py2rpy(df_r)
 
         try:
-            result_r = run_bridge(r_df, float(horizon), strata_cols=r_strata)
-            point = float(np.array(result_r.rx2("ATE"))[0])
-            se    = float(np.array(result_r.rx2("SE"))[0])
+            bridge_kw = dict(
+                covars=ro.StrVector(cfg["covars"]),
+                cv_folds=float(cfg["cv_folds"]),
+                rmst_grid_n=float(cfg["rmst_grid_n"]),
+                strata_cols=r_strata,
+            )
+            if "min_nuisance" in cfg:      # omitted unless set → concrete default (positivity-neutral)
+                bridge_kw["min_nuisance"] = float(cfg["min_nuisance"])
+            result_r = run_bridge(r_df, float(horizon), **bridge_kw)
+            ate_key, se_key = ("RMST_ATE", "RMST_SE") if self._rmst_contrast else ("ATE", "SE")
+            point = float(np.array(result_r.rx2(ate_key))[0])
+            se    = float(np.array(result_r.rx2(se_key))[0])
             if not (np.isfinite(point) and np.isfinite(se)):
                 warnings.warn("concrete returned non-finite ATE/SE", stacklevel=2)
                 return []
