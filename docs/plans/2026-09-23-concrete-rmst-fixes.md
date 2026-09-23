@@ -109,6 +109,27 @@ Tracked as **issue #223** (default-learner attenuation + de-regularization + OOM
    The estimand where continuous-time concrete is load-bearing is the **RMTIF (restricted mean time in the
    ACTIVE state)** — e.g. "expected active-paid-days over the year, accounting for competing exits" — which
    grid-TMLE cannot represent.
+
+   **Un-park checklist → its own experiment `exp56`** (distinct from exp53 = the done Python teaching demo, and
+   exp55/#224 = the poor-overlap+ESS demo). Note: the RMST fixes above **do NOT carry over** — `clinicalRMTIF`
+   is a *separate code path* (raw illness/terminal times, not `formatArguments`), so the Intervention-slot/grid
+   fixes are irrelevant to it, and its nuisances default to the thin `SL.library = c("SL.mean","SL.glm")` (not
+   the RMST path's `Lrnr.Cox`). The pipeline exists (`run_clinical_rmtif` → `estimators/concrete_clinical_rmtif.py`)
+   but has **never been validated**. To un-park:
+   1. **DGP + estimand + MC truth (the build):** a *confounded* competing-risks DGP with an active state and
+      competing exits (active → churn cause 1, active → upgrade cause 2), confounded A, and the **RMTIF**
+      estimand (∫ P(in active state | do(A)) dt), plus interventional MC truth for the RMTIF contrast.
+   2. **Validate `run_clinical_rmtif` vs truth, multi-seed** — the first-ever check of the clinical path.
+   3. **Confounding fix (clinical-path-specific):** if biased, pass a **richer `SL.library`** to `clinicalRMTIF`
+      (not the default `SL.mean/SL.glm`; add flexible/survival learners for nonlinear confounding), confirm the
+      confounders are effective as `covariates`, adequate CV folds. This is a *separate surface* from the RMST
+      `Lrnr.Cox` fix.
+   4. **ESS overlap guardrail** on the RMTIF (`getPositivityDx` / exp52 `policy_value_ess`).
+   5. **Memory + per-protocol gates:** likely the same ~24k OOM ceiling; crossover / `min.cens.surv` are still
+      `TODO(#36)` (per-protocol only; ITT works without them).
+   **Gate:** build only when a *real* competing-risks retention dataset makes RMTIF load-bearing — on synthetic
+   data it's the same diminishing-returns trap as the RMST residual; "grid-TMLE can't do time-in-state" is a
+   *capability* argument, not an accuracy one.
 2. **Survival variant of exp45 (time-varying treatment + time-to-event outcome)** — do NOT bolt onto exp45.
    exp45 is the point-outcome linear-SNMM case; a survival version (W→A0→L1→A1→T with informative censoring)
    needs longitudinal-survival g-methods (survival-SNMM / structural nested failure-time, or multi-period
