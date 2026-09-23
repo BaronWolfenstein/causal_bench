@@ -89,6 +89,26 @@ Tracked as **issue #223** (default-learner attenuation + de-regularization + OOM
    in question, so validate against interventional MC truth before trusting it. NOTE: the cheap cause-specific-
    vs-naive teaching version (naive-treats-competing-as-censoring bias) needs NO concrete and is DONE —
    **exp53** (`validation/competing_risks.py`, Aalen–Johansen vs 1−KM, self-validating).
+
+   **Figma datasets with *real* competing risks** (mutually-exclusive terminal transitions where one precludes
+   the others AND the intervention shifts the competing-event rate — so treating it as censoring biases, per
+   exp53). Ordered by cleanliness:
+   - **Upgrade vs churn** (canonical): an onboarding/nudge raises retention *and* upgrade; upgrading removes a
+     team from the churn risk set, so counting upgrades as censored inflates churn incidence and biases the
+     effect. RMTIF = expected active-paid-days over the horizon.
+   - **Free-trial: convert vs abandon** — the trial ends in paid-conversion or dormancy; a conversion nudge
+     shifts both. Competing, not censoring.
+   - **Seat expansion vs contraction vs full cancellation** — competing plan-size transitions; RMTIF in the
+     growing/stable-seats state.
+   - **Absorbed-by-acquisition vs independent churn** — an acquired customer is consolidated onto the
+     acquirer's plan (leaves the cohort for a *non-churn* reason) vs churns on its own; the acquisition exit
+     must not be scored as churn.
+   - **First cross-surface adoption: FigJam vs Dev Mode vs neither** — competing first-adoption events; RMTIF =
+     active time before a team lands on its first adjacent product.
+   - **Renewal vs non-renewal vs early-termination** at contract boundaries — the active-contract RMTIF.
+   The estimand where continuous-time concrete is load-bearing is the **RMTIF (restricted mean time in the
+   ACTIVE state)** — e.g. "expected active-paid-days over the year, accounting for competing exits" — which
+   grid-TMLE cannot represent.
 2. **Survival variant of exp45 (time-varying treatment + time-to-event outcome)** — do NOT bolt onto exp45.
    exp45 is the point-outcome linear-SNMM case; a survival version (W→A0→L1→A1→T with informative censoring)
    needs longitudinal-survival g-methods (survival-SNMM / structural nested failure-time, or multi-period
