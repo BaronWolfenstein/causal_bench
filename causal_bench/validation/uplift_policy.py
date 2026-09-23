@@ -76,6 +76,24 @@ def aipw_policy_value(nuis, pi):
     return float(np.mean(mu_pi + corr))
 
 
+def policy_value_ess(nuis, pi):
+    """Kish ESS of the AIPW off-policy correction weights w = 1{A=π}/P(A=π|W) — the overlap diagnostic for
+    V̂(π). As the TARGET policy π diverges from the logging propensity e(W), 1/p_pi explodes on the matched
+    units, the ESS collapses, and V̂(π) is dominated by a few high-weight units (its variance blows up). This
+    is the off-policy-EVALUATION analogue of the PPO reuse gate ESS(π_θ/π_old): both measure how usable a batch
+    drawn under one policy is for a *different* target policy. Returns (ess, ess_frac = ess/n).
+
+    NB: this is our own diagnostic (Kish/Smola), not stated in Martin's RL-as-nonequilibrium-MC note — that note
+    supplies the staleness *mechanism* (the refresh rate ν and the ratio r=π_θ/π_old), never an ESS gate."""
+    from causal_bench.sampling import kish_ess
+    _, A, _, e, _, _ = nuis
+    A = np.asarray(A)
+    p_pi = np.where(pi == 1, e, 1 - e)
+    w = np.where(A == pi, 1.0 / p_pi, 0.0)                      # AIPW correction weight (0 on unmatched units)
+    ess = kish_ess(np.log(np.clip(w, 1e-300, None)))
+    return float(ess), float(ess / len(A))
+
+
 def naive_policy_value(d, pi):
     """Naive (confounded) value: mean observed Y among those whose observed A matches π — the biased Qini path."""
     A = np.asarray(d["A"]); Y = np.asarray(d["Y"], float)
@@ -90,14 +108,18 @@ def qini(tau_hat, nuis, d, ks=None):
     v_none_dr = aipw_policy_value(nuis, np.zeros(n, int))
     v_all_dr = aipw_policy_value(nuis, np.ones(n, int))
     v_none_nv = naive_policy_value(d, np.zeros(n, int))
-    up_dr, up_nv = [], []
+    up_dr, up_nv, ess_dr = [], [], []
     for k in ks:
         pi = np.zeros(n, int); pi[order[:int(round(k * n))]] = 1
         up_dr.append(aipw_policy_value(nuis, pi) - v_none_dr)
+        ess_dr.append(policy_value_ess(nuis, pi)[1])               # per-bin overlap of the top-k targeting policy
         up_nv.append((naive_policy_value(d, pi) - v_none_nv) if 0 < k < 1 else (up_nv[-1] if up_nv else 0.0))
-    up_dr = np.array(up_dr); up_nv = np.array(up_nv)
+    up_dr = np.array(up_dr); up_nv = np.array(up_nv); ess_dr = np.array(ess_dr)
     rand = ks * (v_all_dr - v_none_dr)                             # random targeting = linear
     _diff = up_dr - rand
     qini_dr = float(np.sum((_diff[:-1] + _diff[1:]) / 2 * np.diff(ks)))   # trapezoid (numpy-version-safe)
-    return {"ks": ks, "uplift_dr": up_dr, "uplift_naive": up_nv, "rand": rand,
+    # ess_frac_dr flags where the uplift curve stops being trustworthy: as overlap thins along the ranking the
+    # AIPW value's effective n collapses, so a low-ESS bin's uplift point is variance-dominated, not signal.
+    return {"ks": ks, "uplift_dr": up_dr, "uplift_naive": up_nv, "rand": rand, "ess_frac_dr": ess_dr,
+            "min_ess_frac_dr": float(ess_dr.min()),
             "qini_dr": qini_dr, "v_all_minus_none_dr": v_all_dr - v_none_dr}

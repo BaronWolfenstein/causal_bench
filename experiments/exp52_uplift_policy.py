@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from causal_bench.validation.uplift_policy import (
-    sim_uplift, true_values, dr_learner_cate, aipw_policy_value, naive_policy_value, qini,
+    sim_uplift, true_values, dr_learner_cate, aipw_policy_value, policy_value_ess, naive_policy_value, qini,
 )
 
 OUT_DIR = Path("results/exp52_uplift_policy")
@@ -27,10 +27,12 @@ def run(*, n=8000, seed=0):
     v_dr_all = aipw_policy_value(nuis, np.ones(n, int))
     # naive value of the SAME policy (biased under confounding)
     v_nv_pihat = naive_policy_value(d, pi_hat); v_nv_none = naive_policy_value(d, np.zeros(n, int))
+    ess_pihat, essf_pihat = policy_value_ess(nuis, pi_hat)      # overlap of the DEPLOYED targeting policy
     q = qini(tau_hat, nuis, d)
     return {"truth": tv, "n": n, "frac_treated_hat": float(pi_hat.mean()),
             "v_dr_pihat": v_dr_pihat, "v_dr_none": v_dr_none, "v_dr_all": v_dr_all,
-            "v_nv_pihat": v_nv_pihat, "v_nv_none": v_nv_none, "qini": q}
+            "v_nv_pihat": v_nv_pihat, "v_nv_none": v_nv_none, "qini": q,
+            "ess_pihat": ess_pihat, "essf_pihat": essf_pihat}
 
 
 def report(r) -> str:
@@ -49,14 +51,20 @@ def report(r) -> str:
          f"| **DR** policy value gain  V̂(π̂)−V̂(none) | {r['v_dr_pihat']-r['v_dr_none']:.3f} | captures **{100*cap_dr:.0f}%** of achievable |",
          f"| **naive** policy value gain (confounded) | {r['v_nv_pihat']-r['v_nv_none']:.3f} | \"{100*cap_nv:.0f}%\" — biased, misleads |",
          f"| **Qini coefficient** (DR) | {q['qini_dr']:.3f} | area of DR uplift curve above random targeting |",
+         f"| ↳ **overlap of deployed policy** — Kish ESS = {r['ess_pihat']:.0f}/{r['n']} ({100*r['essf_pihat']:.0f}%) | (positivity check) | worst-bin ESS {100*q['min_ess_frac_dr']:.0f}% |",
          "",
-         "Uplift curve (DR value gain vs targeted fraction k):",
+         "Uplift curve (DR value gain vs targeted fraction k), with per-bin overlap ESS:",
          "```",
-         "k     : " + " ".join(f"{k:.2f}" for k in q["ks"][::4]),
-         "DR    : " + " ".join(f"{u:.2f}" for u in q["uplift_dr"][::4]),
-         "naive : " + " ".join(f"{u:.2f}" for u in q["uplift_naive"][::4]),
-         "rand  : " + " ".join(f"{u:.2f}" for u in q["rand"][::4]),
+         "k       : " + " ".join(f"{k:.2f}" for k in q["ks"][::4]),
+         "DR      : " + " ".join(f"{u:.2f}" for u in q["uplift_dr"][::4]),
+         "naive   : " + " ".join(f"{u:.2f}" for u in q["uplift_naive"][::4]),
+         "rand    : " + " ".join(f"{u:.2f}" for u in q["rand"][::4]),
+         "ESS%    : " + " ".join(f"{100*e:.0f}" for e in q["ess_frac_dr"][::4]),
          "```",
+         "",
+         "The **ESS%** row is the off-policy overlap of each top-k targeting policy (the DR value's effective n):",
+         "low-ESS bins are variance-dominated, so trust the uplift curve only where ESS stays high — the same",
+         "Kish ESS the QEC-decoder RL-gym uses as its PPO reuse gate / hardness order-parameter.",
          "",
          "Read-out: ranking users by DR-learner CATE and treating the top fraction captures most of the",
          "achievable uplift; the DR (AIPW) policy value is unbiased, while the naive top-k outcome mean — the",
