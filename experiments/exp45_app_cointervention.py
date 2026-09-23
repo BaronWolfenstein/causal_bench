@@ -39,7 +39,8 @@ def run(*, n=8000, psi0=0.3, psi1=0.5, effect_mod=0.4, seed=0):
     em = g_estimation_effect_mod(dm)
     msm = msm_iptw(d)
     return {"truth": tv, "g_psi0": gp0, "g_psi1": gp1, "ice_contrast": ice_contrast(d),
-            "msm_contrast": msm["contrast"], "naive": ne, "em": em, "effect_mod": effect_mod}
+            "msm_contrast": msm["contrast"], "msm_ess": msm["ess"], "msm_ess_frac": msm["ess_frac"],
+            "msm_max_w": msm["max_weight"], "n": n, "naive": ne, "em": em, "effect_mod": effect_mod}
 
 
 def report(r) -> str:
@@ -48,6 +49,7 @@ def report(r) -> str:
          "| estimand / estimator | estimate | truth |",
          "|----------------------|----------|-------|",
          f"| **regime contrast** E[Y₁₁]−E[Y₀₀] — time-varying IPTW-MSM (baseline, singly robust) | {r['msm_contrast']:.3f} | {tv['contrast']:.3f} |",
+         f"| ↳ MSM weight health — Kish **ESS** = {r['msm_ess']:.0f}/{r['n']} ({100*r['msm_ess_frac']:.0f}% overlap), max wt {r['msm_max_w']:.1f} | (positivity check) | — |",
          f"| **regime contrast** E[Y₁₁]−E[Y₀₀] — sequential regression (ICE) | {r['ice_contrast']:.3f} | {tv['contrast']:.3f} |",
          f"| **blip ψ(A1)** — g-estimation | {r['g_psi1']:.3f} | {tv['blip_A1']:.3f} |",
          f"| **blip ψ(A0)** (total, incl. L1-mediated) — g-estimation | {r['g_psi0']:.3f} | {tv['blip_A0']:.3f} |",

@@ -115,11 +115,16 @@ def msm_iptw(data, *, stabilized=True, trunc=0.01):
         w = (num0 * num1) / denom
     else:
         w = 1.0 / denom
+    # weight-health / positivity diagnostic BEFORE truncation: Kish ESS = (Σw)²/Σw² (the same helper the
+    # twisted SMC-IPCW uses as its resample trigger — low ESS = weights collapsed onto few units = poor overlap).
+    from causal_bench.sampling import kish_ess
+    ess = kish_ess(np.log(np.clip(w, 1e-300, None)))
     lo, hi = np.quantile(w, [trunc, 1 - trunc]); w = np.clip(w, lo, hi)   # positivity truncation
     sw = np.sqrt(w)
     Xm = np.column_stack([np.ones(n), A0, A1, A0 * A1]) * sw[:, None]     # saturated MSM, weighted OLS
     beta = np.linalg.lstsq(Xm, Y * sw, rcond=None)[0]
-    return {"contrast": float(beta[1] + beta[2] + beta[3]), "beta": [float(b) for b in beta]}
+    return {"contrast": float(beta[1] + beta[2] + beta[3]), "beta": [float(b) for b in beta],
+            "ess": float(ess), "ess_frac": float(ess / n), "max_weight": float(w.max())}
 
 
 def ice_regime_mean(data, a0, a1):
