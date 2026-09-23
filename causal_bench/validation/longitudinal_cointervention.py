@@ -88,6 +88,45 @@ def g_estimation_effect_mod(data):
     return {"psi1": float(coef[0]), "effect_mod": float(coef[1])}
 
 
+def msm_iptw(data, *, stabilized=True, trunc=0.01):
+    """Time-varying IPTW marginal structural model (Robins) — the entry-rung g-method, added as a
+    BASELINE against g-estimation (ψ) and ICE/LTMLE (regime contrast). Fits the saturated MSM
+    E[Y_{a0,a1}] = β0 + β1 a0 + β2 a1 + β3 a0 a1 by weighted OLS with stabilized inverse-
+    treatment-probability weights over the two decision points:
+        sw = [P(A0)·P(A1|A0)] / [P(A0|W)·P(A1|W,A0,L1)],
+    and returns the regime contrast E[Y_{11}]−E[Y_{00}] = β1+β2+β3. Unlike `naive_effects` it does
+    NOT put the feedback confounder L1 in the OUTCOME model — L1 enters only the A1 treatment model —
+    so it is unbiased under **sequential exchangeability** (no unmeasured time-varying confounding).
+    SINGLY robust (needs BOTH treatment models correct); LTMLE / g-estimation are the DR upgrades.
+    """
+    W, A0, L1, A1, Y = (np.asarray(data[k], float) for k in ("W", "A0", "L1", "A1", "Y"))
+    n = len(Y)
+    # treatment model at t=0: P(A0=1 | W); at t=1: P(A1=1 | W, A0, L1)  (L1 = pre-A1 history)
+    g0 = LogisticRegression().fit(W.reshape(-1, 1), A0).predict_proba(W.reshape(-1, 1))[:, 1]
+    p0 = np.where(A0 == 1, g0, 1 - g0)
+    X1 = np.column_stack([W, A0, L1])
+    g1 = LogisticRegression().fit(X1, A1).predict_proba(X1)[:, 1]
+    p1 = np.where(A1 == 1, g1, 1 - g1)
+    denom = p0 * p1
+    if stabilized:
+        pA0 = A0.mean(); num0 = np.where(A0 == 1, pA0, 1 - pA0)
+        gA1 = LogisticRegression().fit(A0.reshape(-1, 1), A1).predict_proba(A0.reshape(-1, 1))[:, 1]
+        num1 = np.where(A1 == 1, gA1, 1 - gA1)
+        w = (num0 * num1) / denom
+    else:
+        w = 1.0 / denom
+    # weight-health / positivity diagnostic BEFORE truncation: Kish ESS = (Σw)²/Σw² (the same helper the
+    # twisted SMC-IPCW uses as its resample trigger — low ESS = weights collapsed onto few units = poor overlap).
+    from causal_bench.sampling import kish_ess
+    ess = kish_ess(np.log(np.clip(w, 1e-300, None)))
+    lo, hi = np.quantile(w, [trunc, 1 - trunc]); w = np.clip(w, lo, hi)   # positivity truncation
+    sw = np.sqrt(w)
+    Xm = np.column_stack([np.ones(n), A0, A1, A0 * A1]) * sw[:, None]     # saturated MSM, weighted OLS
+    beta = np.linalg.lstsq(Xm, Y * sw, rcond=None)[0]
+    return {"contrast": float(beta[1] + beta[2] + beta[3]), "beta": [float(b) for b in beta],
+            "ess": float(ess), "ess_frac": float(ess / n), "max_weight": float(w.max())}
+
+
 def ice_regime_mean(data, a0, a1):
     """Sequential regression (ICE) estimate of E[Y_{a0,a1}] — the LTMLE g-computation backbone.
     Q2 = E[Y|A0,L1,A1,W] set to A1=a1; Q1 = E[Q2|A0,W] set to A0=a0; mean of Q1."""
