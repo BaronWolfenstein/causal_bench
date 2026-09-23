@@ -40,8 +40,10 @@ def report(r) -> str:
          "the treatment shifts the churn hazard), the naive treatment effect is biased too. Cause-specific vs",
          "competing-risks is a classic error; this is the label-free product version.",
          "",
-         "(The doubly-robust *continuous-time RMTIF* — restricted mean active-time under confounding — is the",
-         "load-bearing case for CONCRETE; gated on the default-learner attenuation fix, see the concrete-RMST spec.)"]
+         "(The doubly-robust *continuous-time RMTIF* — restricted mean active-time under confounding — is the one",
+         "load-bearing case for CONCRETE, since grid-TMLE can't represent time-in-state with competing exits. It",
+         "inherits #223's residual-confounding contrast-compression (NOT the falsified learner attenuation), so it",
+         "needs the adjustment fixes + the Kish-ESS overlap guardrail (exp52/exp55). See the concrete-RMST spec.)"]
     return "\n".join(L)
 
 

@@ -11,8 +11,10 @@ which accounts for the competing exit removing them. Treatment A is RANDOMIZED h
 competing-risks one (no confounding to disentangle). Self-validating vs interventional MC truth.
 
 This is a Python-only teaching demo (no CONCRETE). The doubly-robust *continuous-time RMTIF* version — restricted
-mean time in the ACTIVE state under confounding — is the load-bearing case for concrete, gated on the default-
-learner attenuation fix (see docs/plans/2026-09-23-concrete-rmst-fixes.md and the linked issue).
+mean time in the ACTIVE state under confounding — is the one load-bearing case for concrete (grid-TMLE can't
+represent time-in-state with competing exits). It inherits #223's residual-confounding contrast-compression (the
+default-learner-attenuation gate was FALSIFIED), so it needs the adjustment fixes + the Kish-ESS overlap guardrail
+(exp52/exp55). See docs/plans/2026-09-23-concrete-rmst-fixes.md and the linked issue.
 """
 from __future__ import annotations
 import numpy as np

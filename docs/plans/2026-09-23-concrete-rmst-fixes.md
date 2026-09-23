@@ -77,11 +77,18 @@ Tracked as **issue #223** (default-learner attenuation + de-regularization + OOM
 
 ## Gated follow-up experiments (blocked on #223 / this spec)
 1. **Competing-risks retention RMTIF** — restricted mean time in the ACTIVE state under confounding, with
-   competing exits (churn / upgrade / downgrade). This is *the* case where continuous-time is load-bearing
-   (grid-TMLE can't represent time-in-state with competing exits). Runs on `ClinicalRMTIFEstimator`, so it
-   **inherits #223's attenuation/OOM** — gated on Fix 2. NOTE: the cheap cause-specific-vs-naive teaching
-   version (naive-treats-competing-as-censoring bias) needs NO concrete and is DONE — **exp53**
-   (`validation/competing_risks.py`, Aalen–Johansen vs 1−KM, self-validating).
+   competing exits (churn / upgrade-to-Enterprise / downgrade). This is *the one* case where continuous-time
+   concrete is genuinely load-bearing for Figma: **grid-TMLE cannot represent time-in-state with competing
+   exits.** Runs on `ClinicalRMTIFEstimator`.
+   **Gating (CORRECTED 2026-09-23):** the old "gated on Fix 2 (de-regularize learners)" is void — Fix 2 was
+   falsified. The real caveat is that RMTIF inherits the **residual-confounding contrast-compression** #223
+   found (per-arm: control over, treated under; not positivity, not learners) — so it needs the *adjustment*
+   fixes (force the confounders into the outcome hazard `Surv ~ .` not `Surv ~ A`; CV-TMLE), and it should ship
+   with the **Kish-ESS overlap guardrail** (exp52 `policy_value_ess`; exp55/#224) so a poor-overlap regime is
+   flagged rather than silently trusted. Even with those, concrete's reliability under confounding+overlap is
+   in question, so validate against interventional MC truth before trusting it. NOTE: the cheap cause-specific-
+   vs-naive teaching version (naive-treats-competing-as-censoring bias) needs NO concrete and is DONE —
+   **exp53** (`validation/competing_risks.py`, Aalen–Johansen vs 1−KM, self-validating).
 2. **Survival variant of exp45 (time-varying treatment + time-to-event outcome)** — do NOT bolt onto exp45.
    exp45 is the point-outcome linear-SNMM case; a survival version (W→A0→L1→A1→T with informative censoring)
    needs longitudinal-survival g-methods (survival-SNMM / structural nested failure-time, or multi-period
