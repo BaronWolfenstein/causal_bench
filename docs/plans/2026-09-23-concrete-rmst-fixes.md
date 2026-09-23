@@ -62,7 +62,23 @@ Multi-seed calibration of `ConcreteRMSTEstimator(rmst_contrast=True)` per stratu
 RMST-diff truth (0.461 / 0.876) within a few %, at a memory-feasible n. Then wire it as the CONCRETE column of
 exp51's RMST table alongside the grid-TMLE.
 
+Tracked as **issue #223** (default-learner attenuation + de-regularization + OOM).
+
+## Gated follow-up experiments (blocked on #223 / this spec)
+1. **Competing-risks retention RMTIF** — restricted mean time in the ACTIVE state under confounding, with
+   competing exits (churn / upgrade / downgrade). This is *the* case where continuous-time is load-bearing
+   (grid-TMLE can't represent time-in-state with competing exits). Runs on `ClinicalRMTIFEstimator`, so it
+   **inherits #223's attenuation/OOM** — gated on Fix 2. NOTE: the cheap cause-specific-vs-naive teaching
+   version (naive-treats-competing-as-censoring bias) needs NO concrete and is DONE — **exp53**
+   (`validation/competing_risks.py`, Aalen–Johansen vs 1−KM, self-validating).
+2. **Survival variant of exp45 (time-varying treatment + time-to-event outcome)** — do NOT bolt onto exp45.
+   exp45 is the point-outcome linear-SNMM case; a survival version (W→A0→L1→A1→T with informative censoring)
+   needs longitudinal-survival g-methods (survival-SNMM / structural nested failure-time, or multi-period
+   survival-LTMLE) beyond the repo's two-timepoint `LTMLEEstimator` — a NEW experiment and a bigger build.
+   Also couples to the continuous-time DR survival machinery, so partially gated on #223 too. File as its own
+   follow-up when a real time-varying-treatment survival question motivates it.
+
 ## Decision
-Grid-TMLE stays the exp51 RMST default. This is a ~1-day project (mostly Fix 2's learner spec + a memory
-workaround); do it only when continuous-time RMST accuracy on a real (non-simulated) survival dataset justifies
-it, or bundle it as a request to McCoy (learner defaults + memory) since it's his fork.
+Grid-TMLE stays the exp51 RMST default. The concrete fixes are a ~1-day project (mostly Fix 2's learner spec +
+a memory workaround); do them only when continuous-time RMST accuracy on a real (non-simulated) survival
+dataset justifies it, or bundle as a request to McCoy (learner defaults + memory) since it's his fork.
