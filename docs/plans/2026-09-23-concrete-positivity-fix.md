@@ -1,9 +1,14 @@
 # Concrete-RMST positivity fix — spec (2026-09-23)
 
-**Status: STAGED, gated on the positivity confirmation run.** Companion to `2026-09-23-concrete-rmst-fixes.md`
-and issue #223. This spec captures the *corrected* diagnosis of the concrete-RMST residual bias and the fix to
-apply, pending the `getPositivityDx` numbers from the n=4000 × 3-seed confirmation now running
-(`/tmp/concrete_positivity.R`). Finalize the numbers below when it lands.
+**Status: FALSIFIED (2026-09-23). Positivity is NOT the residual cause.** The n=4000 × 3-seed verification
+*with* `MinNuisance=0.025` caps the runaway weights (max_weight 57.8/53.2 → 40.0) but leaves the RMST estimate
+**bit-for-bit unchanged** (0.235 / 0.315 / 0.362, identical to no-truncation). So overlap/positivity does not
+explain the residual. And seeing all three seeds kills the earlier "worsens with n" read — that was seed noise
+(n=4000 mean ≈ 0.30, high variance). `min_nuisance` is retained only as an **optional defensive knob** (capping
+runaway weights is good hygiene), NOT as a #223 fix. The ~33% concrete residual (≈0.30 vs truth 0.461,
+treated-arm-underestimated) is **not grid, not learners, not positivity** — concrete-specific and unresolved;
+grid-TMLE stays the exp51 default. Kept below for the record + the next diagnostic. Companion to
+`2026-09-23-concrete-rmst-fixes.md` and issue #223.
 
 ## What the gridn sweep actually found (2026-09-23)
 
@@ -61,11 +66,31 @@ in the clever covariate. The default is too permissive for this overlap, so 1/g 
 - **Not** a learner change — the original spec's Fix 2 (de-regularize hazards) is unnecessary (hazards are
   already `Lrnr.Cox`); the propensity swap is a no-op. The lever is truncation, not the library.
 
-## Verification / done-criterion
+## Verification / done-criterion — RESULT: FAILED
 
-Rerun n=4000 (and n=8000 if memory allows) with `MinNuisance=0.025`: RMST-diff should **stop worsening with n**
-and move toward 0.461 (within a few % or matching the Python grid-TMLE's ~0.41). If truncation alone does not
-recover it, escalate to CV-TMLE / a collaborative-double-robust update (deeper, separate work).
+Reran n=4000 × 3 seeds with `MinNuisance=0.025`:
+
+| seed | RMST (no trunc) | RMST (MinNuisance=0.025) | max_weight |
+|------|-----------------|--------------------------|------------|
+| 1 | 0.235 | 0.235 | 57.8 → 40.0 |
+| 2 | 0.315 | 0.315 | 53.2 → 40.0 |
+| 3 | 0.362 | 0.362 | 37.1 → 37.1 |
+
+Truncation caps the weights but does **not** move the estimate → positivity falsified as the residual cause.
+
+## Next diagnostic (the residual is still open)
+
+Positivity is out; the residual is treated-arm-localized (control ≈ 1.84 correct, treated ≈ 2.07 vs ~2.26). So
+it lives in the treated-arm **outcome hazard's extrapolation into the low-overlap region** (where the capped
+IPW leg cannot rescue it). Order to try, each cheap-ish:
+1. **Per-arm RMST(0)/RMST(1) vs the per-arm truth** — confirm the treated-arm localization (decisive, one run).
+2. **Force the confounder into the hazard** (the MainTerms Cox `Surv ~ .`, not the discrete-SL `TrtOnly`
+   `Surv ~ A`) so W1 is always in the outcome model — a *structure* fix, distinct from the falsified
+   de-regularization.
+3. **CV-TMLE / more folds** to cut finite-sample plug-in bias.
+4. If 1–3 don't close it: it is an overlap-limited hard case → document concrete-RMST as biased under one-arm
+   poor overlap and STOP. This is a synthetic DGP; the real test is real survival data, and grid-TMLE (0.41)
+   already covers exp51.
 
 ## Relation
 - Primary #223 fix (the real one): `Intervention=c(1L,0L)→c(1L,2L)` slot-index + dense TargetTime grid
