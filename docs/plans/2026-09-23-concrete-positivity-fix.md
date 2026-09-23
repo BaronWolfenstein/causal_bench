@@ -78,19 +78,28 @@ Reran n=4000 × 3 seeds with `MinNuisance=0.025`:
 
 Truncation caps the weights but does **not** move the estimate → positivity falsified as the residual cause.
 
-## Next diagnostic (the residual is still open)
+## Next diagnostic — RESULT: it's residual confounding (contrast compression), NOT one-arm (2026-09-23)
 
-Positivity is out; the residual is treated-arm-localized (control ≈ 1.84 correct, treated ≈ 2.07 vs ~2.26). So
-it lives in the treated-arm **outcome hazard's extrapolation into the low-overlap region** (where the capped
-IPW leg cannot rescue it). Order to try, each cheap-ish:
-1. **Per-arm RMST(0)/RMST(1) vs the per-arm truth** — confirm the treated-arm localization (decisive, one run).
-2. **Force the confounder into the hazard** (the MainTerms Cox `Surv ~ .`, not the discrete-SL `TrtOnly`
-   `Surv ~ A`) so W1 is always in the outcome model — a *structure* fix, distinct from the falsified
-   de-regularization.
-3. **CV-TMLE / more folds** to cut finite-sample plug-in bias.
-4. If 1–3 don't close it: it is an overlap-limited hard case → document concrete-RMST as biased under one-arm
-   poor overlap and STOP. This is a synthetic DGP; the real test is real survival data, and grid-TMLE (0.41)
-   already covers exp51.
+Per-arm RMST vs truth, n=4000 (2 seeds) — this **corrects the earlier "treated-arm" guess** (1.84 was
+*concrete's* control estimate, not the truth):
+
+| arm | truth | concrete s1 | concrete s2 |
+|-----|-------|-------------|-------------|
+| A=0 (control) | 1.548 | 1.701 (**+0.153**) | 1.649 (**+0.101**) |
+| A=1 (treated) | 2.010 | 1.936 (−0.074) | 1.965 (−0.045) |
+| **diff** | **0.461** | 0.235 | 0.316 |
+
+**Both arms biased in opposite directions → the contrast is compressed from both sides** (control over,
+treated under). That is the signature of **residual confounding** (incomplete W1-adjustment): A~expit(0.7·W1),
+so control skews low-W1/longer-survival and treated skews high-W1/shorter-survival, and incomplete adjustment
+pulls the estimate toward that confounded association. Not one-arm extrapolation; not positivity.
+
+### Fix candidates (attack the residual confounding)
+1. **Ensure W1 is in the outcome hazard** — the MainTerms Cox `Surv ~ .`, not the discrete-SL `TrtOnly`
+   `Surv ~ A`. If the SL is blending toward `TrtOnly`, W1 is under-used → residual confounding. Force MainTerms.
+2. **CV-TMLE / more folds** — better targeting removes more residual confounding at finite n.
+3. If 1–2 don't close it: concrete-RMST is contrast-compressed under this confounding + finite n → document and
+   STOP. Synthetic DGP, diminishing returns; grid-TMLE (0.41) already covers exp51. The real test is real data.
 
 ## Relation
 - Primary #223 fix (the real one): `Intervention=c(1L,0L)→c(1L,2L)` slot-index + dense TargetTime grid
