@@ -9,6 +9,7 @@ from sklearn.utils.validation import has_fit_parameter
 from lifelines import CoxPHFitter
 from causal_bench.estimators.base import BaseEstimator
 from causal_bench.metrics import EstimatorResult
+from causal_bench.sampling import kish_ess
 from causal_bench.super_learner import SuperLearner
 from causal_bench.crossfit import make_folds
 
@@ -143,6 +144,15 @@ class TMLEIPCWEstimator(BaseEstimator):
         AW = np.column_stack([A, W])
         AW1 = np.column_stack([np.ones(n), W])
         AW0 = np.column_stack([np.zeros(n), W])
+
+        # Clever-covariate overlap ESS (#224): Kish ESS of the COMBINED g×S_c weight
+        # w = ipcw·(A/g + (1−A)/(1−g)) = 1/(g·G) on-policy — the survival analogue of exp52's
+        # policy_value_ess, but with the censoring factor. Late-horizon admin censoring shrinks G
+        # (larger ipcw), so this ESS collapses faster than a propensity-only overlap check as t→τ.
+        _gc = np.clip(g, 1e-6, 1 - 1e-6)
+        _w_clever = ipcw * np.where(A == 1, 1.0 / _gc, 1.0 / (1.0 - _gc))
+        self.clever_ess_ = float(kish_ess(np.log(np.clip(_w_clever, 1e-300, None))))
+        self.clever_ess_frac_ = float(self.clever_ess_ / n)
 
         sample_weights = ipcw / max(ipcw.mean(), 1e-10)
         # Default (q_learner is None): IPCW-weighted logistic, as before.

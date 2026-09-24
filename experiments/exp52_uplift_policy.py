@@ -11,6 +11,7 @@ import numpy as np
 
 from causal_bench.validation.uplift_policy import (
     sim_uplift, true_values, dr_learner_cate, aipw_policy_value, policy_value_ess, naive_policy_value, qini,
+    sim_uplift_confounded, confounded_trap,
 )
 
 OUT_DIR = Path("results/exp52_uplift_policy")
@@ -33,6 +34,11 @@ def run(*, n=8000, seed=0):
             "v_dr_pihat": v_dr_pihat, "v_dr_none": v_dr_none, "v_dr_all": v_dr_all,
             "v_nv_pihat": v_nv_pihat, "v_nv_none": v_nv_none, "qini": q,
             "ess_pihat": ess_pihat, "essf_pihat": essf_pihat}
+
+
+def run_confounded(*, n=8000, seed=0):
+    """The ESS-necessary-but-not-sufficient scenario: a hidden confounder U, true effect 0, healthy overlap."""
+    return confounded_trap(sim_uplift_confounded(n, seed=seed), folds=2, seed=seed)
 
 
 def report(r) -> str:
@@ -71,6 +77,26 @@ def report(r) -> str:
          "usual Qini — is biased by confounding (treated users differ systematically). The differentiator vs a",
          "standard uplift-tree + naive-Qini pipeline: the *evaluation* is doubly robust, so the targeting ROI",
          "you report to the business is trustworthy under confounding."]
+    if r.get("confounded") is not None:
+        c = r["confounded"]
+        L += ["",
+              "## The overlap ESS is NECESSARY but NOT SUFFICIENT (unmeasured-confounder variant)\n",
+              "Same AIPW machinery, but now a hidden binary U (\"enterprise mandate\") confounds A and Y, and the",
+              "TRUE treatment effect is **exactly 0**. A depends on U (hidden) + W1 (observed), so the observed",
+              "propensity is smoothly distributed and the overlap diagnostic flashes green:",
+              "",
+              "| quantity | value | note |",
+              "|----------|-------|------|",
+              f"| propensity spread ê(W) | [{c['e_min']:.2f}, {c['e_max']:.2f}] | no extreme weights, no thresholding |",
+              f"| **ATE overlap Kish ESS** (all units) | **{100*c['essf']:.0f}%** | overlap looks *healthy* — green light |",
+              f"| true interventional contrast V(all)−V(none) | **{c['contrast_true']:.3f}** | τ≡0 by construction |",
+              f"| **DR (AIPW) contrast** | **{c['contrast_dr']:+.3f}** | confidently BIASED despite the green ESS |",
+              "",
+              "The ESS reports on *positivity/overlap*; it is blind to the A←U→Y back-door that W does not close.",
+              "A doubly-robust estimator cannot rescue a mis-specified estimand — the same lesson as the",
+              "collider/estimand-discipline thread (#206/#216): you cannot math your way out of a violated DAG.",
+              "This is the converse failure to the top-k contrast collapse above (loud, overlap-driven); here the",
+              "diagnostic is silent and green while the answer is wrong. ESS is a *necessary* gate, not a sufficient one."]
     return "\n".join(L)
 
 
@@ -80,6 +106,7 @@ def main():
     p.add_argument("--n", type=int, default=8000)
     a = p.parse_args()
     r = run(n=a.n)
+    r["confounded"] = run_confounded(n=a.n)
     rep = report(r)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "summary.md").write_text(rep + "\n")

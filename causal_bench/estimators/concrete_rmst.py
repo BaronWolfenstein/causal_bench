@@ -296,6 +296,84 @@ def concrete_positivity_dx(
         raise RuntimeError(f"concrete positivity diagnostics failed: {exc}") from exc
 
 
+def _concrete_bridge_core(df, horizon, rmst_contrast, covars, cv_folds,
+                          rmst_grid_n, strata_cols, min_nuisance):
+    """The rpy2 call that produces (point, se), or None on non-finite/caught error. All args are plain
+    picklable Python (DataFrame, floats, lists, None) so this runs unchanged in-process OR in a spawned
+    subprocess. Imports rpy2 locally so a fresh child process gets a clean R session."""
+    import numpy as np
+    import rpy2.robjects as ro
+    import rpy2.robjects.pandas2ri as pandas2ri
+    from rpy2.robjects.conversion import localconverter
+
+    ro.r["source"](str(_R_BRIDGE))
+    run_bridge = ro.globalenv["run_concrete_bridge"]
+
+    df_r = df.copy()
+    df_r["event_type"] = df_r["Delta"].astype(int)
+    df_r = prepare_for_r(df_r)
+    r_strata = ro.StrVector(strata_cols) if strata_cols else ro.rinterface.NULL
+
+    with localconverter(ro.default_converter + pandas2ri.converter):
+        r_df = ro.conversion.py2rpy(df_r)
+    try:
+        bridge_kw = dict(covars=ro.StrVector(covars), cv_folds=float(cv_folds),
+                         rmst_grid_n=float(rmst_grid_n), strata_cols=r_strata)
+        if min_nuisance is not None:
+            bridge_kw["min_nuisance"] = float(min_nuisance)
+        result_r = run_bridge(r_df, float(horizon), **bridge_kw)
+        ate_key, se_key = ("RMST_ATE", "RMST_SE") if rmst_contrast else ("ATE", "SE")
+        point = float(np.array(result_r.rx2(ate_key))[0])
+        se = float(np.array(result_r.rx2(se_key))[0])
+    except Exception as exc:
+        warnings.warn(f"concrete bridge failed: {exc}", stacklevel=2)
+        return None
+    if not (np.isfinite(point) and np.isfinite(se)):
+        warnings.warn("concrete returned non-finite ATE/SE", stacklevel=2)
+        return None
+    return (point, se)
+
+
+def _concrete_subprocess_worker(q, kw):
+    """Spawn-target: run the bridge core and put ('ok',(pt,se)) / ('none',None) / ('err',repr) on the queue."""
+    try:
+        res = _concrete_bridge_core(**kw)
+        q.put(("ok", res) if res is not None else ("none", None))
+    except BaseException as exc:            # incl. anything short of a hard signal (segfault won't reach here)
+        try:
+            q.put(("err", repr(exc)))
+        except Exception:
+            pass
+
+
+def _run_concrete_isolated(kw, timeout):
+    """Run the bridge core in a spawned subprocess so a hard R/xgboost SIGSEGV (rpy2 nested-OpenMP) takes down
+    only the child; the parent detects the dead child and returns None (→ 'CONCRETE N/A'), never crashing."""
+    import multiprocessing as mp
+    from queue import Empty
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=_concrete_subprocess_worker, args=(q, kw), daemon=True)
+    p.start()
+    try:
+        status, payload = q.get(timeout=timeout)     # child segfault ⇒ never puts ⇒ Empty on timeout
+    except Empty:
+        status, payload = "timeout", None
+    p.join(timeout=10)
+    if p.is_alive():
+        p.terminate(); p.join()
+    if status == "ok":
+        return payload
+    if status == "err":
+        warnings.warn(f"concrete bridge failed: {payload}", stacklevel=2)
+        return None
+    if status == "timeout":
+        warnings.warn(f"concrete bridge crashed or timed out in subprocess "
+                      f"(exit {p.exitcode}); returning N/A", stacklevel=2)
+        return None
+    return None                                       # ('none', None)
+
+
 class ConcreteRMSTEstimator(BaseEstimator):
     """RMST estimator via McCoy's concrete R package.
 
@@ -313,10 +391,16 @@ class ConcreteRMSTEstimator(BaseEstimator):
     name = "concrete_RMST"
 
     def __init__(self, horizon: float = 1.0, strata_cols: list[str] | None = None,
-                 config: ConcreteConfig | None = None, rmst_contrast: bool = False):
+                 config: ConcreteConfig | None = None, rmst_contrast: bool = False,
+                 isolate: bool = True, subprocess_timeout: float = 900.0):
         self._horizon = horizon
         self._strata_cols = strata_cols
         self._config = config or ConcreteConfig()
+        # isolate=True runs the rpy2 bridge in a spawned subprocess so a hard R/xgboost SIGSEGV (the rpy2
+        # nested-OpenMP crash) takes down only the child and returns 'N/A', instead of killing the whole run.
+        # Set isolate=False to debug in-process (a crash then aborts the interpreter).
+        self._isolate = isolate
+        self._subprocess_timeout = subprocess_timeout
         # rmst_contrast=True returns the RMST-Diff contrast (treated−control, positive = survival benefit,
         # NO negation) instead of the LYL/risk-difference ATE. Opt-in so existing consumers (which negate the
         # risk-difference ATE, e.g. survival_uplift.concrete_cate) are unaffected. #223 Fix 1.
@@ -335,46 +419,20 @@ class ConcreteRMSTEstimator(BaseEstimator):
             )
             return []
 
-        import rpy2.robjects as ro
-        import rpy2.robjects.pandas2ri as pandas2ri
-        from rpy2.robjects.conversion import localconverter
-
-        # Source the R bridge (idempotent — R caches sourced environments)
-        ro.r["source"](str(_R_BRIDGE))
-        run_bridge = ro.globalenv["run_concrete_bridge"]
-
-        df_r = df.copy()
-        df_r["event_type"] = df_r["Delta"].astype(int)
-        df_r = prepare_for_r(df_r)
-
-        r_strata = ro.StrVector(self._strata_cols) if self._strata_cols else ro.rinterface.NULL
-
         # Validated analysis-plan knobs (covariates, CV folds, MinNuisance positivity bound, RMST grid) — one
         # authoritative default, checked in Python before crossing the opaque rpy2 seam. #223.
         cfg = self._config.to_r_kwargs()
-
-        with localconverter(ro.default_converter + pandas2ri.converter):
-            r_df = ro.conversion.py2rpy(df_r)
-
-        try:
-            bridge_kw = dict(
-                covars=ro.StrVector(cfg["covars"]),
-                cv_folds=float(cfg["cv_folds"]),
-                rmst_grid_n=float(cfg["rmst_grid_n"]),
-                strata_cols=r_strata,
-            )
-            if "min_nuisance" in cfg:      # omitted unless set → concrete default (positivity-neutral)
-                bridge_kw["min_nuisance"] = float(cfg["min_nuisance"])
-            result_r = run_bridge(r_df, float(horizon), **bridge_kw)
-            ate_key, se_key = ("RMST_ATE", "RMST_SE") if self._rmst_contrast else ("ATE", "SE")
-            point = float(np.array(result_r.rx2(ate_key))[0])
-            se    = float(np.array(result_r.rx2(se_key))[0])
-            if not (np.isfinite(point) and np.isfinite(se)):
-                warnings.warn("concrete returned non-finite ATE/SE", stacklevel=2)
-                return []
-        except Exception as exc:
-            warnings.warn(f"concrete bridge failed: {exc}", stacklevel=2)
+        kw = dict(
+            df=df, horizon=float(horizon), rmst_contrast=self._rmst_contrast,
+            covars=list(cfg["covars"]), cv_folds=float(cfg["cv_folds"]),
+            rmst_grid_n=float(cfg["rmst_grid_n"]), strata_cols=self._strata_cols,
+            min_nuisance=(float(cfg["min_nuisance"]) if "min_nuisance" in cfg else None),
+        )
+        res = (_run_concrete_isolated(kw, self._subprocess_timeout) if self._isolate
+               else _concrete_bridge_core(**kw))
+        if res is None:
             return []
+        point, se = res
 
         ci_lower = point - 1.96 * se
         ci_upper = point + 1.96 * se

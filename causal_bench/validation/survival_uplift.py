@@ -131,3 +131,21 @@ def rmst_tmle_cate(df, tau, grid=None):
         sdiff = np.array(sdiff)
         out[v] = float(np.sum((sdiff[:-1] + sdiff[1:]) / 2 * np.diff(ts)))          # ∫ S-diff dt
     return out
+
+
+def clever_ess_profile(df, tau, grid=None):
+    """The g×S_c overlap ESS as a function of horizon (#224 / paste-4). The DR RMST clever covariate is
+    1/(g·S_c(t)); as t→τ, administrative censoring shrinks S_c (=G), so the combined-weight Kish ESS collapses
+    FASTER than a propensity-only overlap check. This is the survival analogue of exp52's `policy_value_ess`:
+    it flags the horizons where the DR RMST contrast is variance-dominated (a handful of high-weight late-cohort
+    units 'speaking for' the censored ones), even when the baseline propensity overlap looks fine.
+
+    Returns {'ts', 'ess_frac'} pooled over the cohort; ess_frac[i] is the clever-covariate ESS/n at horizon ts[i]."""
+    from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
+    grid = np.asarray(grid) if grid is not None else np.linspace(tau / 6, tau, 6)
+    ess = []
+    for t in grid:
+        est = TMLEIPCWEstimator()
+        est.estimate(df, horizon=float(t))
+        ess.append(getattr(est, "clever_ess_frac_", float("nan")))
+    return {"ts": grid, "ess_frac": np.array(ess)}

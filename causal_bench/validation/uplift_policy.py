@@ -94,6 +94,52 @@ def policy_value_ess(nuis, pi):
     return float(ess), float(ess / len(A))
 
 
+# ---------------------------------------------------------------- unmeasured-confounder variant
+# ESS is NECESSARY but NOT SUFFICIENT. Here a hidden binary U ("enterprise mandate") confounds A and Y,
+# while the TRUE treatment effect is exactly 0. A depends on U (hidden) and W1 (observed), so the observed
+# propensity e(W1) is smoothly distributed → the Kish ESS looks healthy (green light), yet V̂_DR is biased:
+# AIPW targets the W-adjusted functional E[E[Y|A=1,W]]−E[E[Y|A=0,W]], which ≠ the interventional effect
+# because W does not block the A←U→Y back-door. The overlap diagnostic cannot see a DAG violation — the same
+# lesson as the collider/estimand-discipline thread: a robust estimator can't rescue a mis-specified estimand.
+_GU, _GW_A, _BU, _PU = 1.5, 0.5, 2.0, 0.2   # U→A, W1→A, U→Y strengths; P(U=1)
+
+
+def sim_uplift_confounded(n, *, seed=0):
+    """Uplift cohort with an UNMEASURED confounder U and a TRUE treatment effect of exactly 0. U is withheld
+    from the returned data (only W1,W2,A,Y observed). A ~ Bern(expit(_GW_A·W1 + _GU·U − 0.5))."""
+    rng = np.random.default_rng(seed)
+    W1 = rng.normal(size=n); W2 = rng.normal(size=n)
+    U = (rng.random(n) < _PU).astype(float)                        # unmeasured
+    A = (rng.random(n) < _expit(_GW_A * W1 + _GU * U - 0.5)).astype(int)
+    Y = _mu0(W1, W2) + _BU * U + 0.0 * A + rng.normal(size=n)      # τ≡0; U drives Y (the hidden confounding)
+    return {"W1": W1, "W2": W2, "A": A, "Y": Y}                    # U NOT returned
+
+
+def ate_overlap_ess(A, e):
+    """Kish ESS of the ATE inverse-probability weights w = A/ê + (1−A)/(1−ê) across ALL units — the standard
+    positivity/overlap diagnostic. (Distinct from `policy_value_ess`, whose treat-all/none correction zeroes
+    one arm and so caps near 50% by construction, regardless of overlap.) Returns (ess, ess_frac=ess/n)."""
+    from causal_bench.sampling import kish_ess
+    A = np.asarray(A); e = np.clip(np.asarray(e), 1e-6, 1 - 1e-6)
+    w = A / e + (1 - A) / (1 - e)
+    ess = kish_ess(np.log(np.clip(w, 1e-300, None)))
+    return float(ess), float(ess / len(A))
+
+
+def confounded_trap(d, folds=2, seed=0):
+    """Fit the SAME cross-fit AIPW machinery on the observed (W1,W2,A,Y) — U hidden — and report the pair that
+    makes the point: the DR treat-all vs treat-none contrast (biased away from the true 0) alongside a HEALTHY
+    ATE overlap ESS and a moderate propensity spread. Returns the trap: green overlap, wrong answer."""
+    n = len(d["A"])
+    _, nuis = dr_learner_cate(d, folds=folds, seed=seed)           # nuisances on OBSERVED W only
+    A, e = nuis[1], nuis[3]
+    contrast = aipw_policy_value(nuis, np.ones(n, int)) - aipw_policy_value(nuis, np.zeros(n, int))
+    ess, essf = ate_overlap_ess(A, e)                              # the genuine positivity diagnostic (all units)
+    return {"contrast_dr": float(contrast), "contrast_true": 0.0,
+            "ess": ess, "essf": float(essf),
+            "e_min": float(e.min()), "e_max": float(e.max())}
+
+
 def naive_policy_value(d, pi):
     """Naive (confounded) value: mean observed Y among those whose observed A matches π — the biased Qini path."""
     A = np.asarray(d["A"]); Y = np.asarray(d["Y"], float)
