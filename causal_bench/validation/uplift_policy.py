@@ -140,6 +140,26 @@ def confounded_trap(d, folds=2, seed=0):
             "e_min": float(e.min()), "e_max": float(e.max())}
 
 
+def structure_layer_check(d, seed=0):
+    """Third leg of the necessary-but-not-sufficient trilogy (with overlap-ESS and calibration): the STRUCTURE
+    layer — Markov blanket / ZFCI (exp39/exp46) — run on the OBSERVED confounded data is blind to the hidden U
+    the same way the overlap ESS and calibration are.
+
+    Returns (a) the recovered predictive Markov blanket of Y — a structure pipeline would use these features, and
+    A∈MB(Y) is a *prediction* fact, not a causal one; and (b) the ZFCI verdict on A ⫫ Y | (W1,W2): the residual
+    A–Y dependence after adjusting the OBSERVED confounders. That dependence is EQUALLY consistent with a causal
+    A→Y and with A←U→Y confounding — no observed-variable CI test can tell them apart — so the structure evidence
+    is necessary but not sufficient to license the causal read. (With only W1,W2,A,Y observed the confounded model
+    is observationally near-saturated, so ZFCI has little to reject: the blind spot is structural, not power.)"""
+    from causal_bench.detectors.zero_flow_ci import markov_blanket, zero_flow_ci_test
+    W1, W2, A, Y = (np.asarray(d[k], float) for k in ("W1", "W2", "A", "Y"))
+    data = np.column_stack([W1, W2, A, Y])                          # 0=W1 1=W2 2=A 3=Y
+    names = ["W1", "W2", "A", "Y"]
+    mb = [names[j] for j in markov_blanket(3, data, rng=np.random.default_rng(seed))]
+    ci = zero_flow_ci_test(A, Y, np.column_stack([W1, W2]), rng=np.random.default_rng(seed))
+    return {"mb_Y": mb, "ci_verdict": ci.verdict, "ci_p": float(ci.p_value)}
+
+
 def naive_policy_value(d, pi):
     """Naive (confounded) value: mean observed Y among those whose observed A matches π — the biased Qini path."""
     A = np.asarray(d["A"]); Y = np.asarray(d["Y"], float)

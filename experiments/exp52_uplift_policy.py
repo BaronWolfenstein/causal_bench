@@ -11,7 +11,7 @@ import numpy as np
 
 from causal_bench.validation.uplift_policy import (
     sim_uplift, true_values, dr_learner_cate, aipw_policy_value, policy_value_ess, naive_policy_value, qini,
-    sim_uplift_confounded, confounded_trap,
+    sim_uplift_confounded, confounded_trap, structure_layer_check,
 )
 
 OUT_DIR = Path("results/exp52_uplift_policy")
@@ -37,8 +37,12 @@ def run(*, n=8000, seed=0):
 
 
 def run_confounded(*, n=8000, seed=0):
-    """The ESS-necessary-but-not-sufficient scenario: a hidden confounder U, true effect 0, healthy overlap."""
-    return confounded_trap(sim_uplift_confounded(n, seed=seed), folds=2, seed=seed)
+    """The necessary-but-not-sufficient scenario: a hidden confounder U, true effect 0, healthy overlap. Runs all
+    three diagnostics — overlap ESS, (implicit) calibration, and the STRUCTURE layer (ZFCI/MB) — each blind to U."""
+    d = sim_uplift_confounded(n, seed=seed)
+    r = confounded_trap(d, folds=2, seed=seed)
+    r["structure"] = structure_layer_check(d, seed=seed)
+    return r
 
 
 def report(r) -> str:
@@ -97,6 +101,19 @@ def report(r) -> str:
               "collider/estimand-discipline thread (#206/#216): you cannot math your way out of a violated DAG.",
               "This is the converse failure to the top-k contrast collapse above (loud, overlap-driven); here the",
               "diagnostic is silent and green while the answer is wrong. ESS is a *necessary* gate, not a sufficient one."]
+        s = c.get("structure")
+        if s is not None:                       # third leg: the STRUCTURE layer (ZFCI/MB) is blind to U too
+            L += ["",
+                  "**And the STRUCTURE layer (ZFCI / Markov blanket, exp39/46) is equally blind to U — the third leg.**",
+                  f"- Recovered predictive Markov blanket of Y: **{{{', '.join(s['mb_Y'])}}}** — a structure pipeline",
+                  "  would use these features, and A∈MB(Y) is a *prediction* fact (A helps predict Y), not evidence A",
+                  "  *causes* Y.",
+                  f"- ZFCI test  A ⫫ Y | (W1,W2):  **{s['ci_verdict']}** (p={s['ci_p']:.3f}) — residual A–Y dependence",
+                  "  after adjusting the OBSERVED confounders. But that dependence is equally consistent with a causal",
+                  "  A→Y *and* with A←U→Y confounding; no observed-variable CI test can distinguish them. So the",
+                  "  structure evidence is **necessary but not sufficient** to license the causal read — the same blind",
+                  "  spot as ESS and calibration. Three green-or-ambiguous diagnostics, one hidden U: only a sensitivity",
+                  "  analysis (the E-value, exp57) bounds the gap none of them can see."]
     return "\n".join(L)
 
 
