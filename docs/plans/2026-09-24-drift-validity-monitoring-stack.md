@@ -26,10 +26,21 @@ Population-stability index on the raw-score histogram. Label-free, fires on *any
 need not hurt accuracy — high false-alarm rate, no validity signal. The outermost, cheapest tripwire.
 
 ### 2. AGL (Agreement-on-the-Line) — the label-free accuracy estimate
-Under distribution shift, two models' *agreement* is linearly correlated with their *accuracy* (same line as
-in-distribution), so inter-model agreement **estimates OOD accuracy without labels**. Sits between PSI (input
-shift, no accuracy) and the audit queue (labeled): it tells you whether the shift PSI flagged actually *hurts*.
-**Load-bearing requirement (from the AGL memory): independent failures ⇒ cross-BACKBONE models, not cross-seed.**
+**AGL = Agreement-on-the-Line (Baek et al., NeurIPS 2022)**, the follow-up to Accuracy-on-the-Line (Miller 2021).
+It is about **inter-model prediction agreement**, NOT linear probes of layers: across models, pairwise *agreement*
+under shift is linearly correlated with *accuracy* (same "line" as in-distribution — the line is the ID-vs-OOD
+correlation across a model population, not a probe), so inter-model agreement **estimates OOD accuracy without
+labels**. Sits between PSI (input shift, no accuracy) and the audit queue (labeled): it tells you whether the
+shift PSI flagged actually *hurts*. **Load-bearing requirement (from the AGL memory): independent failures ⇒
+cross-BACKBONE models, not cross-seed.**
+
+### 2b. Linear probes of encoder layers — a DISTINCT (not-AGL) representation-drift layer
+Separately from AGL, if the pipeline runs on a frozen encoder (e.g. the SMB JEPA encoder), a **linear probe**
+(Alain–Bengio: a linear classifier on frozen hidden-layer activations) is its own monitoring tool: track probe
+accuracy / activation-distribution shift per layer to catch **representation drift, OOD, or hallucination** at
+the feature level, upstream of the predictor. This is a candidate layer, orthogonal to AGL (probes internal
+representations of one model; AGL compares predictions of two models). Relevant only when features come from a
+learned encoder; not needed for the tabular Figma DGPs here.
 - *Prediction use:* run two decorrelated churn predictors; agreement drop ⇒ accuracy drop ⇒ trigger the audit.
 - *Causal extension (novel, worth flagging):* the AGL template applied to the **estimate**, not the predictor —
   do two DR estimators with **different nuisance backbones** agree on the effect? Cross-backbone disagreement of
