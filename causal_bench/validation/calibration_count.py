@@ -24,6 +24,13 @@ is a **sensitivity analysis** — the VanderWeele–Ding **E-value**: the minimu
 effect. It does NOT prove no confounding (that is irreducibly impossible from data); it BOUNDS the vulnerability.
 So "sufficient" is never a single green light — it is the conjunction (positivity=ESS) ∧ (functional form=DR/EIC)
 ∧ (estimand=DAG discipline) ∧ (a sensitivity analysis bounding the unmeasured-confounding gap).
+
+How this composes with the structure layer (ZFCI / Markov blanket, exp39/exp46): those tools sit UPSTREAM — they
+pick variables / recover the graph — while calibration here is DOWNSTREAM output-honesty; they are complementary,
+not substitutes. And a ZFCI test over the OBSERVED variables is necessary-but-not-sufficient in the *same* way this
+demo's calibration is: it cannot see the hidden U (no observed-variable CI test can), so it too would pass while
+the causal count stays biased. The Markov blanket is the optimal *predictive* feature set (good for the calibrated
+p̂ above), but is NOT the causal adjustment set (it contains colliders) — the estimand-discipline distinction.
 """
 from __future__ import annotations
 import numpy as np
