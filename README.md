@@ -165,6 +165,7 @@ python experiments/exp11_strata.py    --n-sims 200   # R + concrete required for
 | `exp53_competing_risks.py` | Competing risks: the naive 1−KM (upgrade-as-censoring) over-estimates churn incidence; Aalen–Johansen CIF is correct. Adds a continuous-time RMTL₁ (churn-time-lost) with the efficient-influence-function SE via O(1) running-scalar integrand weights (EIC-SE matches bootstrap, 95% coverage) |
 | `exp54_survival_timevarying_uplift.py` | Survival variant of exp45: time-varying treatment with treatment-confounder feedback + time-to-churn outcome and informative censoring; ICE-survival g-computation + IPCW + last-blip g-estimation vs biased KM/Cox baselines |
 | `exp57_calibration_count.py` | Calibration vs causal count: a calibrated predictor gives the right *observational* churn count (Montgomery's "probability you can count on") but the wrong *interventional* count under hidden confounding; a VanderWeele–Ding E-value is the sufficiency-side sensitivity bound on the unmeasured-confounding gap that calibration/ESS are blind to |
+| `exp58_calibration_monitor.py` | CalibrationMonitor — an anytime-valid drift detector (mixture betting test-martingale / e-process) over the labeled audit stream: uniform false-alarm control (0.03 ≤ α) where a naive repeated test inflates (0.42), with CUSUM-like detection. Ships `page_hinkley` + `ddm` as familiar (threshold-tuned) MLOps handles. The rigorous core of the drift-monitoring stack; a fired alarm hands off to the causal layer (exp38/exp17) |
 
 ## Other components
 
