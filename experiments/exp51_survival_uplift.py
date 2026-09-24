@@ -16,7 +16,7 @@ import numpy as np
 
 from causal_bench.validation.survival_uplift import (
     sim_survival_uplift, true_cate, km_cate, tmle_cate, concrete_cate,
-    true_rmst_cate, rmst_tmle_cate,
+    true_rmst_cate, rmst_tmle_cate, clever_ess_profile,
 )
 
 OUT_DIR = Path("results/exp51_survival_uplift")
@@ -42,7 +42,8 @@ def run(*, n=6000, tau=3.0, seed=0, seeds=None, concrete_seeds=None):
         df = sim_survival_uplift(n, tau=tau, seed=seed)
         return {"truth": truth, "km": km_cate(df, tau), "tmle": tmle_cate(df, tau),
                 "concrete": concrete_cate(df, tau), "n": n, "tau": tau, "multiseed": False,
-                "rmst_truth": true_rmst_cate(tau=tau), "rmst_tmle": rmst_tmle_cate(df, tau)}
+                "rmst_truth": true_rmst_cate(tau=tau), "rmst_tmle": rmst_tmle_cate(df, tau),
+                "ess_profile": clever_ess_profile(df, tau)}
     seeds = list(seeds); cseeds = list(concrete_seeds) if concrete_seeds is not None else seeds[:min(6, len(seeds))]
     return {"truth": truth, "km": _mean_se(km_cate, tau, n, seeds),
             "tmle": _mean_se(tmle_cate, tau, n, seeds),
@@ -83,6 +84,19 @@ def report(r) -> str:
               f"| V=0 | {rt[0.0]:.3f} | {rm[0.0]:.3f} |",
               f"| V=1 | {rt[1.0]:.3f} | {rm[1.0]:.3f} |",
               "(the more product-intuitive metric: retention-days gained, alongside the retention-rate lift above.)",
+              ""]
+    ep = r.get("ess_profile")
+    if ep is not None and not ms:           # g×S_c overlap ESS vs horizon (#224): the late-horizon collapse
+        L += ["**Clever-covariate overlap ESS** (Kish ESS of the combined 1/(g·S_c) weight) vs horizon — the",
+              "survival analogue of exp52's `policy_value_ess`. As t→τ, administrative censoring shrinks S_c, so",
+              "the DR RMST contrast's effective n collapses (a few late-cohort units carry the estimate):",
+              "```",
+              "horizon t : " + " ".join(f"{t:.2f}" for t in ep["ts"]),
+              "ESS%      : " + " ".join(f"{100*e:.0f}" for e in ep["ess_frac"]),
+              "```",
+              f"ESS falls {100*ep['ess_frac'][0]:.0f}% → {100*ep['ess_frac'][-1]:.0f}% across the horizon; trust the RMST",
+              "integrand only where it stays high. (Propensity-only overlap misses this — the censoring factor is",
+              "what compounds it late.)",
               ""]
     L += [
          "Read-out: under confounding (A↑ with W1, which also ↑ hazard → treated look sicker) + informative",
