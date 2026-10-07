@@ -24,20 +24,37 @@ _M1, _M2 = 1.0, 0.5                         # baseline μ0(W)=μ1 W1+μ2 W2
 
 def _expit(x): return 1.0 / (1.0 + np.exp(-x))
 def _tau(W1, W2): return _T0 + _T1 * W1 + _T2 * W2
-def _mu0(W1, W2): return _M1 * W1 + _M2 * W2
+def _mu0(W1, W2, curv=0.0):
+    # curv>0 adds curvature in W1 (centered: E[W1²−1]=0) that a LINEAR outcome learner cannot capture; it is
+    # benign under full support (double-robustness reweights it) but is EXTRAPOLATED — and so mis-estimated —
+    # in a region with no support, e.g. the no-treated / no-control tail of a threshold targeting rule. τ stays
+    # linear, so the optimal policy π*=1{τ>0} is unchanged and the achievable-value comparison stays valid.
+    return _M1 * W1 + _M2 * W2 + curv * (W1 ** 2 - 1.0)
 
 
-def sim_uplift(n, *, seed=0):
+def sim_uplift(n, *, gamma=None, threshold=None, slop=0.25, curv=0.0, seed=0):
+    """Point-outcome uplift cohort. Overlap knob (two flavors):
+      - `gamma`: smooth confounding e(W)=expit(gamma·W1); larger gamma steepens the propensity (worse overlap),
+        but a CORRECTLY-specified propensity model still adjusts it → DR stays robust.
+      - `threshold`: a near-DETERMINISTIC targeting rule A=1{W1+ε>threshold}, ε~N(0,slop) ("nudge teams with
+        <5 collaborators"). This creates GENUINE non-overlap (no treated units far below the cut, no control far
+        above) → the treated/control outcome models must EXTRAPOLATE → the DR contrast compresses/biases. This is
+        the Figma-realistic failure the ESS floor is for. Pass one or the other.
+    The true policy values (`true_values`) are knob-INDEPENDENT — the knob degrades overlap, never the truth."""
     rng = np.random.default_rng(seed)
     W1 = rng.normal(size=n); W2 = rng.normal(size=n)
-    A = (rng.random(n) < _expit(_G * W1)).astype(int)
-    Y = _mu0(W1, W2) + _tau(W1, W2) * A + rng.normal(size=n)
+    if threshold is not None:
+        A = ((W1 + rng.normal(0.0, slop, size=n)) > threshold).astype(int)   # near-deterministic targeting
+    else:
+        g = _G if gamma is None else gamma
+        A = (rng.random(n) < _expit(g * W1)).astype(int)
+    Y = _mu0(W1, W2, curv) + _tau(W1, W2) * A + rng.normal(size=n)
     return {"W1": W1, "W2": W2, "A": A, "Y": Y}
 
 
-def true_values(*, cost=0.0, n=2_000_000, seed=99):
+def true_values(*, cost=0.0, curv=0.0, n=2_000_000, seed=99):
     rng = np.random.default_rng(seed); W1 = rng.normal(size=n); W2 = rng.normal(size=n)
-    mu0 = _mu0(W1, W2); tau = _tau(W1, W2)
+    mu0 = _mu0(W1, W2, curv); tau = _tau(W1, W2)
     v_none = float(mu0.mean()); v_all = float((mu0 + tau).mean())
     v_opt = float((mu0 + tau * (tau > cost)).mean())          # optimal targeting
     return {"v_none": v_none, "v_all": v_all, "v_opt": v_opt,
@@ -124,6 +141,37 @@ def ate_overlap_ess(A, e):
     w = A / e + (1 - A) / (1 - e)
     ess = kish_ess(np.log(np.clip(w, 1e-300, None)))
     return float(ess), float(ess / len(A))
+
+
+def covariate_support(W, A, e=None, *, k=10, bins=20):
+    """Positivity-IN-W (covariate-SUPPORT) overlap — the complement the weight-dispersion Kish ESS is BLIND to
+    (exp55 regime B / #224). `ate_overlap_ess` measures weight dispersion *within* each arm, so a near-
+    deterministic targeting rule gives low-dispersion weights (healthy ESS) while SEGREGATING the treated/control
+    covariate distributions — the outcome model then EXTRAPOLATES into no-support regions, a persistent DR bias
+    the ESS cannot see. This measures the covariate-support overlap directly. W = (n×p) covariates, A = 0/1,
+    e = propensity (fit a logistic one if None). Returns (higher = better overlap):
+      overlap_coef   ∫min(f₁,f₀) of the per-arm propensity densities (1=identical, 0=disjoint support)
+      common_support fraction of units inside the overlapping propensity-score range [max-min, min-max]
+      knn_cross_frac mean fraction of each unit's k nearest W-neighbours in the OPPOSITE arm (1=mixed, 0=segregated)
+      extrapolation  fraction of units with ZERO opposite-arm neighbour among the k nearest = pure-extrapolation
+                     region (the direct 'no matched units to borrow from' signal; HIGHER = worse, flags regime B)."""
+    from sklearn.neighbors import NearestNeighbors
+    W = np.asarray(W, float); A = np.asarray(A).astype(int)
+    if W.ndim == 1:
+        W = W[:, None]
+    if e is None:
+        e = LogisticRegression(max_iter=1000).fit(W, A).predict_proba(W)[:, 1]
+    e = np.asarray(e, float); e1, e0 = e[A == 1], e[A == 0]
+    lo = max(e1.min(), e0.min()); hi = min(e1.max(), e0.max())
+    edges = np.linspace(min(e.min(), 0.0), max(e.max(), 1.0), bins + 1)
+    h1, _ = np.histogram(e1, edges, density=True); h0, _ = np.histogram(e0, edges, density=True)
+    overlap_coef = float(np.sum(np.minimum(h1, h0) * np.diff(edges)))
+    common_support = float(np.mean((e >= lo) & (e <= hi)))
+    Ws = (W - W.mean(0)) / (W.std(0) + 1e-12)                       # standardize for the k-NN metric
+    nbr = NearestNeighbors(n_neighbors=min(k + 1, len(A))).fit(Ws).kneighbors(Ws, return_distance=False)[:, 1:]
+    opp = (A[nbr] != A[:, None]).mean(1)                            # fraction of neighbours in the opposite arm
+    return {"overlap_coef": overlap_coef, "common_support": common_support,
+            "knn_cross_frac": float(opp.mean()), "extrapolation": float(np.mean(opp == 0))}
 
 
 def confounded_trap(d, folds=2, seed=0):

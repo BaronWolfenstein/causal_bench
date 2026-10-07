@@ -96,9 +96,14 @@ def page_hinkley(stream, *, delta: float = 0.005, lam: float = 1.0):
 
 
 def ddm(errors, *, min_n: int = 30, warn_k: float = 2.0, drift_k: float = 3.0):
-    """DDM (Gama et al. 2004) for a 0/1 ERROR stream: warning at p+s ≥ p_min+warn_k·s_min, drift at drift_k·s_min,
+    """DDM (Gama et al. 2004) for a 0/1 ERROR stream: warning at p+s > p_min+warn_k·s_min, drift at drift_k·s_min,
     with p the running error rate and s=√(p(1−p)/n). Threshold-based (k in std units), no uniform α. Returns
-    (warning_at, drift_at)."""
+    (warning_at, drift_at).
+
+    Note the STRICT inequalities: drift means the current error band must *exceed* the historical-minimum band,
+    not merely equal it. With a non-strict `>=` a degenerate zero-variance baseline false-alarms — e.g. a clean
+    `ddm([0]*100)` stream has p=sd=0 throughout, so after the band is set to p_min=s_min=0 the drift test
+    `0 >= 0+3·0` would fire spuriously at the first checked step. `>` makes "no increase" correctly a non-alarm."""
     n = 0; s = 0.0; p_min = float("inf"); s_min = float("inf"); warn = None
     for t, e in enumerate(errors, 1):
         n += 1; s += float(e); p = s / n; sd = (p * (1 - p) / n) ** 0.5
@@ -106,9 +111,9 @@ def ddm(errors, *, min_n: int = 30, warn_k: float = 2.0, drift_k: float = 3.0):
             continue
         if p + sd <= p_min + s_min:
             p_min = p; s_min = sd
-        if p + sd >= p_min + drift_k * s_min:
+        if p + sd > p_min + drift_k * s_min:
             return (warn, t)
-        if warn is None and p + sd >= p_min + warn_k * s_min:
+        if warn is None and p + sd > p_min + warn_k * s_min:
             warn = t
     return (warn, None)
 

@@ -508,6 +508,53 @@ def compute_true_rmst(config: DGPConfig, n_ref: int = 50_000) -> dict:
     }
 
 
+def _draw_potential_times(config: DGPConfig, n: int, rng: np.random.Generator):
+    """Draw n potential-outcome event times (T1, T0) and observed treatment A_obs from the benchmark's
+    log-linear accelerated-failure model. Factored out of compute_true_win_ratio so a finite sample can be
+    drawn for the model-free marginal win-ratio CI; the draw order is preserved so compute_true_win_ratio is
+    numerically unchanged. Returns (T1, T0, A_obs)."""
+    U  = rng.standard_normal(n)
+    W1 = rng.standard_normal(n)
+    W2 = rng.binomial(1, 0.5, n).astype(float)
+    W3 = rng.standard_normal(n)
+    W4 = rng.binomial(1, 0.3, n).astype(float)
+    enrollment_time = rng.uniform(0, config.enrollment_period, n)
+
+    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
+    logit_A = (
+        np.log(p / (1 - p))
+        + 0.3 * W1 + 0.2 * W2 - 0.2 * W3 + 0.1 * W4
+        + 0.5 * U * config.unmeasured_confounding_strength
+        + 0.8 * W1 * W3 * config.positivity_severity
+    )
+    A_obs = rng.binomial(1, _sigmoid(logit_A)).astype(float)
+
+    gumbel_noise = rng.gumbel(0, 1, n)
+
+    def _log_T(a_val: float) -> np.ndarray:
+        return (
+            0.0
+            + 0.4 * W1 - 0.3 * W2 + 0.2 * W3 - 0.2 * W4
+            + 0.3 * U
+            + config.true_tau * a_val
+            + config.enrollment_drift * enrollment_time
+            + config.outcome_nonlinearity * (W1 ** 2 - 1)
+            + config.effect_heterogeneity * a_val * W1
+            + gumbel_noise
+        )
+
+    return np.exp(_log_T(1.0)), np.exp(_log_T(0.0)), A_obs
+
+
+def sample_win_times(config: DGPConfig, n: int, seed: int | None = None):
+    """Finite sample of (T1, T0) potential event times from the same model as compute_true_win_ratio — the
+    input to the model-free marginal win-ratio CI (validation.ratio_ci.win_ratio_ci), which is assumption-light
+    (no outcome/propensity model, no R) and uncensored. Returns (T1, T0)."""
+    rng = np.random.default_rng(config.seed if seed is None else seed)
+    T1, T0, _ = _draw_potential_times(config, n, rng)
+    return T1, T0
+
+
 def compute_true_win_ratio(config: DGPConfig, n_ref: int = 50_000) -> dict:
     """Estimate true win ratio via U-statistic on potential outcomes.
 
@@ -534,39 +581,7 @@ def compute_true_win_ratio(config: DGPConfig, n_ref: int = 50_000) -> dict:
         "net_benefit" — p_win − p_loss
     """
     rng = np.random.default_rng(config.seed ^ 0xDEADBEEF)
-
-    U  = rng.standard_normal(n_ref)
-    W1 = rng.standard_normal(n_ref)
-    W2 = rng.binomial(1, 0.5, n_ref).astype(float)
-    W3 = rng.standard_normal(n_ref)
-    W4 = rng.binomial(1, 0.3, n_ref).astype(float)
-    enrollment_time = rng.uniform(0, config.enrollment_period, n_ref)
-
-    p = np.clip(config.treatment_prevalence, 1e-6, 1 - 1e-6)
-    logit_A = (
-        np.log(p / (1 - p))
-        + 0.3 * W1 + 0.2 * W2 - 0.2 * W3 + 0.1 * W4
-        + 0.5 * U * config.unmeasured_confounding_strength
-        + 0.8 * W1 * W3 * config.positivity_severity
-    )
-    A_obs = rng.binomial(1, _sigmoid(logit_A)).astype(float)
-
-    gumbel_noise = rng.gumbel(0, 1, n_ref)
-
-    def _log_T(a_val: float) -> np.ndarray:
-        return (
-            0.0
-            + 0.4 * W1 - 0.3 * W2 + 0.2 * W3 - 0.2 * W4
-            + 0.3 * U
-            + config.true_tau * a_val
-            + config.enrollment_drift * enrollment_time
-            + config.outcome_nonlinearity * (W1 ** 2 - 1)
-            + config.effect_heterogeneity * a_val * W1
-            + gumbel_noise
-        )
-
-    T1 = np.exp(_log_T(1.0))
-    T0 = np.exp(_log_T(0.0))
+    T1, T0, A_obs = _draw_potential_times(config, n_ref, rng)
 
     # U-statistic via searchsorted: O(n log n), exact for continuous distributions
     T0_sorted = np.sort(T0)
