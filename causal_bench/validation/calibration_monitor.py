@@ -9,16 +9,19 @@ Monitored quantity: a per-observation bounded loss ℓ_t ∈ [0,1] on the audit 
 (p̂−y)² — whose in-control mean is μ0 (the calibrated baseline). Calibration/accuracy DECAY raises E[ℓ], which the
 detector catches.
 
-Construction (H0: E[ℓ] ≤ μ0). Per-step e-value eₜ(λ) = 1 + λ(ℓₜ − μ0) with λ ∈ [0, 1/μ0) (keeps eₜ ≥ 0 for
+Construction (H0: E[ℓ_t | past] ≤ μ0 with a valid, fixed baseline). Per-step e-value eₜ(λ) = 1 + λ(ℓₜ − μ0) with λ ∈ [0, 1/μ0) (keeps eₜ ≥ 0 for
 ℓₜ ∈ [0,1]); wealth Kₜ(λ) = ∏ eₛ(λ) is a test (super)martingale under H0, and the **mixture** K̄ₜ = mean_λ Kₜ(λ)
 is too. **Ville's inequality ⇒ P(sup_t K̄ₜ ≥ 1/α | H0) ≤ α** — a uniform, anytime-valid false-alarm bound. Alarm
 the first time K̄ₜ ≥ 1/α. During in-control K̄ₜ stays O(1) (no growth); after an upward shift it grows
-exponentially, so detection delay ≈ log(1/α)/KL — CUSUM-like, hence it subsumes Page-Hinkley/DDM on *detection*
-too, while (unlike them) controlling the false-alarm rate uniformly. A sliding/adaptive window (ADWIN-style
+exponentially, with CUSUM-like detection; relative delay depends on the stream and tuning, rather than
+universally dominating Page-Hinkley/DDM. The false-alarm guarantee requires the conditional-mean null. A sliding/adaptive window (ADWIN-style
 forgetting) further sharpens LATE-change delay and is the natural companion (the "when to forget/refit" policy);
 it is complementary, not subsumed.
 """
 from __future__ import annotations
+from dataclasses import asdict, dataclass
+import math
+from numbers import Real
 import numpy as np
 
 
@@ -81,17 +84,77 @@ def naive_repeated_test(losses, mu0, *, alpha=0.05):
 # well but are THRESHOLD-tuned — there is no uniform P(false alarm) ≤ α guarantee (unlike the anytime-valid
 # CalibrationMonitor); their knobs are scale-dependent and must be tuned per stream. Use them as familiar
 # front-ends / baselines; use CalibrationMonitor when you need a principled false-alarm level.
-def page_hinkley(stream, *, delta: float = 0.005, lam: float = 1.0):
-    """Page-Hinkley CUSUM detector for an INCREASE in the mean of a real-valued stream. `delta` = slack (drift
-    magnitude to ignore), `lam` = detection threshold (a tuned knob, NOT a false-alarm level). Returns the first
-    alarm index, else None."""
-    x_mean = 0.0; m = 0.0; M = 0.0
-    for t, x in enumerate(stream, 1):
-        x_mean += (float(x) - x_mean) / t
-        m += (float(x) - x_mean - delta)
-        M = min(M, m)
-        if m - M > lam:
-            return t
+@dataclass
+class StreamingPageHinkley:
+    """Scale-dependent first-alarm monitor with JSON-restorable state.
+
+    Calibration must use separate development streams and the intended monitoring
+    horizon, noise scale and dependence. Neither lam nor min_n is an alpha level.
+    Real-valued finite scalars are accepted; arrays and binary booleans are rejected.
+    """
+    delta: float = 0.005
+    lam: float = 1.0
+    min_n: int = 1
+    n: int = 0
+    mean: float = 0.0
+    cumulative: float = 0.0
+    minimum: float = 0.0
+    alarm: bool = False
+    detected_at: int | None = None
+
+    def __post_init__(self):
+        for name in ('delta','lam','mean','cumulative','minimum'):
+            value=getattr(self,name)
+            if isinstance(value,(bool,np.bool_)) or not isinstance(value,Real) or not math.isfinite(value):
+                raise ValueError('Finite scalar '+name+' required')
+            setattr(self,name,float(value))
+        if self.delta<0 or self.lam<=0 or type(self.min_n) is not int or self.min_n<1:
+            raise ValueError('Nonnegative slack, positive threshold and integer warm-up required')
+        if type(self.n) is not int or self.n<0 or type(self.alarm) is not bool or self.minimum>self.cumulative:
+            raise ValueError('Malformed Page-Hinkley state')
+        if (self.alarm!=(self.detected_at is not None) or (self.detected_at is not None and
+            (type(self.detected_at) is not int or not self.min_n<=self.detected_at<=self.n))):
+            raise ValueError('First alarm index/state inconsistent')
+        if self.n==0 and any(getattr(self,k)!=0 for k in ('mean','cumulative','minimum')):
+            raise ValueError('Empty monitor has nonempty statistics')
+
+    def update(self,value):
+        if isinstance(value,(bool,np.bool_)) or not isinstance(value,Real) or not math.isfinite(value):
+            raise ValueError('Page-Hinkley requires a finite real scalar')
+        x=float(value)
+        n=self.n+1
+        mean=self.mean+(x-self.mean)/n
+        cumulative=self.cumulative+(x-mean-self.delta)
+        if not math.isfinite(mean) or not math.isfinite(cumulative):
+            raise ValueError('Page-Hinkley statistics overflowed; state unchanged')
+        self.n=n;self.mean=mean;self.cumulative=cumulative
+        self.minimum=min(self.minimum,self.cumulative)
+        if not self.alarm and self.n>=self.min_n and self.cumulative-self.minimum>self.lam:
+            self.alarm=True;self.detected_at=self.n
+        return self.alarm
+
+    def state_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_state_dict(cls,state):
+        if not isinstance(state,dict) or set(state)!=set(cls.__dataclass_fields__):
+            raise ValueError('Page-Hinkley state fields differ')
+        return cls(**state)
+
+
+def page_hinkley(stream, *, delta: float = 0.005, lam: float = 1.0, min_n: int = 1):
+    """First 1-based alarm on an upward-mean change, else None.
+
+    Default min_n=1 preserves historical batch behavior for finite real inputs.
+    Warm-up prevents alarms on the initial min_n-1 observations, but does not
+    calibrate the finite-horizon false-alarm rate. Tune
+    slack/threshold on independent noisy development streams; count pre-change
+    alarms separately from successful drift detections. A threshold is not alpha.
+    """
+    monitor=StreamingPageHinkley(delta=delta,lam=lam,min_n=min_n)
+    for value in stream:
+        if monitor.update(value):return monitor.detected_at
     return None
 
 
