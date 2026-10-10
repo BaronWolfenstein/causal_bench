@@ -37,7 +37,9 @@ suppressPackageStartupMessages({
 .concrete_args <- function(df, horizon, covars = c("W1", "W2", "W3", "W4"),
                            crossover_col = NULL, strata_cols = NULL,
                            cv_folds = 5, min_nuisance = NULL, rmst_grid_n = 12,
-                           rmst_grid = TRUE, target_time = NULL, verbose = FALSE) {
+                           rmst_grid = TRUE, target_time = NULL, verbose = FALSE,
+                           horizon_policy = "legacy_cap") {
+  horizon_policy <- match.arg(horizon_policy, c("legacy_cap", "strict"))
   dt <- as.data.table(df)
   dt[, id := .I]; dt[, event_type := as.integer(event_type)]; dt[, A := as.integer(A)]
   ctv <- NULL
@@ -48,7 +50,9 @@ suppressPackageStartupMessages({
   }
   dt[, grep("^L[0-9]+$", names(dt), value = TRUE) := NULL]
   last_event <- max(dt[event_type == 1L, T_obs], na.rm = TRUE)
+  if (!is.finite(last_event)) stop("At least one observed event is required")
   if (horizon >= last_event) {
+    if (horizon_policy == "strict") stop("Strict RMST horizon would be capped; provide follow-up beyond horizon")
     horizon <- last_event * 0.999
     if (verbose) message(sprintf(".concrete_args: horizon capped to %.6f (last event)", horizon))
   }
@@ -98,7 +102,8 @@ run_concrete_bridge <- function(df,
                                 cv_folds     = 5,
                                 min_nuisance = NULL,
                                 rmst_grid_n  = 12,
-                                verbose      = FALSE) {
+                                verbose      = FALSE,
+                                horizon_policy = "legacy_cap") {
 
   stopifnot(is.data.frame(df))
   stopifnot(all(c("T_obs", "event_type", "A") %in% names(df)))
@@ -108,7 +113,8 @@ run_concrete_bridge <- function(df,
   ## MinNuisance positivity bound — see .concrete_args + #223).
   ca      <- .concrete_args(df, horizon, covars = covars, crossover_col = crossover_col,
                             strata_cols = strata_cols, cv_folds = cv_folds,
-                            min_nuisance = min_nuisance, rmst_grid_n = rmst_grid_n, verbose = verbose)
+                            min_nuisance = min_nuisance, rmst_grid_n = rmst_grid_n, verbose = verbose,
+                            horizon_policy = horizon_policy)
   args    <- ca$args
   horizon <- ca$horizon
   dt      <- ca$dt
@@ -252,6 +258,7 @@ run_concrete_bridge <- function(df,
     SE           = se,
     RMST_ATE     = rmst_point,   # treated−control RMST diff (survival benefit; NO negation) — #223 Fix 1
     RMST_SE      = rmst_se,
+    effective_horizon = horizon,
     CI_lower     = point - 1.96 * se,
     CI_upper     = point + 1.96 * se,
     converged    = converged,

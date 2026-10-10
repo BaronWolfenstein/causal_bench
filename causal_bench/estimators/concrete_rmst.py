@@ -297,7 +297,7 @@ def concrete_positivity_dx(
 
 
 def _concrete_bridge_core(df, horizon, rmst_contrast, covars, cv_folds,
-                          rmst_grid_n, strata_cols, min_nuisance):
+                          rmst_grid_n, strata_cols, min_nuisance, horizon_policy="legacy_cap"):
     """The rpy2 call that produces (point, se), or None on non-finite/caught error. All args are plain
     picklable Python (DataFrame, floats, lists, None) so this runs unchanged in-process OR in a spawned
     subprocess. Imports rpy2 locally so a fresh child process gets a clean R session."""
@@ -319,9 +319,15 @@ def _concrete_bridge_core(df, horizon, rmst_contrast, covars, cv_folds,
     try:
         bridge_kw = dict(covars=ro.StrVector(covars), cv_folds=float(cv_folds),
                          rmst_grid_n=float(rmst_grid_n), strata_cols=r_strata)
+        bridge_kw["horizon_policy"] = horizon_policy
         if min_nuisance is not None:
             bridge_kw["min_nuisance"] = float(min_nuisance)
         result_r = run_bridge(r_df, float(horizon), **bridge_kw)
+        effective = float(np.array(result_r.rx2("effective_horizon"))[0])
+        if horizon_policy == "strict" and effective != float(horizon):
+            raise ValueError("concrete changed the strict estimand horizon")
+        if effective != float(horizon):
+            warnings.warn(f"concrete horizon changed from {horizon} to {effective}", stacklevel=2)
         ate_key, se_key = ("RMST_ATE", "RMST_SE") if rmst_contrast else ("ATE", "SE")
         point = float(np.array(result_r.rx2(ate_key))[0])
         se = float(np.array(result_r.rx2(se_key))[0])
@@ -392,7 +398,11 @@ class ConcreteRMSTEstimator(BaseEstimator):
 
     def __init__(self, horizon: float = 1.0, strata_cols: list[str] | None = None,
                  config: ConcreteConfig | None = None, rmst_contrast: bool = False,
-                 isolate: bool = True, subprocess_timeout: float = 900.0):
+                 isolate: bool = True, subprocess_timeout: float = 900.0,
+                 horizon_policy: str = "legacy_cap"):
+        if horizon_policy not in ("legacy_cap", "strict"):
+            raise ValueError("horizon_policy must be legacy_cap or strict")
+        self._horizon_policy = horizon_policy
         self._horizon = horizon
         self._strata_cols = strata_cols
         self._config = config or ConcreteConfig()
@@ -412,6 +422,13 @@ class ConcreteRMSTEstimator(BaseEstimator):
         horizon: float = 1.0,
         estimand: str = "ATE",
     ) -> list[EstimatorResult]:
+        if not np.isfinite(horizon) or horizon <= 0:
+            raise ValueError("Positive finite RMST horizon required")
+        if self._horizon_policy == "strict":
+            event_times = df.loc[df["Delta"] == 1, "T_obs"].to_numpy(float)
+            if (len(event_times) == 0 or not np.isfinite(event_times).all()
+                    or horizon >= event_times.max()):
+                raise ValueError("Strict RMST horizon must precede the last observed event; no silent capping")
         if not _concrete_available():
             warnings.warn(
                 "concrete R package not available — skipping ConcreteRMSTEstimator",
@@ -427,6 +444,7 @@ class ConcreteRMSTEstimator(BaseEstimator):
             covars=list(cfg["covars"]), cv_folds=float(cfg["cv_folds"]),
             rmst_grid_n=float(cfg["rmst_grid_n"]), strata_cols=self._strata_cols,
             min_nuisance=(float(cfg["min_nuisance"]) if "min_nuisance" in cfg else None),
+            horizon_policy=self._horizon_policy,
         )
         res = (_run_concrete_isolated(kw, self._subprocess_timeout) if self._isolate
                else _concrete_bridge_core(**kw))

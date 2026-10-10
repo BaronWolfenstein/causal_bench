@@ -115,9 +115,11 @@ def true_rmst_cate(*, tau=3.0, n=2_000_000, seed=99):
 
 def rmst_tmle_cate(df, tau, grid=None):
     """DR RMST-difference CATE = ∫₀^τ [S(t|1,v)−S(t|0,v)] dt, via TMLE-IPCW survival-difference over a horizon
-    grid, trapezoid-integrated (S-diff at t=0 is 0). Doubly robust, avoids the CONCRETE-bridge LYL convention;
-    the 'extra retention-days' metric. (CONCRETE could supply this via getRMST(Intervention=c(1,0)); not wired
-    to keep the shared bridge on its risk-difference contract.)"""
+    grid, trapezoid-integrated (S-diff at t=0 is 0). Doubly robust point estimation;
+    the 'extra retention-days' metric. The separate ConcreteRMSTEstimator now has
+    rmst_contrast=True for treated-minus-control time units, with NO negation.
+    Its R intervention slots are c(1,2); c(1,0) is invalid. Neither continuous-time
+    integration helper implements exp59's exact month-end survival sum."""
     from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
     grid = np.asarray(grid) if grid is not None else np.linspace(tau / 6, tau, 6)
     ts = np.concatenate([[0.0], grid])

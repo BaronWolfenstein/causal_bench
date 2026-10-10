@@ -98,11 +98,12 @@ rule or extrapolate this restricted quantity into full lifetime/LTV without
 additional tail, billing, discount and margin assumptions.
 
 Exp51 supplies the baseline-intervention survival-uplift setting; exp54 supplies
-treatment-confounder feedback under sequential interventions. Those are future
-extensions of this monthly baseline, requiring explicit intervention timing,
-identification assumptions and interventional simulation truth. `concrete` can
-be an optional comparator if its own validation is resolved; neither it nor
-#223 blocks this baseline. The existing exp34 person-time nuisance is not silently
+treatment-confounder feedback under sequential interventions. The baseline-offer
+extension is now implemented separately in `exp59_subscription_offer.py`; see
+[its causal estimand, simulations and verification](2026-10-10-subscription-offer-rmst.md).
+Repeated offers remain future work. `concrete` is an optional continuous-time
+companion, not a substitute for the exact monthly sum; neither it nor #223 blocks
+the Python baseline. The existing exp34 person-time nuisance is not silently
 patched by this change: its partial-interval treatment remains a separate audit.
 
 ## Verification
