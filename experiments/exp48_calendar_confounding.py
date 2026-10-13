@@ -1,4 +1,4 @@
-"""Exp 42: Calendar-time (era) confounding and the embedding-laundering trap
+"""Exp 48: Calendar-time (era) confounding and the embedding-laundering trap
 (causal_bench #173, ENCIRCLE).
 
 Era drives both membership (concurrent trial vs historical control) and outcome
@@ -11,7 +11,7 @@ leak through the state embedding.
 
 Companion to exp37 (#82, unmeasured confounding × enrollment drift): exp37 sweeps
 the compounding grid; this isolates the state-vs-era laundering mechanism.
-Run: `PYTHONPATH=. python experiments/exp42_calendar_confounding.py`.
+Run: `PYTHONPATH=. python experiments/exp48_calendar_confounding.py`.
 """
 from __future__ import annotations
 
