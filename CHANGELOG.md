@@ -17,7 +17,27 @@
     residual +0.0033.
   - The docstring said "trapezoid"; the code is a right-endpoint Riemann sum.
 - Shared helper `estimators/_ipcw_rd.py`; tests `tests/test_ipcw_rd.py`.
-- **Affected results to regenerate:** exp2, exp3, exp7 (RMST panel), exp8 (RMST grid), exp13, exp16, exp37.
+- `TMLEIPCWEstimator` (MVP) and `LTMLEEstimator`: patients event-free at the horizon got IPCW weight 1 ("Y=0 is
+  known"), but they are observed only because they were not censored, so they need 1/G like events. Weight 1
+  under-represented them.
+  - Known truth, n=3000, 6 seeds: the censoring-induced shift in bias at 40% censoring goes from −0.016 to −0.003,
+    with the absolute bias moving −0.0080 → +0.0047. The 0% case is unchanged.
+  - The reported SE grows with censoring as it should (0.0154 → 0.0225 at 40%).
+  - `test_default_path_numerically_unchanged` re-pinned (intentional).
+- `LTMLEEstimator` rewritten as a two-time-point ICE-TMLE, which is what its docstring always described:
+  - stage 2 regresses the stage-1 pseudo-outcomes Q2*(A,W,L1) (the old code fit them, then regressed the observed
+    Y, so L1 never entered);
+  - logistic fluctuations with IPCW-weighted clever covariates (the old one-step mixed probability and logit
+    scales and dropped the IPCW factor);
+  - an influence function built from the same Q* as the point estimate.
+  - CAVEAT: in `dgp.survival` L1 is drawn after T and C and affects neither (L1 = f(A, W3, U)), so no DGP here
+    exercises time-varying confounding, and LTMLE ≈ TMLE+IPCW on it (validated: both +0.005 at 40% censoring).
+    README's "corrects for time-varying confounders" is untested until such a DGP exists.
+- NOTED, NOT FIXED: on this DGP at n=3000 the EIF SEs of TMLE+IPCW and LTMLE are ~2× the empirical SD across seeds
+  (old and new alike; 6 seeds, so rough). This is conservative, not anti-conservative, but se_ratio should be
+  rechecked with exp13's harness.
+- **Affected results to regenerate:** every experiment using `tmle_ipcw` (MVP), `ltmle`, `aipw` or `rmst_k*`. That
+  includes exp2, exp3, exp7, exp8, exp13, exp16 and exp37 at least; grep `experiments/` for `tmle_ipcw`.
 
 ## v0.2.1 (2026-06-19)
 
