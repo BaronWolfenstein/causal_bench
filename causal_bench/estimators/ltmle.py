@@ -30,7 +30,6 @@ from lifelines import CoxPHFitter
 from causal_bench.estimators.base import BaseEstimator
 from causal_bench.metrics import EstimatorResult
 from causal_bench.super_learner import SuperLearner
-from causal_bench.estimators._ipcw_rd import censoring_survival_fn
 
 
 def _expit(x):
@@ -90,11 +89,17 @@ class LTMLEEstimator(BaseEstimator):
         # Audit fix 2026-10-21: EVERY patient whose status is known is weighted 1/G(min(T, t)-), including those
         # event-free at the horizon. The old ipcw = 1 for them ("Y=0 is known") under-represented the uncensored
         # non-events relative to the 1/G-weighted events.
-        Gfn = censoring_survival_fn(df, W, horizon)
+        # Two-interval censoring model (the point of LTMLE): [0, t_L1] given (A, W); (t_L1, τ] given (A, W, L1) among
+        # those alive at t_L1 (left-truncated at t_L1). Dropout that depends on L1 is then ignorable.
+        cens = (Delta == 0) & (T_obs < horizon - 1e-9)                  # competing events count as censoring
+        G1 = _cox_G(np.minimum(T_obs, t_L1), cens & (T_obs < t_L1), np.column_stack([A, W]))
+        G2 = _cox_G(T_obs[alive], cens[alive], np.column_stack([A, W, L1])[alive], entry=t_L1)
+        G1_tL1 = G1(np.full(n, t_L1))
+        G2_full = np.ones(n); G2_full[alive] = G2(np.minimum(T_obs[alive], horizon))
         known1 = (T_obs >= t_L1) | (ev1 & (T_obs < t_L1))           # status at t_L1 known
-        w1 = known1 / Gfn(np.minimum(T_obs, t_L1))
+        w1 = known1 / G1(np.minimum(T_obs, t_L1))
         known2 = alive & ((T_obs >= horizon - 1e-9) | ev1)          # alive at t_L1 and status at horizon known
-        w2 = known2 / Gfn(np.minimum(T_obs, horizon))
+        w2 = known2 / np.maximum(G1_tL1 * G2_full, 0.05)
         early = ev1 & (T_obs < t_L1)
 
         # ── Step 2: propensity g(A=1 | W) ──
@@ -139,6 +144,23 @@ class LTMLEEstimator(BaseEstimator):
             ci_lower=point - z * se, ci_upper=point + z * se,
             ic=IC,
         )]
+
+
+def _cox_G(dur, event, X, entry=None, floor=0.05):
+    """Censoring survival from a Cox model: s -> P(no censoring in (entry, s) | X), left limit, floored."""
+    n = len(dur)
+    if event.sum() < 5:
+        return lambda s: np.ones(n)
+    d = pd.DataFrame(X, columns=[f"x{j}" for j in range(X.shape[1])]); d["T"] = dur; d["C"] = event.astype(int)
+    kw = {}
+    if entry is not None:
+        d["E"] = entry; kw["entry_col"] = "E"
+    cph = CoxPHFitter(penalizer=1e-3).fit(d, duration_col="T", event_col="C", **kw)
+    H0 = cph.baseline_cumulative_hazard_; tt = H0.index.values.astype(float); h0 = H0.values[:, 0]
+    risk = np.asarray(cph.predict_partial_hazard(d[[c for c in d.columns if c.startswith("x")]])).ravel()
+    H_at = lambda s: np.where(np.searchsorted(tt, s, side="left") - 1 >= 0, h0[np.clip(np.searchsorted(tt, s, side="left") - 1, 0, None)], 0.0)
+    H_entry = H_at(np.full(n, entry)) if entry is not None else 0.0
+    return lambda s: np.maximum(np.exp(-(H_at(np.asarray(s, float)) - H_entry) * risk), floor)
 
 
 def _wlogit_fit_predict(X, y, w, *Xp):

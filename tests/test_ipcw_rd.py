@@ -32,3 +32,20 @@ def test_aipw_ipcw_option_runs():
     cfg = DGPConfig(n=400, seed=5, censoring_rate=0.3)
     r = AIPWEstimator(n_folds=3, ipcw=True).estimate(generate_data(cfg), horizon=cfg.horizon)[0]
     assert np.isfinite(r.point_estimate) and r.standard_error > 0
+
+
+def test_l1_effects_default_off_and_only_after_tL1():
+    from causal_bench.dgp.survival import _post_l1
+    base = generate_data(DGPConfig(n=300, seed=7))
+    same = generate_data(DGPConfig(n=300, seed=7, l1_hazard_effect=0.0, l1_censor_effect=0.0))
+    assert base.equals(same)
+    T = np.array([0.2, 0.5, 0.9]); L1 = np.array([1.0, 1.0, 1.0])
+    out = _post_l1(T, L1, 0.5, 1.0)
+    assert out[0] == 0.2 and out[1] == 0.5 and out[2] < 0.9        # only residual time after t_L1 is scaled
+
+
+def test_ltmle_runs_with_time_varying_confounding():
+    from causal_bench.estimators.ltmle import LTMLEEstimator
+    cfg = DGPConfig(n=600, seed=8, censoring_rate=0.3, l1_hazard_effect=1.0, l1_censor_effect=2.0)
+    r = LTMLEEstimator(n_folds=3).estimate(generate_data(cfg), horizon=cfg.horizon)[0]
+    assert np.isfinite(r.point_estimate) and r.standard_error > 0

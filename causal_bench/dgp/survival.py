@@ -278,6 +278,10 @@ def generate_data(
               + rng.standard_normal(n) * config.sigma_L)
     alive_at_L1 = (T_true > config.t_L1) & (C > config.t_L1)
     L1_obs = np.where(alive_at_L1, L1_raw, np.nan)
+    if config.l1_hazard_effect != 0.0 or config.l1_censor_effect != 0.0:
+        # Time-varying confounding (see DGPConfig): L1 accelerates events and dropout after t_L1.
+        T_true = _post_l1(T_true, L1_raw, config.t_L1, config.l1_hazard_effect)
+        C = _post_l1(C, L1_raw, config.t_L1, config.l1_censor_effect)
 
     # --- Crossover (treatment switching) ---
     # RPSFTM: control patients who switch at t_cross have residual time scaled by exp(true_tau)
@@ -366,6 +370,18 @@ def generate_data(
     return df
 
 
+def _post_l1(T, L1, t_L1, effect):
+    """Scale the residual time after t_L1 by exp(-effect·L1); times ≤ t_L1 are unchanged."""
+    if effect == 0.0:
+        return T
+    return np.where(T > t_L1, t_L1 + (T - t_L1) * np.exp(-effect * L1), T)
+
+
+def _l1_counterfactual(config, a_val, W3, U, zL):
+    """L1 under A = a with shared noise zL (same structural equation as generate_data)."""
+    return 0.5 * a_val + 0.4 * W3 + 0.3 * U * config.collider_strength + zL * config.sigma_L
+
+
 def compute_true_effects(config: DGPConfig, n_ref: int = 50_000) -> dict:
     """Estimate true ATE and ATT via a large reference population.
 
@@ -426,6 +442,11 @@ def compute_true_effects(config: DGPConfig, n_ref: int = 50_000) -> dict:
 
     T1 = np.exp(_log_T(1.0))
     T0 = np.exp(_log_T(0.0))
+    if config.l1_hazard_effect != 0.0:
+        # L1 is a mediator of A on T after t_L1: apply the counterfactual L1(a) with shared noise.
+        zL = rng.standard_normal(n_ref)
+        T1 = _post_l1(T1, _l1_counterfactual(config, 1.0, W3, U, zL), config.t_L1, config.l1_hazard_effect)
+        T0 = _post_l1(T0, _l1_counterfactual(config, 0.0, W3, U, zL), config.t_L1, config.l1_hazard_effect)
 
     # Binary event indicator within horizon
     Y1 = (T1 <= config.horizon).astype(float)
@@ -494,6 +515,11 @@ def compute_true_rmst(config: DGPConfig, n_ref: int = 50_000) -> dict:
 
     T1 = np.exp(_log_T(1.0))
     T0 = np.exp(_log_T(0.0))
+    if config.l1_hazard_effect != 0.0:
+        # L1 is a mediator of A on T after t_L1: apply the counterfactual L1(a) with shared noise.
+        zL = rng.standard_normal(n_ref)
+        T1 = _post_l1(T1, _l1_counterfactual(config, 1.0, W3, U, zL), config.t_L1, config.l1_hazard_effect)
+        T0 = _post_l1(T0, _l1_counterfactual(config, 0.0, W3, U, zL), config.t_L1, config.l1_hazard_effect)
 
     rmst1 = float(np.mean(np.minimum(T1, config.horizon)))
     rmst0 = float(np.mean(np.minimum(T0, config.horizon)))

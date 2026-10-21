@@ -31,12 +31,23 @@
   - logistic fluctuations with IPCW-weighted clever covariates (the old one-step mixed probability and logit
     scales and dropped the IPCW factor);
   - an influence function built from the same Q* as the point estimate.
-  - CAVEAT: in `dgp.survival` L1 is drawn after T and C and affects neither (L1 = f(A, W3, U)), so no DGP here
-    exercises time-varying confounding, and LTMLE ≈ TMLE+IPCW on it (validated: both +0.005 at 40% censoring).
-    README's "corrects for time-varying confounders" is untested until such a DGP exists.
-- NOTED, NOT FIXED: on this DGP at n=3000 the EIF SEs of TMLE+IPCW and LTMLE are ~2× the empirical SD across seeds
-  (old and new alike; 6 seeds, so rough). This is conservative, not anti-conservative, but se_ratio should be
-  rechecked with exp13's harness.
+  - With the default DGP (L1 affects neither T nor C) LTMLE ≈ TMLE+IPCW (both +0.005 at 40% censoring). See the new
+    l1_* knobs below for a DGP where L1 matters.
+- SE calibration checked (200 reps per cell; new code): se_ratio 0.97–1.03 and coverage 0.94–0.95 at n=3000;
+  slightly anti-conservative at n=1000 (coverage 0.89–0.95), for tmle_ipcw, ltmle and aipw(ipcw=True), with and
+  without censoring. (An earlier 6-seed "SE ~2× too large" note was a small-sample artifact and is withdrawn.)
+- New DGP knobs `l1_hazard_effect`, `l1_censor_effect` (default 0 ⇒ identical data): L1 accelerates events and
+  dropout after t_L1, which gives real time-varying confounding of the censoring. `LTMLEEstimator` now uses a
+  two-interval censoring model ([0, t_L1] on (A,W); (t_L1, τ] on (A,W,L1), left-truncated).
+  - Known truth (n=3000, 120 reps, l1_hazard 1.0, censoring 0.35):
+
+    | l1_censor_effect | tmle_ipcw bias (coverage) | ltmle bias (coverage) |
+    |---|---|---|
+    | 0 | +0.0001 (0.975) | +0.0010 (0.975) |
+    | 1.5 | +0.0168 (0.908) | −0.0049 (0.975) |
+    | 3.0 | +0.0179 (0.900) | +0.0010 (0.967) |
+
+  - README's LTMLE claim is now testable and holds.
 - **Affected results to regenerate:** every experiment using `tmle_ipcw` (MVP), `ltmle`, `aipw` or `rmst_k*`. That
   includes exp2, exp3, exp7, exp8, exp13, exp16 and exp37 at least; grep `experiments/` for `tmle_ipcw`.
 
