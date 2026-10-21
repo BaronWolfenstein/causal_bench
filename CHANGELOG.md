@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased (2026-10-21 estimator audit)
+
+### Fixes
+- `AIPWEstimator`: the point estimate used a SuperLearner Q in the plug-in term but a separate RidgeCV Q in the residual
+  terms, so it was not doubly robust (bias E[(Q_SL − Q_ridge)₁ − (Q_SL − Q_ridge)₀] even with a correct propensity).
+  It now uses ONE cross-fitted SuperLearner Q in both terms, with the propensity truncated to [0.01, 0.99].
+  - Still no censoring model by default (documented contrast to TMLE+IPCW in exp8/exp13). New opt-in `ipcw=True`.
+  - Known-truth check (n=3000, 3 seeds): no-censoring bias −0.0001 → −0.0000 (small on this DGP);
+    `ipcw=True` at 40% censoring gives −0.0019 vs −0.017 without.
+- `PointwiseRMSTEstimator` (`rmst_k2…k20`): it counted patients censored before t_k as event-free (no censoring
+  weights, although index.qmd lists its nuisances as Q + g + G). That censoring bias does not shrink with K, so it
+  contaminated the O(1/K) discretization demonstration. The pointwise risk differences are now IPCW-AIPW with a Cox
+  censoring model (competing events treated as censoring, the repo convention).
+  - Known-truth check, K=20 at 40% censoring: bias +0.0127 → +0.0035, equal to the no-censoring discretization
+    residual +0.0033.
+  - The docstring said "trapezoid"; the code is a right-endpoint Riemann sum.
+- Shared helper `estimators/_ipcw_rd.py`; tests `tests/test_ipcw_rd.py`.
+- **Affected results to regenerate:** exp2, exp3, exp7 (RMST panel), exp8 (RMST grid), exp13, exp16, exp37.
+
 ## v0.2.1 (2026-06-19)
 
 ### New estimator
