@@ -24,6 +24,7 @@
     with the absolute bias moving −0.0080 → +0.0047. The 0% case is unchanged.
   - The reported SE grows with censoring as it should (0.0154 → 0.0225 at 40%).
   - `test_default_path_numerically_unchanged` re-pinned (intentional).
+  - The same weight bug in `PooledQSubgroupEstimator._ipcw` (exp34; ENCIRCLE subgroup rates) is fixed identically.
 - `LTMLEEstimator` rewritten as a two-time-point ICE-TMLE, which is what its docstring always described:
   - stage 2 regresses the stage-1 pseudo-outcomes Q2*(A,W,L1) (the old code fit them, then regressed the observed
     Y, so L1 never entered);

@@ -233,11 +233,13 @@ class PooledQSubgroupEstimator(BaseEstimator):
         return G_T, G_grid
 
     def _ipcw(self, df, W_cols, T_obs, Delta, horizon, n):
-        """IPCW weights from a Cox censoring model (informative pre-horizon dropout
-        only; admin-censored get weight 1)."""
+        """IPCW weights from a Cox censoring model (informative pre-horizon dropout only).
+        Every patient with known status gets 1/G, including those event-free at the horizon (audit fix
+        2026-10-21: they previously got weight 1, which under-represents them relative to 1/G-weighted events;
+        same fix as TMLEIPCWEstimator)."""
         G = self._censoring_G(df, W_cols, T_obs, Delta, horizon, n)
         admin_censored = (Delta == 0) & (T_obs >= horizon - 1e-9)
-        return np.where(Delta == 1, 1.0 / G, np.where(admin_censored, 1.0, 0.0))
+        return np.where(Delta == 1, 1.0 / G, np.where(admin_censored, 1.0 / G, 0.0))
 
     # ------------------------------------------------------------------ RMST (#189)
     def _estimate_rmst(self, df, horizon):
