@@ -9,6 +9,17 @@ Two-stage approach:
    with early events (Y=1, T_obs < t_L1). This correctly accounts for the survival
    selection into being alive at L1 and avoids collider bias.
 3. TMLE targeting of Q_bar using the full-sample EIF.
+
+Audit 2026-10-21 rewrite (the docstring above is now what the code does):
+- Stage 2 regresses the stage-1 PSEUDO-OUTCOMES (Ỹ = 1 for early events, Q2*(A,W,L1) if alive at t_L1). The old
+  code fit Q_full but regressed the observed Y, so L1 never entered the estimate.
+- Each stage is targeted by a LOGISTIC fluctuation with clever covariate H = A/g − (1−A)/(1−g) and IPCW weights.
+  The old one-step was computed on the probability scale, applied on the logit scale, and dropped the IPCW factor.
+- Censoring weights are 1/G(min(T, t)-) for every patient with known status, incl. event-free at the horizon
+  (the old version gave those weight 1).
+- The IC is the two-time-point ICE-TMLE influence function, with the same fitted Q* as the point estimate.
+- CAVEAT: in dgp.survival, L1 is drawn after T and C and affects neither (L1 = f(A, W3, U)). No DGP in the repo
+  therefore exercises time-varying confounding; on it LTMLE and TMLE+IPCW target the same total effect.
 """
 import numpy as np
 import pandas as pd
@@ -19,6 +30,7 @@ from lifelines import CoxPHFitter
 from causal_bench.estimators.base import BaseEstimator
 from causal_bench.metrics import EstimatorResult
 from causal_bench.super_learner import SuperLearner
+from causal_bench.estimators._ipcw_rd import censoring_survival_fn
 
 
 def _expit(x):
@@ -33,10 +45,11 @@ def _logit(p):
 class LTMLEEstimator(BaseEstimator):
 
     def __init__(self, n_folds: int = 5, random_state: int = 42,
-                 n_mc: int = 50):
+                 n_mc: int = 50, t_L1: float = 0.5):
         self.n_folds = n_folds
         self.random_state = random_state
         self.n_mc = n_mc
+        self.t_L1 = t_L1          # L1 measurement time (DGPConfig.t_L1 default)
 
     @property
     def name(self) -> str:
@@ -68,153 +81,57 @@ class LTMLEEstimator(BaseEstimator):
 
         Y = ((T_obs <= horizon) & (Delta == 1)).astype(float)
 
-        alive_mask = df["L1"].notna().values
-        # t_L1 is the L1 measurement time; anything before this is a pre-L1 early event
-        t_L1 = 0.5  # matches DGPConfig.t_L1 default
-        early_event_mask = (Delta == 1) & (T_obs < t_L1 - 1e-9)
-        admin_mask = (Delta == 0) & (T_obs >= horizon - 1e-9)
+        alive = df["L1"].notna().values                          # alive AND uncensored at t_L1 (L1 observed)
+        t_L1 = float(self.t_L1)
+        L1 = np.where(alive, df["L1"].values, 0.0)
+        ev1 = Delta == 1
 
-        # ── Step 1: Censoring model ──
-        # Only pre-horizon, pre-L1-or-event dropouts are informative censoring events.
-        # Admin-censored (T_obs≥horizon) and events are NOT censoring events.
-        censor_feature_cols = W_cols + ["A"]
-        censor_df = df[censor_feature_cols + ["T_obs", "Delta"]].copy()
-        censor_df["C_indicator"] = (
-            (censor_df["Delta"] == 0) & (censor_df["T_obs"] < horizon - 1e-9)
-        ).astype(float)
+        # ── Step 1: censoring survival G(s- | A, W) (Cox; competing events count as censoring, repo convention).
+        # Audit fix 2026-10-21: EVERY patient whose status is known is weighted 1/G(min(T, t)-), including those
+        # event-free at the horizon. The old ipcw = 1 for them ("Y=0 is known") under-represented the uncensored
+        # non-events relative to the 1/G-weighted events.
+        Gfn = censoring_survival_fn(df, W, horizon)
+        known1 = (T_obs >= t_L1) | (ev1 & (T_obs < t_L1))           # status at t_L1 known
+        w1 = known1 / Gfn(np.minimum(T_obs, t_L1))
+        known2 = alive & ((T_obs >= horizon - 1e-9) | ev1)          # alive at t_L1 and status at horizon known
+        w2 = known2 / Gfn(np.minimum(T_obs, horizon))
+        early = ev1 & (T_obs < t_L1)
 
-        try:
-            cph = CoxPHFitter(penalizer=0.1)
-            cph.fit(censor_df[censor_feature_cols + ["T_obs", "C_indicator"]],
-                    duration_col="T_obs", event_col="C_indicator",
-                    fit_options={"max_steps": 50})
-
-            unique_times = np.sort(np.unique(T_obs))
-            sf = cph.predict_survival_function(
-                censor_df[censor_feature_cols], times=unique_times
-            )
-            G = np.ones(n)
-            for i, t in enumerate(T_obs):
-                col = sf.iloc[:, i]
-                idx_before = sf.index <= t
-                if idx_before.any():
-                    G[i] = float(col[idx_before].iloc[-1])
-                else:
-                    G[i] = 1.0
-        except Exception:
-            G = np.ones(n)
-
-        G = np.clip(G, 0.05, 1.0)
-        # Events: upweight 1/G (represent similar patients who were censored).
-        # Admin-censored: ipcw=1 (Y=0 known, no upweighting needed).
-        # Pre-horizon dropouts: ipcw=0 (excluded; outcome unknown).
-        ipcw = np.where(Delta == 1, 1.0 / G,
-                        np.where(admin_mask, 1.0, 0.0))
-
-        # ── Step 2: Propensity model g(A=1 | W) ──
+        # ── Step 2: propensity g(A=1 | W) ──
         sl_g = SuperLearner(task="classification", n_folds=self.n_folds,
                             random_state=self.random_state)
         sl_g.fit(W, A)
-        g = sl_g.predict_proba(W)
-        g_oof = sl_g.oof_predictions_
+        g = np.clip(sl_g.predict_proba(W), 0.01, 0.99)
+        HA = A / g - (1 - A) / (1 - g)
 
-        # ── Step 3: Stage-1 outcome model Q_full(A, W, L1) on alive-at-L1 ──
-        alive_idx = np.where(alive_mask)[0]
-        A_alive = A[alive_idx]
-        W_alive = W[alive_idx]
-        L1_alive = df["L1"].values[alive_idx]
-        Y_alive = Y[alive_idx]
-        ipcw_alive = ipcw[alive_idx]
-        ipcw_alive_norm = ipcw_alive / max(ipcw_alive.mean(), 1e-10)
+        # ── Step 3: stage-2-in-time regression Q2(A, W, L1) = P(Y=1 | A, W, L1, alive at t_L1), targeted ──
+        X2 = np.column_stack([A, W, L1])
+        r2 = known2
+        Q2 = _wlogit_fit_predict(X2[r2], Y[r2], w2[r2], X2)
+        eps2 = _fluctuate(Y[r2], Q2[r2], HA[r2], w2[r2])
+        Q2s = _expit(_logit(Q2) + eps2 * HA)
 
-        X_full_train = np.column_stack([A_alive, W_alive, L1_alive])
-        q_full = LogisticRegression(max_iter=1000, C=1.0)
-        q_full.fit(X_full_train, Y_alive, sample_weight=ipcw_alive_norm)
+        # ── Step 4: stage-1-in-time regression on the PSEUDO-OUTCOME (sequential regression / ICE), targeted ──
+        # Ỹ = 1 for an event before t_L1, Q2*(A, W, L1) for patients alive at t_L1. Regress Ỹ on (A, W) among
+        # those whose status at t_L1 is known. (The old code fit Q2 but then regressed the OBSERVED Y here, so L1
+        # never entered the estimate, contradicting this module's docstring.)
+        Yt = np.where(early, 1.0, np.where(alive, Q2s, 0.0))
+        X1 = np.column_stack([A, W]); X1a = np.column_stack([np.ones(n), W]); X0a = np.column_stack([np.zeros(n), W])
+        r1 = known1
+        if r1.sum() < 10:
+            raise RuntimeError("LTMLE: too few patients with known status at t_L1")
+        Q1_A, Q1_1, Q1_0 = _wlogit_fit_predict(X1[r1], Yt[r1], w1[r1], X1, X1a, X0a)
+        eps1 = _fluctuate(Yt[r1], Q1_A[r1], HA[r1], w1[r1])
+        Q1_1s = _expit(_logit(Q1_1) + eps1 / g)
+        Q1_0s = _expit(_logit(Q1_0) - eps1 / (1 - g))
+        Q1_As = np.where(A == 1, Q1_1s, Q1_0s)
 
-        # Q_full predictions as pseudo-outcomes for alive patients
-        Q_hat_alive = np.clip(
-            _expit_scipy(q_full.decision_function(X_full_train)), 1e-5, 1 - 1e-5
-        )
-
-        # ── Step 4: Stage-2 Q_bar(A, W) combining alive patients + early events ──
-        # Early events (Y=1, T<t_L1) are missing from the alive subset due to survival
-        # selection; including them corrects for the resulting downward bias on ATE.
-        early_idx = np.where(early_event_mask)[0]
-        stage2_idx = np.concatenate([alive_idx, early_idx])
-        stage2_A = A[stage2_idx]
-        stage2_W = W[stage2_idx]
-        stage2_ipcw = ipcw[stage2_idx]
-        # Use actual outcomes: Y_alive for alive patients; Y=1 for early events.
-        stage2_Y = np.concatenate([Y_alive, np.ones(len(early_idx))])
-        stage2_sw = stage2_ipcw / max(stage2_ipcw.mean(), 1e-10)
-
-        AW_s2 = np.column_stack([stage2_A, stage2_W])
-        AW = np.column_stack([A, W])
-        AW1 = np.column_stack([np.ones(n), W])
-        AW0 = np.column_stack([np.zeros(n), W])
-
-        # Guard against degenerate case (single class in subset)
-        if len(np.unique(stage2_Y)) < 2:
-            from causal_bench.estimators.tmle_ipcw import TMLEIPCWEstimator
-            fallback = TMLEIPCWEstimator(use_compliance=False,
-                                         n_folds=self.n_folds,
-                                         random_state=self.random_state)
-            results = fallback.estimate(df, horizon=horizon, estimand=estimand)
-            return [EstimatorResult(
-                name=self.name, estimand=r.estimand,
-                point_estimate=r.point_estimate,
-                standard_error=r.standard_error,
-                ci_lower=r.ci_lower, ci_upper=r.ci_upper,
-            ) for r in results]
-
-        q_bar = LogisticRegression(max_iter=1000, C=1.0)
-        q_bar.fit(AW_s2, stage2_Y.astype(int), sample_weight=stage2_sw)
-
-        Q_AW = np.clip(_expit_scipy(q_bar.decision_function(AW)), 1e-5, 1 - 1e-5)
-        Q_1W = np.clip(_expit_scipy(q_bar.decision_function(AW1)), 1e-5, 1 - 1e-5)
-        Q_0W = np.clip(_expit_scipy(q_bar.decision_function(AW0)), 1e-5, 1 - 1e-5)
-
-        # OOF Q_bar: cross-fitted predictions on the full sample for unbiased IC variance.
-        from sklearn.model_selection import KFold
-        Q_1W_oof = np.zeros(n)
-        Q_0W_oof = np.zeros(n)
-        for tr_s2, val_s2 in KFold(self.n_folds, shuffle=True,
-                                    random_state=self.random_state).split(AW_s2):
-            # Map stage2 val indices back to full-sample positions
-            val_full = stage2_idx[val_s2]
-            sw_tr = stage2_sw[tr_s2] / max(stage2_sw[tr_s2].mean(), 1e-10)
-            if len(np.unique(stage2_Y[tr_s2])) < 2:
-                continue
-            qc = LogisticRegression(max_iter=1000, C=1.0)
-            qc.fit(AW_s2[tr_s2], stage2_Y[tr_s2].astype(int), sample_weight=sw_tr)
-            Q_1W_oof[val_full] = np.clip(
-                _expit_scipy(qc.decision_function(AW1[val_full])), 1e-5, 1 - 1e-5)
-            Q_0W_oof[val_full] = np.clip(
-                _expit_scipy(qc.decision_function(AW0[val_full])), 1e-5, 1 - 1e-5)
-
-        # Fill any zeros (folds skipped due to single-class) with full-data predictions
-        Q_1W_oof = np.where(Q_1W_oof == 0.0, Q_1W, Q_1W_oof)
-        Q_0W_oof = np.where(Q_0W_oof == 0.0, Q_0W, Q_0W_oof)
-
-        # ── Step 5: TMLE targeting ──
-        H = ipcw * (A / g - (1 - A) / (1 - g))
-        denom = np.mean(H ** 2)
-        eps = np.mean(H * (Y - Q_AW)) / denom if denom > 1e-10 else 0.0
-        eps = np.clip(eps, -2.0, 2.0)
-
-        Q_1W_star = _expit(_logit(Q_1W) + eps / g)
-        Q_0W_star = _expit(_logit(Q_0W) - eps / (1 - g))
-
-        # ── Step 6: Point estimate + EIF SE ──
-        # Fully cross-fitted DML IC: all terms use OOF g and Q for unbiased variance.
-        # Point estimate still uses full-data targeted Q* for better finite-sample bias.
-        point = float(np.mean(Q_1W_star - Q_0W_star))
-
-        IC = ((Q_1W_oof - Q_0W_oof - point)
-              + ipcw * (A / g_oof) * (Y - Q_1W_oof)
-              - ipcw * ((1 - A) / (1 - g_oof)) * (Y - Q_0W_oof))
+        # ── Step 5: estimate + EIF (ICE-TMLE influence function, sum over the two time points) ──
+        point = float(np.mean(Q1_1s - Q1_0s))
+        IC = ((Q1_1s - Q1_0s - point)
+              + w1 * HA * (Yt - Q1_As)
+              + w2 * HA * (Y - Q2s))
         se = float(np.sqrt(np.var(IC, ddof=1) / n))
-
         z = stats.norm.ppf(0.975)
         return [EstimatorResult(
             name=self.name, estimand="ATE",
@@ -222,3 +139,28 @@ class LTMLEEstimator(BaseEstimator):
             ci_lower=point - z * se, ci_upper=point + z * se,
             ic=IC,
         )]
+
+
+def _wlogit_fit_predict(X, y, w, *Xp):
+    """Weighted logistic regression allowing FRACTIONAL y in [0, 1] (quasi-binomial via the duplicate-row trick)."""
+    y = np.clip(np.asarray(y, float), 0.0, 1.0); w = np.asarray(w, float)
+    Xd = np.vstack([X, X]); yd = np.r_[np.ones(len(y)), np.zeros(len(y))]; wd = np.r_[w * y, w * (1 - y)]
+    keep = wd > 0
+    wd = wd / max(wd[keep].mean(), 1e-12)
+    m = LogisticRegression(max_iter=2000, C=1.0).fit(Xd[keep], yd[keep], sample_weight=wd[keep])
+    out = [np.clip(_expit_scipy(m.decision_function(x)), 1e-5, 1 - 1e-5) for x in Xp]
+    return out[0] if len(out) == 1 else out
+
+
+def _fluctuate(y, q, h, w, iters=50):
+    """Logistic TMLE fluctuation: solve Σ w h (y − expit(logit q + ε h)) = 0 for ε (1-D Newton, offset logit q)."""
+    eps = 0.0; off = _logit(q)
+    for _ in range(iters):
+        p = _expit(off + eps * h)
+        score = np.sum(w * h * (y - p)); info = np.sum(w * h * h * p * (1 - p))
+        if info <= 1e-12:
+            break
+        step = score / info; eps += step
+        if abs(step) < 1e-10:
+            break
+    return float(eps)
