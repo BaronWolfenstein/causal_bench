@@ -90,6 +90,12 @@ class DGPConfig(BaseModel):
     # Time-varying confounder (unused in MVP)
     collider_strength: float = Field(0.0, ge=0.0, le=1.0)
     sigma_L: float = 0.5
+    # Time-varying confounding through L1 (both default OFF ⇒ bit-identical data). After t_L1 the residual event time
+    # is scaled by exp(-l1_hazard_effect·L1) (L1 prognostic) and the residual censoring time by
+    # exp(-l1_censor_effect·L1) (dropout depends on L1). With both > 0, censoring is informative GIVEN (A, W) but
+    # ignorable given (A, W, L1): only an estimator whose censoring model uses L1 (LTMLE) is unbiased.
+    l1_hazard_effect: float = 0.0
+    l1_censor_effect: float = 0.0
     t_L1: float = 0.5
 
     # Competing risks

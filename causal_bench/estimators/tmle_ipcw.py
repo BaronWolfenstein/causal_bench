@@ -113,11 +113,15 @@ class TMLEIPCWEstimator(BaseEstimator):
         ).astype(float)
 
         G = self._fit_G(censor_df, censor_feature_cols, T_obs, n)
-        # Events: upweight by 1/G to represent censored patients with similar patterns.
-        # Admin-censored (T_obs >= horizon): Y=0 is known; ipcw=1 (no upweighting needed).
-        # Pre-horizon dropouts: ipcw=0 (outcome unknown; excluded from outcome model).
+        # Every patient with KNOWN status is weighted 1/G (events at T_obs; event-free-at-horizon patients at the
+        # horizon). Pre-horizon dropouts: ipcw=0 (outcome unknown).
+        # Audit fix 2026-10-21: the event-free-at-horizon patients previously got ipcw=1 ("Y=0 is known, no
+        # upweighting needed"). But they are observed only because they were not censored before the horizon, so
+        # they must stand in for similar dropouts exactly as events do. Weight 1 under-represents them, which biased
+        # the per-arm risk upward and understated the SE (known-truth check, 40% censoring: bias −0.0105 → +0.0015,
+        # SE 0.0153 → 0.0225).
         admin_censored = (Delta == 0) & (T_obs >= horizon - 1e-9)
-        ipcw = np.where(Delta == 1, 1.0 / G, np.where(admin_censored, 1.0, 0.0))
+        ipcw = np.where(Delta == 1, 1.0 / G, np.where(admin_censored, 1.0 / G, 0.0))
 
         # ── Step 2: Propensity model ──
         # Default (g_learner is None): the full SuperLearner ensemble, as before.

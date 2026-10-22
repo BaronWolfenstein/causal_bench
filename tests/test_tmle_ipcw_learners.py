@@ -19,11 +19,12 @@ def _df(n=600, seed=123):
 
 
 def test_default_path_numerically_unchanged():
-    # Regression guard: g_learner/q_learner=None must reproduce the pre-phase-2
-    # estimate exactly. Baseline captured from main (1ca1e2c) before the change.
+    # Regression guard: g_learner/q_learner=None must reproduce the pinned estimate exactly.
+    # Re-pinned 2026-10-21 after the INTENTIONAL IPCW fix (event-free-at-horizon patients now weighted 1/G, not 1):
+    # was 0.1654252158 / 0.0369054683 (baseline from main 1ca1e2c).
     r = TMLEIPCWEstimator(random_state=42).estimate(_df())[0]
-    assert abs(r.point_estimate - 0.1654252158) < 1e-8
-    assert abs(r.standard_error - 0.0369054683) < 1e-8
+    assert abs(r.point_estimate - 0.1622914151) < 1e-8
+    assert abs(r.standard_error - 0.0439711067) < 1e-8
 
 
 def test_explicit_default_logistic_matches_default():

@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased (2026-10-21 estimator audit)
+
+### Fixes
+- `AIPWEstimator`: the point estimate used a SuperLearner Q in the plug-in term but a separate RidgeCV Q in the residual
+  terms, so it was not doubly robust (bias E[(Q_SL − Q_ridge)₁ − (Q_SL − Q_ridge)₀] even with a correct propensity).
+  It now uses ONE cross-fitted SuperLearner Q in both terms, with the propensity truncated to [0.01, 0.99].
+  - Still no censoring model by default (documented contrast to TMLE+IPCW in exp8/exp13). New opt-in `ipcw=True`.
+  - Known-truth check (n=3000, 3 seeds): no-censoring bias −0.0001 → −0.0000 (small on this DGP);
+    `ipcw=True` at 40% censoring gives −0.0019 vs −0.017 without.
+- `PointwiseRMSTEstimator` (`rmst_k2…k20`): it counted patients censored before t_k as event-free (no censoring
+  weights, although index.qmd lists its nuisances as Q + g + G). That censoring bias does not shrink with K, so it
+  contaminated the O(1/K) discretization demonstration. The pointwise risk differences are now IPCW-AIPW with a Cox
+  censoring model (competing events treated as censoring, the repo convention).
+  - Known-truth check, K=20 at 40% censoring: bias +0.0127 → +0.0035, equal to the no-censoring discretization
+    residual +0.0033.
+  - The docstring said "trapezoid"; the code is a right-endpoint Riemann sum.
+- Shared helper `estimators/_ipcw_rd.py`; tests `tests/test_ipcw_rd.py`.
+- `TMLEIPCWEstimator` (MVP) and `LTMLEEstimator`: patients event-free at the horizon got IPCW weight 1 ("Y=0 is
+  known"), but they are observed only because they were not censored, so they need 1/G like events. Weight 1
+  under-represented them.
+  - Known truth, n=3000, 6 seeds: the censoring-induced shift in bias at 40% censoring goes from −0.016 to −0.003,
+    with the absolute bias moving −0.0080 → +0.0047. The 0% case is unchanged.
+  - The reported SE grows with censoring as it should (0.0154 → 0.0225 at 40%).
+  - `test_default_path_numerically_unchanged` re-pinned (intentional).
+  - The same weight bug in `PooledQSubgroupEstimator._ipcw` (exp34; ENCIRCLE subgroup rates) is fixed identically.
+- `LTMLEEstimator` rewritten as a two-time-point ICE-TMLE, which is what its docstring always described:
+  - stage 2 regresses the stage-1 pseudo-outcomes Q2*(A,W,L1) (the old code fit them, then regressed the observed
+    Y, so L1 never entered);
+  - logistic fluctuations with IPCW-weighted clever covariates (the old one-step mixed probability and logit
+    scales and dropped the IPCW factor);
+  - an influence function built from the same Q* as the point estimate.
+  - With the default DGP (L1 affects neither T nor C) LTMLE ≈ TMLE+IPCW (both +0.005 at 40% censoring). See the new
+    l1_* knobs below for a DGP where L1 matters.
+- SE calibration checked (200 reps per cell; new code): se_ratio 0.97–1.03 and coverage 0.94–0.95 at n=3000;
+  slightly anti-conservative at n=1000 (coverage 0.89–0.95), for tmle_ipcw, ltmle and aipw(ipcw=True), with and
+  without censoring. (An earlier 6-seed "SE ~2× too large" note was a small-sample artifact and is withdrawn.)
+- New DGP knobs `l1_hazard_effect`, `l1_censor_effect` (default 0 ⇒ identical data): L1 accelerates events and
+  dropout after t_L1, which gives real time-varying confounding of the censoring. `LTMLEEstimator` now uses a
+  two-interval censoring model ([0, t_L1] on (A,W); (t_L1, τ] on (A,W,L1), left-truncated).
+  - Known truth (n=3000, 120 reps, l1_hazard 1.0, censoring 0.35):
+
+    | l1_censor_effect | tmle_ipcw bias (coverage) | ltmle bias (coverage) |
+    |---|---|---|
+    | 0 | +0.0001 (0.975) | +0.0010 (0.975) |
+    | 1.5 | +0.0168 (0.908) | −0.0049 (0.975) |
+    | 3.0 | +0.0179 (0.900) | +0.0010 (0.967) |
+
+  - README's LTMLE claim is now testable and holds.
+- **Affected results to regenerate:** every experiment using `tmle_ipcw` (MVP), `ltmle`, `aipw` or `rmst_k*`. That
+  includes exp2, exp3, exp7, exp8, exp13, exp16 and exp37 at least; grep `experiments/` for `tmle_ipcw`.
+
 ## v0.2.1 (2026-06-19)
 
 ### New estimator
