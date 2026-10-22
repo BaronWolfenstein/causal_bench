@@ -1,11 +1,11 @@
-"""Calendar-time confounding (#173/exp42). Load-bearing: adjusting for a patient-
+"""Calendar-time confounding (#173/exp48). Load-bearing: adjusting for a patient-
 state proxy that imperfectly mirrors era LAUNDERS calendar confounding (still
 badly biased), while putting era in explicitly recovers the null."""
 import numpy as np
 
 from causal_bench.dgp.calendar_confounding import (
     CalendarConfig, draw_calendar, adjusted_effect)
-from experiments.exp42_calendar_confounding import run
+from experiments.exp48_calendar_confounding import run
 
 
 def test_state_proxy_launders_era_explicit_recovers():
